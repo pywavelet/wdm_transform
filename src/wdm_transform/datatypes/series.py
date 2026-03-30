@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from ..backends import Backend, get_backend
+
+if TYPE_CHECKING:
+    from .wdm import WDM
 
 
 @dataclass(frozen=True)
@@ -41,6 +44,25 @@ class TimeSeries:
     def to_frequency_series(self) -> "FrequencySeries":
         transformed = self.backend.fft.fft(self.data)
         return FrequencySeries(transformed, df=self.df, backend=self.backend)
+
+    def to_wdm(
+        self,
+        *,
+        nt: int,
+        a: float = 1.0 / 3.0,
+        d: float = 1.0,
+        backend: str | Backend | None = None,
+    ) -> "WDM":
+        """Compute the WDM transform of this time series."""
+        from .wdm import WDM
+
+        return WDM.from_time_series(self, nt=nt, a=a, d=d, backend=backend)
+
+    def plot(self, **kwargs: Any) -> tuple[Any, Any]:
+        """Plot the time-domain samples using the shared plotting helper."""
+        from ..plotting import plot_time_series
+
+        return plot_time_series(self, **kwargs)
 
 
 @dataclass(frozen=True)
@@ -80,3 +102,22 @@ class FrequencySeries:
         if real:
             recovered = self.backend.xp.real(recovered)
         return TimeSeries(recovered, dt=self.dt, backend=self.backend)
+
+    def to_wdm(
+        self,
+        *,
+        nt: int,
+        a: float = 1.0 / 3.0,
+        d: float = 1.0,
+        backend: str | Backend | None = None,
+    ) -> "WDM":
+        """Compute the WDM transform of this frequency-domain series."""
+        from .wdm import WDM
+
+        return WDM.from_frequency_series(self, nt=nt, a=a, d=d, backend=backend)
+
+    def plot(self, **kwargs: Any) -> tuple[Any, Any]:
+        """Plot the spectrum using the shared plotting helper."""
+        from ..plotting import plot_frequency_series
+
+        return plot_frequency_series(self, **kwargs)

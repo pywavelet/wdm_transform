@@ -1,9 +1,8 @@
 site_name: wdm-transform
 site_description: Experimental object-oriented WDM transform package.
-# Fill in the GitHub slug below to enable Material's edit/view repo actions.
-# repo_url: https://github.com/<owner>/<repo>
+repo_url: https://github.com/pywavelet/wdm_transform
 repo_name: wdm-transform
-# edit_uri: edit/main/docs/
+edit_uri: edit/main/docs/
 docs_dir: .
 site_dir: ../site
 
@@ -46,7 +45,8 @@ plugins:
             members_order: source
             separate_signature: true
             show_root_heading: true
-            show_source: false
+            show_root_full_path: false
+            show_source: true
   - mkdocs-jupyter:
       include:
         - "*.py"

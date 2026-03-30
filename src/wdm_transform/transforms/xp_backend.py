@@ -25,18 +25,17 @@ reconstructs the signal from the coefficients.  Both exploit the fact
 that the phi-window is compactly supported in frequency, so each
 sub-band only touches a length-``nt`` slice of the full spectrum.
 
-Packing convention
+Coefficient layout
 ------------------
-The coefficient matrix ``W`` has shape ``(nt, nf)`` where:
+The coefficient matrix ``W`` has shape ``(nt, nf + 1)`` with all real
+entries:
 
-* ``W[:, 0].real``  — DC edge channel   (m = 0)
-* ``W[:, 0].imag``  — Nyquist edge channel (m = nf)
-* ``W[:, 1:]``      — interior channels  (m = 1 … nf−1), real-valued
+* ``W[:, 0]``       — DC edge channel     (m = 0)
+* ``W[:, 1:nf]``    — interior channels   (m = 1 … nf−1)
+* ``W[:, nf]``      — Nyquist edge channel (m = nf)
 
-The DC and Nyquist channels each carry only real information (their
-atoms are purely real in the time domain).  Packing them into the real
-and imaginary parts of a single complex column saves one column of
-storage without loss.
+There are nt time bins and nf + 1 frequency channels, giving
+nt · (nf + 1) total coefficients for a signal of length N = nt · nf.
 """
 
 from __future__ import annotations
@@ -72,7 +71,7 @@ def forward_wdm(
     The m=0 atom has support only in the lowest ``half = nt/2`` frequency
     bins.  The projection reduces to a DFT-like sum:
 
-        W_dc[n] = Re{ Σ_l  exp(4πi·l·n/nt) · X[l] · Φ[l] } / (nt·nf)
+        W[n, 0] = Re{ Σ_l  exp(4πi·l·n/nt) · X[l] · Φ[l] } / (nt·nf)
 
     where l runs from 1 to half−1, plus a half-weight DC term at l=0.
 
@@ -93,9 +92,6 @@ def forward_wdm(
     Analogous to the DC channel but centred at the Nyquist frequency
     N/2.  The sum runs over the top ``half`` bins of the spectrum.
 
-    Finally, both edge channels are packed into column 0:
-    ``W[:, 0] = W_dc + i·W_nyq``.
-
     Parameters
     ----------
     data : array, shape (nt * nf,)
@@ -103,7 +99,8 @@ def forward_wdm(
     nt : int
         Number of WDM time bins (must be even).
     nf : int
-        Number of WDM frequency channels (must be even).
+        Number of WDM frequency channels (must be even).  The output
+        will have nf + 1 columns (channels m = 0 … nf).
     a : float
         Window roll-off parameter, in (0, 0.5).  Controls the trade-off
         between time and frequency resolution.  Common choices are
@@ -117,8 +114,9 @@ def forward_wdm(
 
     Returns
     -------
-    coeffs : array, shape (nt, nf), complex128
-        Packed WDM coefficients (see module docstring for packing convention).
+    coeffs : array, shape (nt, nf + 1), float64
+        Real-valued WDM coefficients.  Column m corresponds to
+        frequency channel m.
     """
     xp = backend.xp
     validate_transform_shape(nt, nf)
@@ -137,7 +135,7 @@ def forward_wdm(
     # Build the length-nt phi-window, scaled by √(2·nf) for unitarity
     window = backend.asarray(phi_window(backend, nt, nf, dt, a, d), dtype=xp.complex128)
 
-    coeffs = xp.zeros((nt, nf), dtype=xp.complex128)
+    coeffs = xp.zeros((nt, nf + 1), dtype=xp.float64)
     half = nt // 2
     narr = xp.arange(nt)
 
@@ -146,7 +144,7 @@ def forward_wdm(
     # onto the DFT basis exp(4πi·l·n/nt).
     block = x_fft[1:half] * window[1:half]
     larr = xp.arange(1, half)
-    coeffs_dc = xp.real(
+    coeffs[:, 0] = xp.real(
         xp.sum(xp.exp(4j * xp.pi * larr[None, :] * narr[:, None] / nt) * block[None, :], axis=1)
         + x_fft[0] * window[0] / 2.0
     ) / (nt * nf)
@@ -172,18 +170,16 @@ def forward_wdm(
     # Same structure as DC but centred at N/2.
     block = x_fft[n_total // 2 - half:n_total // 2] * window[-half:]
     larr = xp.arange(n_total // 2 - half, n_total // 2)
-    coeffs_nyq = xp.real(
+    coeffs[:, nf] = xp.real(
         xp.sum(xp.exp(4j * xp.pi * larr[None, :] * narr[:, None] / nt) * block[None, :], axis=1)
         + x_fft[n_total // 2] * window[0] / 2.0
     ) / (nt * nf)
 
-    # Pack DC (real) and Nyquist (imag) into column 0
-    coeffs[:, 0] = coeffs_dc + 1j * coeffs_nyq
     return coeffs
 
 
 def inverse_wdm(coeffs: Any, *, a: float, d: float, dt: float, backend: Backend) -> Any:
-    r"""Reconstruct a time-domain signal from packed WDM coefficients.
+    r"""Reconstruct a time-domain signal from WDM coefficients.
 
     This inverts ``forward_wdm``.  The reconstruction operates in the
     frequency domain: each sub-band's contribution to the full spectrum
@@ -214,7 +210,7 @@ def inverse_wdm(coeffs: Any, *, a: float, d: float, dt: float, backend: Backend)
     The DC contribution is reconstructed by a direct DFT sum (inverse of
     the projection in the forward transform):
 
-        X[l] += Σ_n  W_dc[n] · exp(-4πi·n·l/nt) · nf · Φ[l]
+        X[l] += Σ_n  W[n, 0] · exp(-4πi·n·l/nt) · nf · Φ[l]
 
     with a half-weight term at l = 0.
 
@@ -227,8 +223,8 @@ def inverse_wdm(coeffs: Any, *, a: float, d: float, dt: float, backend: Backend)
 
     Parameters
     ----------
-    coeffs : array, shape (nt, nf), complex128
-        Packed WDM coefficients.
+    coeffs : array, shape (nt, nf + 1), float64
+        Real-valued WDM coefficients.
     a, d : float
         Window parameters (d is reserved/unused).
     dt : float
@@ -242,11 +238,12 @@ def inverse_wdm(coeffs: Any, *, a: float, d: float, dt: float, backend: Backend)
         Reconstructed time-domain signal.
     """
     xp = backend.xp
-    packed = backend.asarray(coeffs, dtype=xp.complex128)
-    if packed.ndim != 2:
+    w = backend.asarray(coeffs, dtype=xp.float64)
+    if w.ndim != 2:
         raise ValueError("WDM coefficients must be a two-dimensional array.")
 
-    nt, nf = (int(dim) for dim in packed.shape)
+    nt, ncols = (int(dim) for dim in w.shape)
+    nf = ncols - 1
     validate_transform_shape(nt, nf)
     validate_window_parameter(a)
 
@@ -254,15 +251,14 @@ def inverse_wdm(coeffs: Any, *, a: float, d: float, dt: float, backend: Backend)
     half = nt // 2
     window = backend.asarray(phi_window(backend, nt, nf, dt, a, d), dtype=xp.complex128)
 
-    # Unpack the edge channels from column 0
-    coeffs_dc = xp.real(packed[:, 0])
-    coeffs_nyq = xp.imag(packed[:, 0])
+    coeffs_dc = w[:, 0]
+    coeffs_nyq = w[:, nf]
 
-    # Build modulated coefficients y[n, m] = C_{n,m} · Re(W[n, m]) · nf / √2
-    # and FFT along the time axis to get sub-band spectra
+    # Build modulated coefficients y[n, m] = C_{n,m} · W[n, m] · nf / √2
+    # for interior channels, and FFT along the time axis
     n_idx = xp.arange(nt)[:, None]
-    m_idx = xp.arange(nf)[None, :]
-    ylm = cnm(backend, n_idx, m_idx) * xp.real(packed) * nf / xp.sqrt(2.0)
+    m_idx = xp.arange(1, nf)[None, :]
+    ylm = cnm(backend, n_idx, m_idx) * w[:, 1:nf] * nf / xp.sqrt(2.0)
     spectrum_blocks = backend.fft.fft(ylm, axis=0)
 
     x_recon = xp.zeros(n_total, dtype=xp.complex128)
@@ -278,10 +274,10 @@ def inverse_wdm(coeffs: Any, *, a: float, d: float, dt: float, backend: Backend)
     x_recon[0] += xp.sum(coeffs_dc) * nf * window[0] / 2.0
 
     # --- Interior sub-bands: place each windowed block at its offset ---
-    # spectrum_blocks[:, m] · Φ is split into [upper, lower] halves and
+    # spectrum_blocks[:, m-1] · Φ is split into [upper, lower] halves and
     # written to indices [(m-1)·half, (m+1)·half).
     for m in range(1, nf):
-        block = spectrum_blocks[:, m] * window
+        block = spectrum_blocks[:, m - 1] * window
         x_recon[(m - 1) * half:(m + 1) * half] += xp.concatenate([block[half:], block[:half]])
 
     # --- Nyquist edge: direct DFT synthesis near N/2 ---
@@ -322,17 +318,17 @@ def frequency_wdm(
 
     and contracts them with the coefficient matrix via ``einsum``:
 
-        X[k] = Σ_n W_dc[n] · g0[n,k]
-             + Σ_n W_nyq[n] · gN[n,k]
-             + Σ_{n,m} W_mid[n,m] · gmid[n,m,k]
+        X[k] = Σ_n W[n,0] · g0[n,k]
+             + Σ_n W[n,nf] · gN[n,k]
+             + Σ_{n,m} W[n,m] · gmid[n,m,k]
 
     This is O(nt · nf · N) in memory but avoids Python loops over
     (n, m) pairs, giving a large speed-up for moderate problem sizes.
 
     Parameters
     ----------
-    coeffs : array, shape (nt, nf), complex128
-        Packed WDM coefficients.
+    coeffs : array, shape (nt, nf + 1), float64
+        Real-valued WDM coefficients.
     dt : float
         Sampling interval of the original signal.
     a, d : float
@@ -346,11 +342,12 @@ def frequency_wdm(
         Reconstructed frequency-domain signal, with ``df = 1 / (N · dt)``.
     """
     xp = backend.xp
-    packed = backend.asarray(coeffs, dtype=xp.complex128)
-    if packed.ndim != 2:
+    w = backend.asarray(coeffs, dtype=xp.float64)
+    if w.ndim != 2:
         raise ValueError("WDM coefficients must be a two-dimensional array.")
 
-    nt, nf = (int(dim) for dim in packed.shape)
+    nt, ncols = (int(dim) for dim in w.shape)
+    nf = ncols - 1
     validate_transform_shape(nt, nf)
     validate_window_parameter(a)
 
@@ -368,9 +365,9 @@ def frequency_wdm(
 
     # Contract: sum over time-shift index n (and channel index m for interior)
     reconstructed = (
-        xp.einsum("n,nk->k", xp.real(packed[:, 0]), g0_tab)
-        + xp.einsum("n,nk->k", xp.imag(packed[:, 0]), gN_tab)
-        + xp.einsum("nm,nmk->k", xp.real(packed[:, 1:]), gmid_tab)
+        xp.einsum("n,nk->k", w[:, 0], g0_tab)
+        + xp.einsum("n,nk->k", w[:, nf], gN_tab)
+        + xp.einsum("nm,nmk->k", w[:, 1:nf], gmid_tab)
     )
 
     return FrequencySeries(

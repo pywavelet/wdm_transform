@@ -11,6 +11,7 @@ Typical operations:
 - inspect `times`
 - transform to `FrequencySeries`
 - transform to `WDM`
+- call `plot()`
 
 ## `FrequencySeries`
 
@@ -20,6 +21,8 @@ Typical operations:
 
 - inspect `freqs`
 - convert back to `TimeSeries`
+- transform to `WDM`
+- call `plot()`
 
 ## `WDM`
 
@@ -33,8 +36,11 @@ Typical operations:
 Typical operations:
 
 - `WDM.from_time_series(...)`
+- `TimeSeries.to_wdm(...)`
+- `FrequencySeries.to_wdm(...)`
 - `to_time_series()`
 - `to_frequency_series()`
+- `plot()`
 
 ## Backend model
 

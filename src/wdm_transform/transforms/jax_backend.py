@@ -12,13 +12,13 @@ The mathematical algorithm is identical to the NumPy/CuPy backend — see
 ``xp_backend.py`` for the detailed derivation.  Below we note only the
 JAX-specific implementation choices.
 
-Packing convention
+Coefficient layout
 ------------------
-Same as ``xp_backend``:
+Same as ``xp_backend``: shape ``(nt, nf + 1)`` with all-real entries.
 
-* ``W[:, 0].real``  — DC edge channel   (m = 0)
-* ``W[:, 0].imag``  — Nyquist edge channel (m = nf)
-* ``W[:, 1:]``      — interior channels  (m = 1 … nf−1), real-valued
+* ``W[:, 0]``       — DC edge channel     (m = 0)
+* ``W[:, 1:nf]``    — interior channels   (m = 1 … nf−1)
+* ``W[:, nf]``      — Nyquist edge channel (m = nf)
 """
 
 from __future__ import annotations
@@ -84,9 +84,7 @@ def _forward_wdm_impl(
     2. Batch-multiply by the phi-window and batch-IFFT.
     3. Apply the phase correction C_{n,m} via a vectorised outer product.
 
-    This avoids Python-level loops entirely, which is critical for
-    JAX where loop unrolling at trace time would produce enormous
-    XLA programs.
+    Returns shape ``(nt, nf + 1)`` with all-real coefficients.
 
     Parameters
     ----------
@@ -115,8 +113,6 @@ def _forward_wdm_impl(
     ) / (nt * nf)
 
     # --- Interior channels (m = 1…nf−1), fully vectorised ---
-    # For each m, the spectral block is X[m·half : (m+1)·half] ∪ X[(m-1)·half : m·half].
-    # We gather all blocks via advanced indexing.
     mid_m = jnp.arange(1, nf)
     upper = mid_m[:, None] * half + jnp.arange(half)[None, :]   # shape (nf-1, half)
     lower = (mid_m[:, None] - 1) * half + jnp.arange(half)[None, :]
@@ -137,14 +133,17 @@ def _forward_wdm_impl(
         + x_fft[n_total // 2] * window[0] / 2.0
     ) / (nt * nf)
 
-    # Pack: column 0 = DC (real) + Nyquist (imag)
-    first_column = (coeffs_dc + 1j * coeffs_nyq)[:, None]
-    return jnp.concatenate([first_column, coeffs_mid], axis=1)
+    # Assemble (nt, nf+1): [DC | interior | Nyquist]
+    return jnp.concatenate([
+        coeffs_dc[:, None],
+        coeffs_mid,
+        coeffs_nyq[:, None],
+    ], axis=1)
 
 
 @partial(jit, static_argnames=("nt", "nf"))
 def _inverse_wdm_impl(
-    packed: jnp.ndarray,
+    w: jnp.ndarray,
     window: jnp.ndarray,
     nt: int,
     nf: int,
@@ -162,8 +161,8 @@ def _inverse_wdm_impl(
 
     Parameters
     ----------
-    packed : jnp.ndarray, shape (nt, nf)
-        Packed WDM coefficients.
+    w : jnp.ndarray, shape (nt, nf + 1)
+        Real-valued WDM coefficients.
     window : jnp.ndarray, shape (nt,)
         Precomputed phi-window.
     nt, nf : int
@@ -171,16 +170,16 @@ def _inverse_wdm_impl(
     """
     n_total = nt * nf
     half = nt // 2
-    coeffs_dc = jnp.real(packed[:, 0])
-    coeffs_nyq = jnp.imag(packed[:, 0])
+    coeffs_dc = w[:, 0]
+    coeffs_nyq = w[:, nf]
 
     # Modulate and FFT along the time axis: y[n,m] = C_{n,m} · W[n,m] · nf/√2
     n_idx = jnp.arange(nt)[:, None]
-    m_idx = jnp.arange(nf)[None, :]
-    ylm = _cnm_jax(n_idx, m_idx) * jnp.real(packed) * nf / jnp.sqrt(2.0)
+    m_idx = jnp.arange(1, nf)[None, :]
+    ylm = _cnm_jax(n_idx, m_idx) * w[:, 1:nf] * nf / jnp.sqrt(2.0)
     spectrum_blocks = jnp.fft.fft(ylm, axis=0)
 
-    x_recon = jnp.zeros(n_total, dtype=packed.dtype)
+    x_recon = jnp.zeros(n_total, dtype=jnp.complex128)
     narr = jnp.arange(nt)
 
     # --- DC edge ---
@@ -197,14 +196,11 @@ def _inverse_wdm_impl(
     x_recon = x_recon.at[0].add(jnp.sum(coeffs_dc) * nf * window[0] / 2.0)
 
     # --- Interior channels: vectorised scatter-add ---
-    # spectrum_blocks[:, 1:] has shape (nt, nf-1); transpose to (nf-1, nt),
-    # multiply by the window, swap halves, then scatter into X(f).
-    mid_blocks = spectrum_blocks[:, 1:].T * window[None, :]
+    mid_blocks = spectrum_blocks.T * window[None, :]
     shifted_blocks = jnp.concatenate(
         [mid_blocks[:, half:], mid_blocks[:, :half]],
         axis=1,
     )
-    # Target indices: channel m occupies [(m-1)·half, (m+1)·half)
     mid_indices = (
         (jnp.arange(1, nf)[:, None] - 1) * half + jnp.arange(nt)[None, :]
     ).reshape(-1)
@@ -228,7 +224,7 @@ def _inverse_wdm_impl(
 
 @partial(jit, static_argnames=("nt", "nf"))
 def _frequency_wdm_impl(
-    packed: jnp.ndarray,
+    w: jnp.ndarray,
     dt: float,
     a: float,
     nt: int,
@@ -245,8 +241,8 @@ def _frequency_wdm_impl(
 
     Parameters
     ----------
-    packed : jnp.ndarray, shape (nt, nf)
-        Packed WDM coefficients.
+    w : jnp.ndarray, shape (nt, nf + 1)
+        Real-valued WDM coefficients.
     dt : float
         Sampling interval.
     a : float
@@ -259,39 +255,28 @@ def _frequency_wdm_impl(
     dt_block = nf * dt
     scaled_freqs = freqs * (2.0 * dt_block)  # f / DF where DF = 1/(2·DT)
 
-    coeffs_dc = jnp.real(packed[:, 0])
-    coeffs_nyq = jnp.imag(packed[:, 0])
     n_idx = jnp.arange(nt)
 
     # --- DC channel: g_{n,0}(f) = exp(-4πi·n·f·DT) · Φ(f/DF) ---
     phase_dc = jnp.exp(-4j * jnp.pi * n_idx[:, None] * freqs[None, :] * dt_block)
     phi_dc = _phi_unit_jax(scaled_freqs, a)
-    reconstructed = jnp.einsum("n,nk->k", coeffs_dc, phase_dc) * phi_dc
+    reconstructed = jnp.einsum("n,nk->k", w[:, 0], phase_dc) * phi_dc
 
     # --- Nyquist channel: g_{n,nf}(f) = [Φ(f/DF+nf) + Φ(f/DF-nf)] · exp(-4πi·n·f·DT) ---
     phi_nyq = _phi_unit_jax(scaled_freqs + nf, a) + _phi_unit_jax(scaled_freqs - nf, a)
-    reconstructed += jnp.einsum("n,nk->k", coeffs_nyq, phase_dc) * phi_nyq
+    reconstructed += jnp.einsum("n,nk->k", w[:, nf], phase_dc) * phi_nyq
 
     # --- Interior channels (m = 1…nf−1), fully vectorised ---
-    # Build basis atoms for all (n, m) pairs at once.
-    mid_m = jnp.arange(1, nf)                             # (nf-1,)
-    mid_coeffs = jnp.real(packed[:, 1:])                   # (nt, nf-1)
+    mid_m = jnp.arange(1, nf)
+    mid_coeffs = w[:, 1:nf]
 
-    # Phase: exp(-2πi·n·f·DT), shape (nt, N)
     phase_mid = jnp.exp(-2j * jnp.pi * n_idx[:, None] * freqs[None, :] * dt_block)
-
-    # Parity: (-1)^{n·m}, shape (nt, nf-1)
     parity = jnp.where((n_idx[:, None] * mid_m[None, :]) % 2 == 0, 1.0, -1.0)
-
-    # C_{n,m} phase factors, shape (nt, nf-1)
     cnm_vals = _cnm_jax(n_idx[:, None], mid_m[None, :])
 
-    # Phi windows shifted by ±m, shape (nf-1, N)
     phi_plus = _phi_unit_jax(scaled_freqs[None, :] + mid_m[:, None], a)
     phi_minus = _phi_unit_jax(scaled_freqs[None, :] - mid_m[:, None], a)
 
-    # Atom basis: shape (nt, nf-1, N)
-    # g_{n,m}(f) = (-1)^{nm}/√2 · [conj(C)·Φ(+m) + C·Φ(-m)] · exp(-2πi·n·f·DT)
     basis = (
         parity[:, :, None]
         * (
@@ -302,7 +287,6 @@ def _frequency_wdm_impl(
         / jnp.sqrt(2.0)
     )
 
-    # Contract: Σ_{n,m} W[n,m] · g_{n,m}(f)
     reconstructed += jnp.einsum("nm,nmk->k", mid_coeffs, basis)
 
     return reconstructed * jnp.sqrt(2.0 * nf)
@@ -328,6 +312,8 @@ def forward_wdm(
     See ``xp_backend.forward_wdm`` for the full mathematical description.
     This entry point validates inputs, builds the phi-window on the host,
     converts it to a JAX array, and dispatches to the JIT-compiled kernel.
+
+    Returns shape ``(nt, nf + 1)`` with all-real coefficients.
     """
     xp = backend.xp
     validate_transform_shape(nt, nf)
@@ -348,18 +334,20 @@ def inverse_wdm(coeffs: Any, *, a: float, d: float, dt: float, backend: Backend)
     """Inverse WDM transform (JAX backend).
 
     See ``xp_backend.inverse_wdm`` for the full mathematical description.
+    Accepts shape ``(nt, nf + 1)``.
     """
     xp = backend.xp
-    packed = backend.asarray(coeffs, dtype=xp.complex128)
-    if packed.ndim != 2:
+    w = backend.asarray(coeffs, dtype=xp.float64)
+    if w.ndim != 2:
         raise ValueError("WDM coefficients must be a two-dimensional array.")
 
-    nt, nf = (int(dim) for dim in packed.shape)
+    nt, ncols = (int(dim) for dim in w.shape)
+    nf = ncols - 1
     validate_transform_shape(nt, nf)
     validate_window_parameter(a)
 
     window = jnp.asarray(phi_window(backend, nt, nf, dt, a, d), dtype=jnp.complex128)
-    return _inverse_wdm_impl(packed, window, nt, nf)
+    return _inverse_wdm_impl(w, window, nt, nf)
 
 
 def frequency_wdm(
@@ -374,18 +362,20 @@ def frequency_wdm(
 
     See ``xp_backend.frequency_wdm`` for the full mathematical description.
     Builds the full (nt, nf−1, N) atom tensor and contracts via ``einsum``.
+    Accepts shape ``(nt, nf + 1)``.
     """
     del d
     xp = backend.xp
-    packed = backend.asarray(coeffs, dtype=xp.complex128)
-    if packed.ndim != 2:
+    w = backend.asarray(coeffs, dtype=xp.float64)
+    if w.ndim != 2:
         raise ValueError("WDM coefficients must be a two-dimensional array.")
 
-    nt, nf = (int(dim) for dim in packed.shape)
+    nt, ncols = (int(dim) for dim in w.shape)
+    nf = ncols - 1
     validate_transform_shape(nt, nf)
     validate_window_parameter(a)
 
-    reconstructed = _frequency_wdm_impl(packed, dt, a, nt, nf)
+    reconstructed = _frequency_wdm_impl(w, dt, a, nt, nf)
     return FrequencySeries(
         reconstructed,
         df=1.0 / (nt * nf * dt),

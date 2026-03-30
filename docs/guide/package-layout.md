@@ -20,7 +20,7 @@ selection.
 - `src/wdm_transform/backends/`
   Holds the backend abstraction and the NumPy backend registration.
 - `src/wdm_transform/plotting.py`
-  Holds small plotting helpers without making plotting part of the core types.
+  Holds the shared plotting helpers used by the datatype `.plot()` convenience methods.
 
 ## Why this layout
 
@@ -29,7 +29,8 @@ This keeps a clean line between:
 - domain objects
 - transform implementation
 - backend-specific array and FFT access
-- optional documentation and plotting utilities
+- plotting implementation shared across the public object methods
+- optional documentation utilities
 
 That separation matters once JAX and CuPy are added, because the public API can stay stable while
 backend-specific execution details move behind the backend interface.

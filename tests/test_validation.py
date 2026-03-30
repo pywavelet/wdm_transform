@@ -10,24 +10,27 @@ from wdm_transform import FrequencySeries, TimeSeries, WDM
 
 class TestWDMValidation:
     def test_odd_nt_raises(self) -> None:
-        data = np.zeros((3, 4), dtype=complex)
+        # shape (3, 5) → nt=3 (odd), nf=4 (5-1)
+        data = np.zeros((3, 5), dtype=float)
         with pytest.raises(ValueError, match="nt and nf must both be even"):
             WDM(coeffs=data, dt=1.0)
 
     def test_odd_nf_raises(self) -> None:
-        data = np.zeros((4, 3), dtype=complex)
+        # shape (4, 4) → nt=4, nf=3 (4-1, odd)
+        data = np.zeros((4, 4), dtype=float)
         with pytest.raises(ValueError, match="nt and nf must both be even"):
             WDM(coeffs=data, dt=1.0)
 
     def test_bad_window_parameter_raises(self) -> None:
-        data = np.zeros((4, 4), dtype=complex)
+        # shape (4, 5) → nt=4, nf=4
+        data = np.zeros((4, 5), dtype=float)
         with pytest.raises(ValueError, match="a must be in"):
             WDM(coeffs=data, dt=1.0, a=0.0)
         with pytest.raises(ValueError, match="a must be in"):
             WDM(coeffs=data, dt=1.0, a=0.5)
 
     def test_negative_dt_raises(self) -> None:
-        data = np.zeros((4, 4), dtype=complex)
+        data = np.zeros((4, 5), dtype=float)
         with pytest.raises(ValueError, match="dt must be positive"):
             WDM(coeffs=data, dt=-1.0)
 
@@ -46,11 +49,31 @@ class TestWDMValidation:
             WDM.from_time_series(series, nt=6)
 
 
+class TestWDMShape:
+    def test_shape_is_nt_nf_plus_one(self) -> None:
+        nt, nf, dt = 32, 32, 1.1
+        n_total = nt * nf
+        signal = np.sin(2.0 * np.pi * np.arange(n_total) * dt * 0.08)
+        series = TimeSeries(signal, dt=dt)
+        w = WDM.from_time_series(series, nt=nt)
+        assert w.coeffs.shape == (nt, nf + 1)
+        assert w.nt == nt
+        assert w.nf == nf
+        assert w.shape == (nt, nf + 1)
+
+    def test_coeffs_are_real(self) -> None:
+        nt, nf, dt = 32, 32, 1.1
+        n_total = nt * nf
+        signal = np.sin(2.0 * np.pi * np.arange(n_total) * dt * 0.08)
+        series = TimeSeries(signal, dt=dt)
+        w = WDM.from_time_series(series, nt=nt)
+        assert w.coeffs.dtype == np.float64
+
+
 class TestWDMRepr:
     def test_repr_is_compact(self) -> None:
-        data = np.zeros((4, 4), dtype=complex)
-        w = WDM(coeffs=data, dt=0.5)
-        r = repr(w)
+        data = np.zeros((4, 5), dtype=float)  # nt=4, nf=4
+        r = repr(WDM(coeffs=data, dt=0.5))
         assert "nt=4" in r
         assert "nf=4" in r
         assert "dt=0.5" in r
@@ -61,12 +84,11 @@ class TestEdgeChannelAccessors:
     def test_dc_and_nyquist_channels(self) -> None:
         nt, nf, dt = 32, 32, 1.1
         n_total = nt * nf
-        times = np.arange(n_total) * dt
-        signal = np.sin(2.0 * np.pi * times * 0.08)
+        signal = np.sin(2.0 * np.pi * np.arange(n_total) * dt * 0.08)
         series = TimeSeries(signal, dt=dt)
         w = WDM.from_time_series(series, nt=nt)
-        np.testing.assert_array_equal(w.dc_channel, np.real(w.coeffs[:, 0]))
-        np.testing.assert_array_equal(w.nyquist_channel, np.imag(w.coeffs[:, 0]))
+        np.testing.assert_array_equal(w.dc_channel, w.coeffs[:, 0])
+        np.testing.assert_array_equal(w.nyquist_channel, w.coeffs[:, nf])
 
 
 class TestFromFrequencySeries:
@@ -85,7 +107,7 @@ class TestFromFrequencySeries:
         w_from_freq = WDM.from_frequency_series(fs, nt=nt)
 
         np.testing.assert_allclose(
-            np.real(w_from_freq.coeffs),
-            np.real(w_from_time.coeffs),
+            w_from_freq.coeffs,
+            w_from_time.coeffs,
             atol=1e-10,
         )

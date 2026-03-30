@@ -1,21 +1,18 @@
 """WDM coefficient container with forward/inverse transform integration.
 
 The WDM (Wilson-Daubechies-Meyer) transform maps a time-domain signal of
-length ``nt * nf`` into a 2-D grid of real-valued coefficients with ``nt``
-time bins and ``nf`` frequency channels.
+length N = nt * nf into a 2-D grid of real-valued coefficients with ``nt``
+time bins and ``nf + 1`` frequency channels (m = 0, 1, …, nf).
 
-Edge-channel packing
---------------------
-The DC (m=0) and Nyquist (m=nf) channels each carry only real information.
-To avoid wasting a full complex column on each, they are packed into a
-single complex column:
+Coefficient layout
+------------------
+The coefficient matrix has shape ``(nt, nf + 1)``:
 
-* ``coeffs[:, 0].real`` — DC channel coefficients
-* ``coeffs[:, 0].imag`` — Nyquist channel coefficients
-* ``coeffs[:, 1:]``     — interior channels (m = 1 … nf−1), real-valued
+* ``coeffs[:, 0]``    — DC channel      (m = 0)
+* ``coeffs[:, 1:nf]`` — interior channels (m = 1 … nf−1)
+* ``coeffs[:, nf]``   — Nyquist channel (m = nf)
 
-Use the :pyattr:`dc_channel` and :pyattr:`nyquist_channel` properties to
-access these without knowing the packing layout.
+All entries are real-valued (float64).
 """
 
 from __future__ import annotations
@@ -31,12 +28,13 @@ from .series import FrequencySeries, TimeSeries
 
 @dataclass(frozen=True)
 class WDM:
-    """Packed WDM coefficients together with transform metadata.
+    """Real-valued WDM coefficients together with transform metadata.
 
     Parameters
     ----------
-    coeffs : array, shape (nt, nf)
-        Packed coefficient matrix (see module docstring for packing details).
+    coeffs : array, shape (nt, nf + 1)
+        Real-valued coefficient matrix.  Column m corresponds to
+        frequency channel m (0 ≤ m ≤ nf).
     dt : float
         Sampling interval of the original time-domain signal.
     a : float
@@ -55,14 +53,15 @@ class WDM:
 
     def __post_init__(self) -> None:
         backend = get_backend(self.backend)
-        coeffs = backend.asarray(self.coeffs, dtype=backend.xp.complex128)
+        coeffs = backend.asarray(self.coeffs, dtype=backend.xp.float64)
 
         if coeffs.ndim != 2:
             raise ValueError("WDM coeffs must be a two-dimensional array.")
         if self.dt <= 0:
             raise ValueError("dt must be positive.")
 
-        nt, nf = (int(dim) for dim in coeffs.shape)
+        nt, ncols = (int(dim) for dim in coeffs.shape)
+        nf = ncols - 1
         validate_transform_shape(nt, nf)
         validate_window_parameter(self.a)
 
@@ -99,7 +98,9 @@ class WDM:
         """
         resolved_backend = get_backend(backend or series.backend)
         if series.n % nt != 0:
-            raise ValueError(f"TimeSeries length {series.n} is not divisible by nt={nt}.")
+            raise ValueError(
+                f"TimeSeries length {series.n} is not divisible by nt={nt}."
+            )
         nf = series.n // nt
         coeffs = forward_wdm(
             series.data,
@@ -150,13 +151,17 @@ class WDM:
 
     @property
     def nf(self) -> int:
-        """Number of WDM frequency channels."""
-        return int(self.coeffs.shape[1])
+        """Number of interior frequency channels.
+
+        The total number of frequency channels is ``nf + 1``
+        (m = 0, 1, …, nf), so ``coeffs.shape[1] == nf + 1``.
+        """
+        return int(self.coeffs.shape[1]) - 1
 
     @property
     def shape(self) -> tuple[int, int]:
-        """(nt, nf) shape of the coefficient matrix."""
-        return (self.nt, self.nf)
+        """(nt, nf + 1) shape of the coefficient matrix."""
+        return (self.nt, self.nf + 1)
 
     @property
     def df(self) -> float:
@@ -165,21 +170,37 @@ class WDM:
 
     @property
     def dc_channel(self) -> Any:
-        """DC edge-channel coefficients (m = 0), real-valued."""
-        xp = self.backend.xp
-        return xp.real(self.coeffs[:, 0])
+        """DC edge-channel coefficients (m = 0)."""
+        return self.coeffs[:, 0]
 
     @property
     def nyquist_channel(self) -> Any:
-        """Nyquist edge-channel coefficients (m = nf), real-valued."""
-        xp = self.backend.xp
-        return xp.imag(self.coeffs[:, 0])
+        """Nyquist edge-channel coefficients (m = nf)."""
+        return self.coeffs[:, self.nf]
 
     def to_time_series(self) -> TimeSeries:
         """Reconstruct the time-domain signal via the inverse WDM transform."""
-        recovered = inverse_wdm(self.coeffs, a=self.a, d=self.d, dt=self.dt, backend=self.backend)
+        recovered = inverse_wdm(
+            self.coeffs,
+            a=self.a,
+            d=self.d,
+            dt=self.dt,
+            backend=self.backend,
+        )
         return TimeSeries(recovered, dt=self.dt, backend=self.backend)
 
     def to_frequency_series(self) -> FrequencySeries:
         """Reconstruct the frequency-domain signal from the Gabor atom expansion."""
-        return frequency_wdm(self.coeffs, dt=self.dt, a=self.a, d=self.d, backend=self.backend)
+        return frequency_wdm(
+            self.coeffs,
+            dt=self.dt,
+            a=self.a,
+            d=self.d,
+            backend=self.backend,
+        )
+
+    def plot(self, **kwargs: Any) -> tuple[Any, Any]:
+        """Plot the WDM coefficient grid using the shared plotting helper."""
+        from ..plotting import plot_wdm_grid
+
+        return plot_wdm_grid(self, **kwargs)
