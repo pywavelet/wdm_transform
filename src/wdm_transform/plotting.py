@@ -23,8 +23,8 @@ def _require_scipy() -> tuple[Any, Any]:
         from scipy.signal import spectrogram
     except ImportError as exc:
         raise ImportError(
-            "This plotting function requires scipy. Install the plotting extra with "
-            "`uv sync --extra plotting`."
+            "This plotting function requires scipy. Reinstall project dependencies "
+            "to ensure scipy is available."
         ) from exc
     return spectrogram
 

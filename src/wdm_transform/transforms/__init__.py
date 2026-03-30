@@ -1,3 +1,11 @@
+"""Backend-dispatched entry points for the WDM transform.
+
+These thin wrappers resolve the active backend (NumPy, JAX, or CuPy),
+lazily import the corresponding transform module, and forward all
+arguments.  Users should call these functions (or the higher-level
+``WDM`` methods) rather than importing a specific backend module.
+"""
+
 from __future__ import annotations
 
 from importlib import import_module

@@ -10,6 +10,8 @@ readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "numpy>=1.26",
+    "matplotlib>=3.8",
+    "scipy>=1.13",
 ]
 
 [project.optional-dependencies]
@@ -29,12 +31,6 @@ docs = [
     "mkdocs-jupyter>=0.25",
     "mkdocs-material>=9.6",
     "mkdocstrings[python]>=0.30",
-    "matplotlib>=3.8",
-    "scipy>=1.13",
-]
-plotting = [
-    "matplotlib>=3.8",
-    "scipy>=1.13",
 ]
 
 [tool.setuptools]
