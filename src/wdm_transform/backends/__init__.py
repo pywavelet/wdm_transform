@@ -18,6 +18,7 @@ _BUILTIN_BACKEND_LOADERS = {
 
 
 def register_backend(name: str, xp: Any, fft: Any) -> Backend:
+    """Register a backend by name and return the resulting backend object."""
     backend = Backend(name=name, xp=xp, fft=fft)
     _BACKENDS[name] = backend
     return backend
@@ -37,6 +38,7 @@ def _load_builtin_backend(name: str) -> Backend:
 
 
 def get_backend(backend: str | Backend | None = None) -> Backend:
+    """Resolve a backend object from a name, instance, or environment default."""
     if isinstance(backend, Backend):
         return backend
     if backend is None:
@@ -49,8 +51,12 @@ def get_backend(backend: str | Backend | None = None) -> Backend:
         try:
             return _load_builtin_backend(backend)
         except ValueError:
-            available = ", ".join(sorted(set(_BACKENDS) | set(_BUILTIN_BACKEND_LOADERS)))
-            raise ValueError(f"Unknown backend {backend!r}. Available backends: {available}.") from exc
+            available = ", ".join(
+                sorted(set(_BACKENDS) | set(_BUILTIN_BACKEND_LOADERS))
+            )
+            raise ValueError(
+                f"Unknown backend {backend!r}. Available backends: {available}."
+            ) from exc
 
 
 __all__ = ["Backend", "NUMPY_BACKEND", "get_backend", "register_backend"]

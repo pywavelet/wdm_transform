@@ -41,12 +41,15 @@ plugins:
             - ../src
           options:
             docstring_style: google
+            docstring_section_style: list
+            group_by_category: false
             heading_level: 2
             members_order: source
             separate_signature: true
             show_root_heading: true
             show_root_full_path: false
-            show_source: true
+            show_signature_annotations: true
+            show_source: false
   - mkdocs-jupyter:
       include:
         - "*.py"

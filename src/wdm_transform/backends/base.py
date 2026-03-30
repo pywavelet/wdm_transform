@@ -13,4 +13,5 @@ class Backend:
     fft: Any
 
     def asarray(self, value: Any, dtype: Any | None = None) -> Any:
+        """Convert a value into an array for this backend."""
         return self.xp.asarray(value, dtype=dtype)

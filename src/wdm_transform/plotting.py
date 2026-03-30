@@ -82,6 +82,7 @@ def plot_time_series(
     label: str | None = None,
     **kwargs: Any,
 ) -> tuple[Any, Any]:
+    """Plot a time-domain series against its sample times."""
     plt = _get_pyplot()
     if ax is None:
         fig, axis = plt.subplots()
@@ -103,6 +104,10 @@ def plot_frequency_series(
     positive_only: bool = True,
     **kwargs: Any,
 ) -> tuple[Any, Any]:
+    """Plot a frequency-domain series.
+
+    By default, only non-negative frequencies are shown.
+    """
     plt = _get_pyplot()
     if ax is None:
         fig, axis = plt.subplots()
@@ -132,6 +137,7 @@ def plot_periodogram(
     positive_only: bool = True,
     **kwargs: Any,
 ) -> tuple[Any, Any]:
+    """Plot the squared spectrum magnitude on log-log axes."""
     plt = _get_pyplot()
     if ax is None:
         fig, axis = plt.subplots()
@@ -158,6 +164,7 @@ def plot_spectrogram(
     spec_kwargs: dict[str, Any] | None = None,
     plot_kwargs: dict[str, Any] | None = None,
 ) -> tuple[Any, Any]:
+    """Compute and plot a scipy spectrogram for a time-domain series."""
     spectrogram = _require_scipy()
     plt = _get_pyplot()
     if ax is None:
@@ -199,6 +206,7 @@ def plot_wdm_grid(
     whiten_by: np.ndarray | None = None,
     **kwargs: Any,
 ) -> tuple[Any, Any]:
+    """Render the WDM coefficient grid as an image over time and frequency."""
     plt = _get_pyplot()
     from matplotlib.colors import LogNorm, TwoSlopeNorm
 

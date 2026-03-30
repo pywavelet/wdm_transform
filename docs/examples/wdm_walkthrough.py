@@ -84,7 +84,6 @@ axes[2].set_title("Packed WDM Grid")
 
 fig.tight_layout()
 fig
-plt.close(fig)
 
 # %% [markdown]
 # For comparison, here is a standard spectrogram of the same signal.
@@ -95,7 +94,6 @@ plot_spectrogram(series, ax=ax, spec_kwargs={"nperseg": 64, "noverlap": 48})
 ax.set_title("Reference Spectrogram")
 fig.tight_layout()
 fig
-plt.close(fig)
 
 # %% [markdown]
 # ## Timing snapshot
