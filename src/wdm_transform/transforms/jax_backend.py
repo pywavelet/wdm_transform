@@ -364,6 +364,7 @@ def frequency_wdm(
     Builds the full (nt, nf−1, N) atom tensor and contracts via ``einsum``.
     Accepts shape ``(nt, nf + 1)``.
     """
+    # Assume d=1 for simplicity for now; ask Giorgio if/when this should vary.
     del d
     xp = backend.xp
     w = backend.asarray(coeffs, dtype=xp.float64)

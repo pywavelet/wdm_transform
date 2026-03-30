@@ -5,6 +5,8 @@ from .base import Backend
 
 def load_jax_backend() -> Backend:
     try:
+        import jax
+        jax.config.update("jax_enable_x64", True)
         import jax.numpy as jnp
         import jax.numpy.fft as jfft
     except ImportError as exc:

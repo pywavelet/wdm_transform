@@ -69,6 +69,7 @@ def phi_unit(backend: Backend, f: Any, a: float, d: float) -> Any:
     d : float
         Reserved parameter (unused, kept for API symmetry).
     """
+    # Assume d=1 for simplicity for now; ask Giorgio if/when this should vary.
     del d
     xp = backend.xp
     b = 1.0 - 2.0 * a

@@ -5,7 +5,7 @@ from typing import Any
 
 import numpy as np
 
-from .datatypes import FrequencySeries, TimeSeries, WDM
+from .datatypes import WDM, FrequencySeries, TimeSeries
 
 MIN_S = 60.0
 HOUR_S = 60.0 * MIN_S
@@ -18,7 +18,7 @@ def _get_pyplot() -> Any:
     return plt
 
 
-def _require_scipy() -> tuple[Any, Any]:
+def _require_scipy() -> Any:
     try:
         from scipy.signal import spectrogram
     except ImportError as exc:
@@ -33,16 +33,28 @@ def _to_numpy(array: Any) -> np.ndarray:
     return np.asarray(array)
 
 
-def _fmt_time_axis(t: np.ndarray, axis: Any, *, t0: float | None = None, tmax: float | None = None) -> None:
+def _fmt_time_axis(
+    t: np.ndarray,
+    axis: Any,
+    *,
+    t0: float | None = None,
+    tmax: float | None = None,
+) -> None:
     plt = _get_pyplot()
     if t[-1] > DAY_S:
-        axis.xaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f"{x / DAY_S:.1f}"))
+        axis.xaxis.set_major_formatter(
+            plt.FuncFormatter(lambda x, _: f"{x / DAY_S:.1f}")
+        )
         axis.set_xlabel("Time [days]")
     elif t[-1] > HOUR_S:
-        axis.xaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f"{x / HOUR_S:.1f}"))
+        axis.xaxis.set_major_formatter(
+            plt.FuncFormatter(lambda x, _: f"{x / HOUR_S:.1f}")
+        )
         axis.set_xlabel("Time [hr]")
     elif t[-1] > MIN_S:
-        axis.xaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f"{x / MIN_S:.1f}"))
+        axis.xaxis.set_major_formatter(
+            plt.FuncFormatter(lambda x, _: f"{x / MIN_S:.1f}")
+        )
         axis.set_xlabel("Time [min]")
     else:
         axis.set_xlabel("Time [s]")
@@ -60,12 +72,7 @@ def _wdm_freq_grid(wdm: WDM) -> np.ndarray:
 
 
 def _wdm_unpacked_grid(wdm: WDM) -> np.ndarray:
-    packed = _to_numpy(wdm.coeffs)
-    unpacked = np.zeros((wdm.nt, wdm.nf + 1), dtype=np.complex128)
-    unpacked[:, 0] = np.real(packed[:, 0])
-    unpacked[:, -1] = np.imag(packed[:, 0])
-    unpacked[:, 1:wdm.nf] = np.real(packed[:, 1:])
-    return unpacked
+    return _to_numpy(wdm.coeffs)
 
 
 def plot_time_series(
@@ -207,6 +214,8 @@ def plot_wdm_grid(
         z = z / whiten_by
     if absolute:
         z = np.abs(z)
+    else:
+        z = np.real(z)
 
     if norm is None:
         try:
