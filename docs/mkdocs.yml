@@ -56,6 +56,7 @@ plugins:
         - "*.ipynb"
       ignore:
         - "__pycache__/*"
+        - "examples/generate_benchmark_plot.py"
       execute: true
       include_source: true
       show_input: true
@@ -79,5 +80,6 @@ nav:
   - Guide:
       - Package Layout: guide/package-layout.md
       - API Overview: guide/api-overview.md
+  - Benchmarks: benchmarks.md
   - Examples:
       - WDM Walkthrough: examples/wdm_walkthrough.py

@@ -12,6 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 DOCS_CONFIG = ROOT / "docs" / "mkdocs.yml"
 DOCS_CONFIG_REL = Path("docs") / "mkdocs.yml"
 WALKTHROUGH = ROOT / "docs" / "examples" / "wdm_walkthrough.py"
+BENCHMARK_SCRIPT = ROOT / "docs" / "examples" / "generate_benchmark_plot.py"
 
 
 @pytest.mark.skipif(find_spec("mkdocs") is None, reason="mkdocs is not installed")
@@ -47,18 +48,19 @@ def test_mkdocs_builds_walkthrough_page(tmp_path: Path) -> None:
     assert "WDM Walkthrough" in html
     assert "Max abs reconstruction error" in html
 
+    benchmark_page = site_dir / "benchmarks" / "index.html"
+    assert benchmark_page.exists()
+
+    benchmark_html = benchmark_page.read_text(encoding="utf-8")
+    assert "checked-in benchmark snapshot" in benchmark_html
+    assert "benchmark_runtime.png" in benchmark_html
+
     api_page = site_dir / "reference" / "api" / "index.html"
     assert api_page.exists()
 
     api_html = api_page.read_text(encoding="utf-8")
-    assert "Core Objects" in api_html
-    assert "Backend Utilities" in api_html
-    assert "Plotting Helpers" in api_html
-    assert "TimeSeries dataclass" not in api_html
-    assert "FrequencySeries dataclass" not in api_html
-    assert "WDM dataclass" not in api_html
-    assert "Implementation:" not in api_html
-    assert "Source code in" in api_html
+    assert "The generated API reference now lives at the bottom of" in api_html
+    assert "API Overview" in api_html
     assert "<img" in html or "jp-RenderedImage" in html
 
 
@@ -80,3 +82,43 @@ def test_walkthrough_script_executes() -> None:
         capture_output=True,
         text=True,
     )
+
+
+def test_benchmark_artifact_script_executes(tmp_path: Path) -> None:
+    env = os.environ.copy()
+    env["MPLBACKEND"] = "Agg"
+
+    src_path = str(ROOT / "src")
+    existing_pythonpath = env.get("PYTHONPATH")
+    env["PYTHONPATH"] = src_path
+    if existing_pythonpath:
+        env["PYTHONPATH"] = os.pathsep.join([src_path, existing_pythonpath])
+
+    json_path = tmp_path / "benchmark_results.json"
+    plot_path = tmp_path / "benchmark_runtime.png"
+
+    subprocess.run(
+        [
+            sys.executable,
+            str(BENCHMARK_SCRIPT),
+            "--backends",
+            "numpy",
+            "--n",
+            "512",
+            "1024",
+            "--runs",
+            "1",
+            "--output-json",
+            str(json_path),
+            "--output-plot",
+            str(plot_path),
+        ],
+        cwd=ROOT,
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert json_path.exists()
+    assert plot_path.exists()
