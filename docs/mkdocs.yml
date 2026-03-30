@@ -1,0 +1,82 @@
+site_name: wdm-transform
+site_description: Experimental object-oriented WDM transform package.
+# Fill in the GitHub slug below to enable Material's edit/view repo actions.
+# repo_url: https://github.com/<owner>/<repo>
+repo_name: wdm-transform
+# edit_uri: edit/main/docs/
+docs_dir: .
+site_dir: ../site
+
+theme:
+  name: material
+  palette:
+    scheme: default
+    primary: white
+    accent: blue grey
+  font:
+    text: Inter
+    code: JetBrains Mono
+  features:
+    - navigation.sections
+    - navigation.expand
+    - navigation.top
+    - toc.follow
+    - search.suggest
+    - search.highlight
+    - content.action.edit
+    - content.action.view
+    - content.code.copy
+  icon:
+    repo: fontawesome/brands/github
+
+extra_css:
+  - stylesheets/extra.css
+
+plugins:
+  - search
+  - mkdocstrings:
+      default_handler: python
+      handlers:
+        python:
+          paths:
+            - ../src
+          options:
+            docstring_style: google
+            heading_level: 2
+            members_order: source
+            separate_signature: true
+            show_root_heading: true
+            show_source: false
+  - mkdocs-jupyter:
+      include:
+        - "*.py"
+        - "*.ipynb"
+      ignore:
+        - "__pycache__/*"
+      execute: true
+      include_source: true
+      show_input: true
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - pymdownx.details
+  - pymdownx.arithmatex:
+      generic: true
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.superfences
+  - toc:
+      permalink: true
+
+nav:
+  - Home: index.md
+  - Guide:
+      - Package Layout: guide/package-layout.md
+      - API Overview: guide/api-overview.md
+  - Examples:
+      - WDM Walkthrough: examples/wdm_walkthrough.py
+  - Reference:
+      - API Reference: reference/api.md

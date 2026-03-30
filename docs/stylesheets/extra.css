@@ -1,0 +1,107 @@
+:root {
+  --md-default-bg-color: #ffffff;
+  --md-default-fg-color: #1f2937;
+  --md-default-fg-color--light: #4b5563;
+  --md-default-fg-color--lighter: #6b7280;
+  --md-primary-fg-color: #ffffff;
+  --md-primary-fg-color--light: #ffffff;
+  --md-primary-fg-color--dark: #f8fafc;
+  --md-accent-fg-color: #475569;
+  --md-typeset-a-color: #334155;
+  --md-typeset-table-color: #e5e7eb;
+  --md-typeset-kbd-color: #f8fafc;
+  --md-code-bg-color: #f8fafc;
+  --md-code-fg-color: #1f2937;
+}
+
+.md-grid {
+  max-width: 1320px;
+}
+
+.md-header {
+  box-shadow: none;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+.md-sidebar__inner {
+  padding-top: 0.4rem;
+}
+
+.md-nav__link {
+  font-weight: 400;
+}
+
+.md-content__inner {
+  margin-top: 0.4rem;
+}
+
+.md-typeset h1 {
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  margin-bottom: 1rem;
+}
+
+.md-typeset h2,
+.md-typeset h3 {
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.md-typeset pre > code {
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+}
+
+.md-typeset code {
+  border-radius: 6px;
+  padding: 0.15em 0.35em;
+}
+
+.md-typeset table:not([class]) {
+  border: 1px solid #e5e7eb;
+}
+
+.md-typeset blockquote {
+  color: #4b5563;
+  border-left: 3px solid #d1d5db;
+}
+
+.jupyter-wrapper .jp-Cell,
+.jupyter-wrapper .jp-RenderedHTMLCommon,
+.jupyter-wrapper .jp-OutputArea-child {
+  background: transparent;
+}
+
+.jupyter-wrapper .jp-Cell {
+  margin: 1.25rem 0;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.jupyter-wrapper .jp-Cell-inputWrapper,
+.jupyter-wrapper .jp-OutputArea-child {
+  padding: 0.9rem 1rem;
+}
+
+.jupyter-wrapper .jp-InputPrompt,
+.jupyter-wrapper .jp-OutputPrompt {
+  color: #94a3b8;
+}
+
+.jupyter-wrapper .jp-RenderedImage,
+.jupyter-wrapper .jp-OutputArea img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 0 auto;
+  border-radius: 10px;
+}
+
+.jupyter-wrapper .jp-RenderedHTMLCommon pre,
+.jupyter-wrapper .jp-CodeCell .highlight pre {
+  margin: 0;
+  border: 0;
+  border-radius: 10px;
+  background: #f8fafc;
+}

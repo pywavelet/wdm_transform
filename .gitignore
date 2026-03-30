@@ -1,0 +1,42 @@
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+
+# Build and packaging artifacts
+build/
+dist/
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+
+# Test, lint, and type-check caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Coverage outputs
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# Documentation build output
+site/
+
+# Notebook checkpoints
+.ipynb_checkpoints/
+
+# Local/editor/OS artifacts
+.cache/
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+
+test_out/

@@ -1,0 +1,103 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "wdm-transform"
+version = "0.1.0"
+description = "Object-oriented WDM transform experiments with a NumPy-first backend."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.26",
+]
+
+[project.optional-dependencies]
+jax = [
+    "jax[cpu]>=0.4.30",
+]
+dev = [
+    "black>=24.8",
+    "commitizen>=3.29",
+    "pre-commit>=3.7",
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+    "ruff>=0.6",
+]
+docs = [
+    "mkdocs>=1.6",
+    "mkdocs-jupyter>=0.25",
+    "mkdocs-material>=9.6",
+    "mkdocstrings[python]>=0.30",
+    "matplotlib>=3.8",
+    "scipy>=1.13",
+]
+plotting = [
+    "matplotlib>=3.8",
+    "scipy>=1.13",
+]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = [
+    "--cov=wdm_transform",
+    "--cov-report=term-missing",
+    "--cov-report=xml",
+]
+
+[tool.coverage.run]
+branch = true
+source = ["wdm_transform"]
+relative_files = true
+omit = ["*/benchmarking.py"]
+
+[tool.coverage.report]
+show_missing = true
+skip_empty = true
+exclude_lines = [
+    "pragma: no cover",
+]
+
+[tool.black]
+line-length = 88
+target-version = ["py310"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B"]
+
+[tool.commitizen]
+name = "cz_customize"
+version = "0.1.0"
+version_files = ["pyproject.toml:version"]
+tag_format = "v$version"
+update_changelog_on_bump = true
+
+[tool.commitizen.customize]
+schema = "<type>: <message>"
+schema_pattern = "^(feat|add|fix):\\s.+"
+example = "feat: add inverse transform helper"
+commit_parser = "^(?P<change_type>feat|add|fix):\\s(?P<message>.*)$"
+changelog_pattern = "^(feat|add|fix):"
+bump_pattern = "^(feat|add|fix)"
+change_type_order = ["feat", "add", "fix"]
+info = """
+Use one of:
+- feat: new user-facing feature (minor bump)
+- add: additive improvement (minor bump)
+- fix: bug fix (patch bump)
+"""
+
+[tool.commitizen.customize.bump_map]
+feat = "MINOR"
+add = "MINOR"
+fix = "PATCH"
