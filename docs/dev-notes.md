@@ -1,23 +1,56 @@
 # Releasing and Dev Notes
 
-This repository is already wired to publish to PyPI from GitHub Actions.
+This repository is wired to publish to PyPI from GitHub Actions.
 
-The publish workflow lives in `.github/workflows/pypi.yml` and runs when a GitHub Release is
-published. It builds the source distribution and wheel, checks the metadata with `twine`, and then
-publishes to PyPI using GitHub trusted publishing.
+The publish workflow lives in `.github/workflows/pypi.yml` and runs when a version tag such as
+`v0.1.0` is pushed. It builds the source distribution and wheel, checks the metadata with `twine`,
+and then publishes to PyPI using GitHub trusted publishing.
 
 ## Current release flow
 
-The package version is currently set manually in `pyproject.toml`.
+The package version is derived from Git tags via `setuptools-scm`.
 
 Before cutting a release:
 
-1. Update `project.version` in `pyproject.toml`.
-2. Keep the `tool.commitizen.version` value in sync.
-3. Run the local verification steps below.
-4. Commit and push the release changes.
-5. Create and publish a GitHub Release with a matching tag such as `v0.1.0`.
+1. Make sure the release commit is already on `main`.
+2. Run the local verification steps below.
+3. Ask Commitizen what the next version should be.
+4. Let Commitizen create the release tag.
+5. Push `main` and the new tag to GitHub.
 6. Watch the `pypi` workflow in GitHub Actions and confirm the publish succeeds.
+7. Optionally create a GitHub Release that points at the same tag.
+
+## Choosing the next version
+
+Do not pick the next tag from memory. Use Commitizen:
+
+```bash
+cz bump --dry-run
+```
+
+That shows the current version and the next version Commitizen would create from the commits since
+the last tag.
+
+Then create the real release tag with:
+
+```bash
+cz bump
+git push origin main --follow-tags
+```
+
+With the current commit rules:
+
+- `fix:` creates a patch bump such as `0.1.0` -> `0.1.1`
+- `feat:` creates a minor bump such as `0.1.0` -> `0.2.0`
+- `add:` creates a minor bump such as `0.1.0` -> `0.2.0`
+
+If you are doing a fix update right now, the expected path is:
+
+```bash
+cz bump --dry-run
+cz bump
+git push origin main --follow-tags
+```
 
 ## Local verification
 
@@ -58,14 +91,14 @@ Keep these constraints in mind:
 
 ## Optional future change: SCM-based versioning
 
-If this project switches to `setuptools-scm` later, the release process should change slightly:
+This project now uses `setuptools-scm`, so:
 
 - remove the manual `project.version` field
 - derive the package version from Git tags
 - publish only from version tags such as `v0.1.0`
 
-If that change is made, update this file and the `Commitizen` configuration so there is only one
-source of truth for the package version.
+`Commitizen` is configured to read the version from SCM as well, so Git tags are the single source
+of truth.
 
 ## Developer notes
 

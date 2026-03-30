@@ -1,0 +1,5 @@
+prune .github
+prune docs
+prune site
+exclude .gitignore
+exclude uv.lock

@@ -1,10 +1,10 @@
 [build-system]
-requires = ["setuptools>=69", "wheel"]
+requires = ["setuptools>=80", "setuptools-scm>=8", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "wdm-transform"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Object-oriented WDM transforms for sampled one-dimensional signals."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -57,6 +57,10 @@ package-dir = {"" = "src"}
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools_scm]
+local_scheme = "no-local-version"
+tag_regex = "^v(?P<version>.+)$"
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = [
@@ -91,9 +95,9 @@ select = ["E", "F", "I", "B"]
 
 [tool.commitizen]
 name = "cz_customize"
-version = "0.1.0"
-version_files = ["pyproject.toml:version"]
+version_provider = "scm"
 tag_format = "v$version"
+version_scheme = "pep440"
 update_changelog_on_bump = true
 
 [tool.commitizen.customize]

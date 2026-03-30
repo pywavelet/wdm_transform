@@ -81,5 +81,3 @@ nav:
       - API Overview: guide/api-overview.md
   - Examples:
       - WDM Walkthrough: examples/wdm_walkthrough.py
-  - Reference:
-      - API Reference: reference/api.md

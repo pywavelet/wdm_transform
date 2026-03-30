@@ -15,4 +15,4 @@ frequency-domain data, and WDM coefficients.
 
 - Read the API overview for the object model.
 - Open the WDM walkthrough for an executed example with plots.
-- Use the API reference for signatures and docstrings pulled from the implementation.
+- Use the API overview for the conceptual guide plus live signatures and docstrings pulled from the implementation.
