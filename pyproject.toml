@@ -8,11 +8,28 @@ version = "0.1.0"
 description = "Object-oriented WDM transforms for sampled one-dimensional signals."
 readme = "README.md"
 requires-python = ">=3.10"
+keywords = ["wdm", "wavelets", "signal-processing", "time-series"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering",
+    "Topic :: Scientific/Engineering :: Mathematics",
+]
 dependencies = [
     "numpy>=1.26",
     "matplotlib>=3.8",
     "scipy>=1.13",
 ]
+
+[project.urls]
+Homepage = "https://github.com/pywavelet/wdm_transform"
+Repository = "https://github.com/pywavelet/wdm_transform"
+Issues = "https://github.com/pywavelet/wdm_transform/issues"
 
 [project.optional-dependencies]
 jax = [

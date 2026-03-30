@@ -8,48 +8,39 @@ dumps.
 
 ### `TimeSeries`
 
-Public import: `from wdm_transform import TimeSeries`  
-Implementation: [src/wdm_transform/datatypes/series.py](https://github.com/pywavelet/wdm_transform/blob/main/src/wdm_transform/datatypes/series.py)
+Public import: `from wdm_transform import TimeSeries`
 
 ::: wdm_transform.datatypes.series.TimeSeries
     options:
       show_root_heading: false
       show_root_toc_entry: false
-      show_source: false
 
 ### `FrequencySeries`
 
-Public import: `from wdm_transform import FrequencySeries`  
-Implementation: [src/wdm_transform/datatypes/series.py](https://github.com/pywavelet/wdm_transform/blob/main/src/wdm_transform/datatypes/series.py)
+Public import: `from wdm_transform import FrequencySeries`
 
 ::: wdm_transform.datatypes.series.FrequencySeries
     options:
       show_root_heading: false
       show_root_toc_entry: false
-      show_source: false
 
 ### `WDM`
 
-Public import: `from wdm_transform import WDM`  
-Implementation: [src/wdm_transform/datatypes/wdm.py](https://github.com/pywavelet/wdm_transform/blob/main/src/wdm_transform/datatypes/wdm.py)
+Public import: `from wdm_transform import WDM`
 
 ::: wdm_transform.datatypes.wdm.WDM
     options:
       show_root_heading: false
       show_root_toc_entry: false
-      show_source: false
 
 ## Backend Utilities
 
 ### `Backend`
 
-Implementation: [src/wdm_transform/backends/base.py](https://github.com/pywavelet/wdm_transform/blob/main/src/wdm_transform/backends/base.py)
-
 ::: wdm_transform.backends.base.Backend
     options:
       show_root_heading: false
       show_root_toc_entry: false
-      show_source: false
 
 ### `get_backend`
 
@@ -57,7 +48,6 @@ Implementation: [src/wdm_transform/backends/base.py](https://github.com/pywavele
     options:
       show_root_heading: false
       show_root_toc_entry: false
-      show_source: false
 
 ### `register_backend`
 
@@ -65,7 +55,6 @@ Implementation: [src/wdm_transform/backends/base.py](https://github.com/pywavele
     options:
       show_root_heading: false
       show_root_toc_entry: false
-      show_source: false
 
 ## Plotting Helpers
 
@@ -77,7 +66,6 @@ These helpers power the datatype `.plot()` methods and remain available as stand
     options:
       show_root_heading: false
       show_root_toc_entry: false
-      show_source: false
 
 ### `plot_frequency_series`
 
@@ -85,7 +73,6 @@ These helpers power the datatype `.plot()` methods and remain available as stand
     options:
       show_root_heading: false
       show_root_toc_entry: false
-      show_source: false
 
 ### `plot_periodogram`
 
@@ -93,7 +80,6 @@ These helpers power the datatype `.plot()` methods and remain available as stand
     options:
       show_root_heading: false
       show_root_toc_entry: false
-      show_source: false
 
 ### `plot_spectrogram`
 
@@ -101,7 +87,6 @@ These helpers power the datatype `.plot()` methods and remain available as stand
     options:
       show_root_heading: false
       show_root_toc_entry: false
-      show_source: false
 
 ### `plot_wdm_grid`
 
@@ -109,4 +94,3 @@ These helpers power the datatype `.plot()` methods and remain available as stand
     options:
       show_root_heading: false
       show_root_toc_entry: false
-      show_source: false

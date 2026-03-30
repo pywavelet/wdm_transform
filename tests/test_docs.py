@@ -57,7 +57,8 @@ def test_mkdocs_builds_walkthrough_page(tmp_path: Path) -> None:
     assert "TimeSeries dataclass" not in api_html
     assert "FrequencySeries dataclass" not in api_html
     assert "WDM dataclass" not in api_html
-    assert "Source code in" not in api_html
+    assert "Implementation:" not in api_html
+    assert "Source code in" in api_html
     assert "<img" in html or "jp-RenderedImage" in html
 
 

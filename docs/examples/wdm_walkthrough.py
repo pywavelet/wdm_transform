@@ -10,9 +10,7 @@
 # %% [markdown]
 # # WDM Walkthrough
 #
-# This page is executed during the docs build through `mkdocs-jupyter`.
-#
-# It mirrors the first package milestone and renders live outputs:
+# This notebook provides a quick walkthrough of the WDM transform API. It demonstrates how to
 #
 # - create a `TimeSeries`
 # - transform it into packed `WDM` coefficients
@@ -28,12 +26,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from wdm_transform import TimeSeries, WDM
-from wdm_transform.plotting import (
-    plot_frequency_series,
-    plot_spectrogram,
-    plot_time_series,
-    plot_wdm_grid,
-)
+from wdm_transform.plotting import plot_spectrogram
 
 
 nt = 32
@@ -42,11 +35,7 @@ dt = 0.1
 n_total = nt * nf
 times = np.arange(n_total) * dt
 
-signal = (
-    np.sin(2.0 * np.pi * times * 0.08)
-    + 0.6 * np.exp(-((times - times.max() / 2.0) ** 2) / (times.max() / 6.0) ** 2)
-    * np.cos(2.0 * np.pi * times * (0.05 + 0.04 * times / times.max()))
-)
+signal = np.sin(2 * np.pi * times * 0.08) + 0.6 * np.exp(-((times - times.max() / 2.0) ** 2) / (times.max() / 6.0) ** 2) * np.cos(2 * np.pi * times * (0.05 + 0.04 * times / times.max()))
 
 series = TimeSeries(signal, dt=dt)
 coeffs = WDM.from_time_series(series, nt=nt)
@@ -73,13 +62,13 @@ print(f"Max abs FFT reconstruction error: {fft_error:.3e}")
 
 # %%
 fig, axes = plt.subplots(3, 1, figsize=(10, 10))
-plot_time_series(series, ax=axes[0], color="tab:blue")
+series.plot(ax=axes[0], color="tab:blue")
 axes[0].set_title("Input Time Series")
 
-plot_frequency_series(original_fft, ax=axes[1], color="tab:red")
+series.to_frequency_series().plot(ax=axes[1], color="tab:red")
 axes[1].set_title("FFT Magnitude")
 
-plot_wdm_grid(coeffs, ax=axes[2], cmap="magma")
+coeffs.plot(ax=axes[2])
 axes[2].set_title("Packed WDM Grid")
 
 fig.tight_layout()
