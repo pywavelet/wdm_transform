@@ -1,16 +1,28 @@
 # wdm-transform
 
-Initial package scaffold for experimenting with a roll-based WDM transform derived from an
-exploratory reference notebook.
+`wdm-transform` provides an object-oriented interface for WDM transforms on sampled
+one-dimensional signals.
 
-The package currently provides three core objects:
+The package centers on three core objects:
 
 - `TimeSeries` for 1D sampled time-domain data.
 - `FrequencySeries` for raw FFT-domain data with spacing metadata.
 - `WDM` for packed WDM coefficients plus forward and inverse transforms.
 
-The implementation is NumPy-only for now, but the public API routes array operations through a
-backend registry so JAX and CuPy backends can be added later without reworking the object model.
+The default implementation is NumPy-based, and the public API routes array operations through a
+backend registry so JAX and CuPy backends can fit into the same object model.
+
+## Installation
+
+```bash
+pip install wdm-transform
+```
+
+Install the optional JAX backend with:
+
+```bash
+pip install "wdm-transform[jax]"
+```
 
 ## Layout
 

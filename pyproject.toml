@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "wdm-transform"
 version = "0.1.0"
-description = "Object-oriented WDM transform experiments with a NumPy-first backend."
+description = "Object-oriented WDM transforms for sampled one-dimensional signals."
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
