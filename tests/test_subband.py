@@ -5,12 +5,14 @@ import pytest
 import time
 
 from wdm_transform import TimeSeries, WDM
+from wdm_transform.backends import get_backend
 from wdm_transform.transforms import (
     fourier_span_from_wdm_span,
     forward_wdm_subband,
     inverse_wdm_subband,
     wdm_span_from_fourier_span,
 )
+from wdm_transform.windows import cnm, phi_unit
 
 
 NT = 32
@@ -19,6 +21,7 @@ N_TOTAL = NT * NF
 NFOURIER = N_TOTAL // 2 + 1
 DT = 0.125
 DF = 1.0 / (N_TOTAL * DT)
+NUMPY_BACKEND = get_backend("numpy")
 
 
 def _generate_sinusoid(
@@ -43,33 +46,22 @@ def _generate_wd_binary_signal(
     return amplitude * np.cos(phase)
 
 
-def _c_nm_notebook(n: np.ndarray, m: int) -> np.ndarray:
-    return np.exp((1j * np.pi / 4.0) * (1.0 - (-1) ** (n + m)))
-
-
-def _phi_unit_notebook(l: np.ndarray, nt: int, a: float = 1.0 / 3.0) -> np.ndarray:
-    b = 1.0 - 2.0 * a
-    lres = 2.0 * l / nt
-    return np.where(
-        np.abs(lres) > a + b,
-        0.0,
-        np.where(
-            np.abs(lres) > a,
-            np.cos((np.pi / 2.0) * (np.abs(lres) - a) / b),
-            1.0,
-        ),
-    ) / np.sqrt(nt / 2.0)
-
-
-def _filter_h_notebook(l0: float, n: np.ndarray, nt: int) -> np.ndarray:
+def _filter_h_analytic(l0: float, n: np.ndarray, nt: int) -> np.ndarray:
     m0 = int(2.0 * abs(l0) / nt)
+    phi_minus = np.asarray(
+        phi_unit(NUMPY_BACKEND, (l0 - m0 * nt / 2.0) * 2.0 / nt, 1.0 / 3.0, 1.0)
+    ) / np.sqrt(nt / 2.0)
+    phi_plus = np.asarray(
+        phi_unit(NUMPY_BACKEND, (l0 + m0 * nt / 2.0) * 2.0 / nt, 1.0 / 3.0, 1.0)
+    ) / np.sqrt(nt / 2.0)
+    cnm_vals = np.asarray(cnm(NUMPY_BACKEND, n, m0))
     return (
-        np.conjugate(_c_nm_notebook(n, m0)) * _phi_unit_notebook(l0 - m0 * nt / 2.0, nt)
-        + _c_nm_notebook(n, m0) * _phi_unit_notebook(l0 + m0 * nt / 2.0, nt)
+        np.conjugate(cnm_vals) * phi_minus
+        + cnm_vals * phi_plus
     ) / np.sqrt(2.0)
 
 
-def _sinusoid_wdm_an_notebook(
+def _sinusoid_wdm_analytic(
     amplitude: float,
     frequency: float,
     phase: float,
@@ -85,9 +77,9 @@ def _sinusoid_wdm_an_notebook(
     m0 = int(2.0 * l0 / nt)
     coeffs[:, m0] = amplitude * ntot / (2j) * (
         np.exp(1j * phase + 2j * np.pi * narr * l0 / nt)
-        * _filter_h_notebook(l0, narr, nt)
+        * _filter_h_analytic(l0, narr, nt)
         - np.exp(-1j * phase - 2j * np.pi * narr * l0 / nt)
-        * _filter_h_notebook(-l0, narr, nt)
+        * _filter_h_analytic(-l0, narr, nt)
     )
     return coeffs
 
@@ -312,7 +304,7 @@ def test_forward_subband_matches_full_wdm_slice_for_sinusoid() -> None:
     )
 
 
-def test_full_wdm_matches_notebook_sinusoid_formula_after_normalization() -> None:
+def test_full_wdm_matches_analytic_sinusoid_formula_after_normalization() -> None:
     k0 = 37
     amplitude = 1.7
     phase = 0.31
@@ -322,7 +314,7 @@ def test_full_wdm_matches_notebook_sinusoid_formula_after_normalization() -> Non
         2.0 * np.pi * frequency * np.arange(N_TOTAL) * DT + phase
     )
     full_wdm = WDM.from_time_series(TimeSeries(signal, dt=DT), nt=NT)
-    analytic = _sinusoid_wdm_an_notebook(
+    analytic = _sinusoid_wdm_analytic(
         amplitude,
         frequency,
         phase,
@@ -331,7 +323,7 @@ def test_full_wdm_matches_notebook_sinusoid_formula_after_normalization() -> Non
         nf=NF,
     )
 
-    # The notebook convention differs by a factor nf from the package normalization.
+    # This analytic convention differs by a factor nf from the package normalization.
     np.testing.assert_allclose(
         np.asarray(full_wdm.coeffs),
         np.real(analytic) / NF,
