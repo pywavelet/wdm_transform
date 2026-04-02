@@ -8,6 +8,8 @@ site_dir: site
 
 theme:
   name: material
+  logo: _static/logo.png
+  favicon: _static/logo.png
   palette:
     scheme: default
     primary: white
@@ -17,7 +19,6 @@ theme:
     code: JetBrains Mono
   features:
     - navigation.sections
-    - navigation.expand
     - navigation.top
     - toc.follow
     - search.suggest
@@ -78,14 +79,17 @@ markdown_extensions:
 
 nav:
   - Home: index.md
-  - Guide:
-      - What Is The WDM Domain?: guide/what-is-wdm.md
+  - Learn:
+      - What Is WDM?: guide/what-is-wdm.md
       - Windows And Atoms: guide/windows-and-atoms.md
       - Reconstruction And Inference: guide/reconstruction-and-inference.md
-      - Package Layout: guide/package-layout.md
-      - API Overview: guide/api-overview.md
-  - Benchmarks: benchmarks.md
-  - Examples:
+  - Tutorial:
       - WDM Walkthrough: examples/wdm_walkthrough.py
-  - Studies:
+  - Case Studies:
       - Sinusoid In Colored Noise: studies/wdm_sinusoid_in_colored_noise.py
+      - Deglitching: studies/wdm_deglitching_with_thresholding.py
+      - Signal With A Gap: studies/wdm_monochromatic_signal_with_gap.py
+  - Reference:
+      - API Overview: guide/api-overview.md
+      - Package Layout: guide/package-layout.md
+      - Benchmarks: benchmarks.md

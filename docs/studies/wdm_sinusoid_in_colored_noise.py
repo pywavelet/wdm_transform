@@ -9,7 +9,9 @@
 # ruff: noqa: B018, E402, I001
 
 # %% [markdown]
-# # WDM Study: Sinusoid in Colored Noise
+# # Sinusoid in Colored Noise
+#
+# [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/pywavelet/wdm_transform/blob/main/docs/studies/wdm_sinusoid_in_colored_noise.py)
 #
 # This study adapts the larger exploratory notebook into a docs-friendly,
 # executable example that uses the `wdm_transform` package wherever possible.
@@ -34,6 +36,26 @@
 # looks in each basis and how closely the inferred sinusoid parameters agree.
 
 # %%
+import subprocess
+import sys
+
+if "google.colab" in sys.modules:
+    subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "-q",
+            "corner>=2.2",
+            "jax[cpu]>=0.4.30",
+            "numpyro>=0.15",
+            "ipywidgets>=8.1",
+            "git+https://github.com/pywavelet/wdm_transform.git",
+        ],
+        check=True,
+    )
+
 import corner
 import jax
 import matplotlib.pyplot as plt

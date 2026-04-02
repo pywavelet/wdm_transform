@@ -10,6 +10,8 @@
 # %% [markdown]
 # # WDM Walkthrough
 #
+# [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/pywavelet/wdm_transform/blob/main/docs/examples/wdm_walkthrough.py)
+#
 # This notebook provides a quick walkthrough of the WDM transform API. It demonstrates how to
 #
 # - create a `TimeSeries`
@@ -20,10 +22,25 @@
 # - report simple timing numbers
 
 # %%
+import subprocess
+import sys
 from time import perf_counter
 
 import matplotlib.pyplot as plt
 import numpy as np
+
+if "google.colab" in sys.modules:
+    subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "-q",
+            "git+https://github.com/pywavelet/wdm_transform.git",
+        ],
+        check=True,
+    )
 
 from wdm_transform import TimeSeries, WDM
 from wdm_transform.plotting import plot_spectrogram
