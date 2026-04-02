@@ -36,7 +36,7 @@ jobs:
         run: uv sync --frozen --extra docs
 
       - name: Build docs
-        run: uv run mkdocs build --strict -f docs/mkdocs.yml
+        run: uv run mkdocs build --strict -f mkdocs.yml
 
       - name: Upload Pages artifact
         if: github.event_name != 'pull_request'
