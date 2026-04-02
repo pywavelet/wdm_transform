@@ -3,8 +3,8 @@ site_description: Experimental object-oriented WDM transform package.
 repo_url: https://github.com/pywavelet/wdm_transform
 repo_name: wdm-transform
 edit_uri: edit/main/docs/
-docs_dir: .
-site_dir: ../site
+docs_dir: docs
+site_dir: site
 
 theme:
   name: material
@@ -38,7 +38,7 @@ plugins:
       handlers:
         python:
           paths:
-            - ../src
+            - src
           options:
             docstring_style: google
             docstring_section_style: list
@@ -57,6 +57,7 @@ plugins:
       ignore:
         - "__pycache__/*"
         - "examples/generate_benchmark_plot.py"
+        - "examples/generate_wdm_assets.py"
       execute: true
       include_source: true
       show_input: true
@@ -78,6 +79,9 @@ markdown_extensions:
 nav:
   - Home: index.md
   - Guide:
+      - What Is The WDM Domain?: guide/what-is-wdm.md
+      - Windows And Atoms: guide/windows-and-atoms.md
+      - Reconstruction And Inference: guide/reconstruction-and-inference.md
       - Package Layout: guide/package-layout.md
       - API Overview: guide/api-overview.md
   - Benchmarks: benchmarks.md

@@ -13,7 +13,9 @@ frequency-domain data, and WDM coefficients.
 
 ## Start Here
 
+- Read the conceptual WDM guide pages first if you want the transform intuition.
 - Read the API overview for the object model.
 - Open the WDM walkthrough for an executed example with plots.
+- Open the sinusoid-in-colored-noise study for a deeper worked example with posterior comparisons.
 - Check the benchmarks page for a backend runtime snapshot and regeneration command.
-- Use the API overview for the conceptual guide plus live signatures and docstrings pulled from the implementation.
+- Use the API overview for live signatures and docstrings pulled from the implementation.

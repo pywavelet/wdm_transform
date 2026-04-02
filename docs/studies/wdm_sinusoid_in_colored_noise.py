@@ -20,7 +20,18 @@
 # - transform the signal with the package `TimeSeries` and `WDM` APIs
 # - check time-domain and frequency-domain reconstruction
 # - compare signal and noise energy in time, FFT, and WDM coordinates
-# - inspect a small basis-orthogonality sanity check using `wdm_transform.windows.gnmf`
+# Before diving in, it helps to keep the three representations straight:
+#
+# - In the **time domain**, the data is just a 1D sampled waveform.
+# - In the **FFT domain**, the same data is described by global sine/cosine
+#   modes, which are excellent for stationary signals and noise models.
+# - In the **WDM domain**, the signal is stored on a time-frequency grid, so a
+#   localized oscillatory feature tends to occupy only a small part of that
+#   grid.
+#
+# The point of this notebook is not to prove one representation is always
+# better. It is to show, on a simple example, how the same underlying signal
+# looks in each basis and how closely the inferred sinusoid parameters agree.
 
 # %%
 import corner
@@ -114,6 +125,17 @@ def summarize_samples(samples: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
 # We use `N = nt * nf = 1024` samples, a cadence of `dt = 0.1 s`, and a
 # sinusoid whose frequency lands near one WDM channel center.
 
+# %% [markdown]
+# The transform shape is controlled by two integers:
+#
+# - `nt`: the number of WDM time bins
+# - `nf`: the number of interior frequency channels
+#
+# Their product `N = nt * nf` is the total number of time samples. For this
+# study, `nt = 32` and `nf = 32`, so the WDM coefficients live on a
+# `(32, 33)` grid. The extra column comes from the two edge channels
+# (`m = 0` and `m = nf`) in the Wilson-style packing.
+
 # %%
 nt = 32
 n_total = 1024
@@ -152,12 +174,38 @@ print(f"Dominant WDM channel: m={dominant_channel}")
 print(f"Channel center near the sinusoid: {channel_centers[dominant_channel]:.5f} Hz")
 
 # %% [markdown]
+# The "dominant channel" is the WDM frequency bin that contains the largest
+# share of the sinusoid's coefficient energy. Later, we use that channel as a
+# compact 1D summary of where the sinusoidal signal mostly lives in the WDM
+# representation.
+#
 # ## Basis sanity check
 #
-# The package already uses the Gabor-like atoms internally. For a compact
-# diagnostic, we compute a pair of overlap matrices for a fixed channel and a
-# fixed time shift. The discrete inner products evaluate to `(nt / 2) * I`, so
-# we divide by `nt / 2` before plotting.
+# A WDM transform is built from a collection of basis atoms `g_{n,m}`. You can
+# think of each atom as a localized oscillatory template:
+#
+# - `n` moves the template in time
+# - `m` moves the template in frequency
+#
+# Each WDM coefficient answers the question:
+#
+# "How much does the data look like this specific time-frequency atom?"
+#
+# That interpretation only works cleanly if different atoms are nearly
+# orthogonal. If two different atoms overlap strongly, then one coefficient no
+# longer means "one localized feature" by itself, because neighboring
+# coefficients would be mixing the same content.
+#
+# The two overlap maps below check that property in two directions:
+#
+# - Left: fix one frequency channel `m` and compare atoms at different times
+# - Right: fix one time index `n` and compare atoms at different frequencies
+#
+# A bright diagonal with dark off-diagonal entries means the basis is behaving
+# the way we want: each atom mostly overlaps with itself and not with the
+# others. That is why these plots matter. They justify reading the WDM grid as
+# a meaningful time-frequency decomposition rather than just a generic linear
+# change of coordinates.
 
 # %%
 backend = get_backend()
@@ -215,10 +263,31 @@ fig.colorbar(im1, ax=axes[1])
 fig.tight_layout()
 
 # %% [markdown]
+# In this example the overlaps are essentially diagonal, which is exactly what
+# we want. That means:
+#
+# - moving the atom in time produces a different basis element
+# - moving the atom in frequency also produces a different basis element
+# - large WDM coefficients can be interpreted as localized signal content
+#   instead of leakage from many strongly correlated atoms
+
+# %% [markdown]
 # ## Reconstruction checks
 #
 # The `WDM` object can reconstruct both the time-domain signal and the
 # FFT-domain signal.
+
+# %% [markdown]
+# This is an important consistency check. If the transform and its inverse are
+# implemented correctly, converting
+#
+# `time -> WDM -> time`
+#
+# and
+#
+# `time -> WDM -> FFT`
+#
+# should reproduce the original data up to floating-point roundoff.
 
 # %%
 recovered_time = data_wdm.to_time_series()
@@ -236,6 +305,16 @@ print(f"Relative FFT-domain reconstruction error: {fft_rel_error:.3e}")
 
 # %% [markdown]
 # ## Time, frequency, and WDM views
+
+# %% [markdown]
+# The three panels below show the same data from different angles:
+#
+# - the raw waveform in time
+# - its global frequency content via the FFT
+# - its localized time-frequency content via the WDM grid
+#
+# The WDM plot is the most useful one if you care about *where in time* a
+# narrow-band feature is active, not just *which frequency* it has.
 
 # %%
 fig, axes = plt.subplots(3, 1, figsize=(11, 11))
@@ -287,6 +366,12 @@ fig.tight_layout()
 # exactly under the package conventions. The WDM energy tracks the same
 # quantity closely, up to the transform's floating-point roundoff.
 
+# %% [markdown]
+# The next printout is a compact "same information in different coordinates"
+# check. If the transform is close to unitary, the signal and noise norms
+# should agree across the time, FFT, and WDM representations, modulo numerical
+# precision.
+
 # %%
 signal_time_energy = float(np.sum(np.asarray(signal_series.data) ** 2))
 signal_fft_energy = float(np.sum(np.abs(np.asarray(signal_fft.data)) ** 2) / n_total)
@@ -326,6 +411,10 @@ print(
 # This mirrors the atom-expansion check from the original prototype, but uses
 # the package method `WDM.to_frequency_series()` instead of manually summing
 # the basis functions.
+#
+# The raw residual curves are not very informative here because the errors are
+# already at floating-point precision. A compact numerical summary is easier to
+# read than a nearly flat line sitting at `~1e-8` on the plot.
 
 # %%
 signal_fft_from_wdm = signal_wdm.to_frequency_series()
@@ -342,20 +431,21 @@ noise_fft_rel_error = np.abs(
 signal_fft_scale = np.maximum(np.abs(np.asarray(signal_fft.data)[positive]), 1e-12)
 noise_fft_scale = np.maximum(np.abs(np.asarray(noise_fft.data)[positive]), 1e-12)
 
-fig, axes = plt.subplots(1, 2, figsize=(13, 4.5))
-axes[0].plot(freqs[positive], signal_fft_rel_error / signal_fft_scale)
-axes[0].set_title("Signal FFT relative error")
-axes[0].set_xlabel("Frequency [Hz]")
-axes[0].set_ylabel("Relative error")
-axes[0].set_ylim(0.0, 1e-8)
-
-axes[1].plot(freqs[positive], noise_fft_rel_error / noise_fft_scale)
-axes[1].set_title("Noise FFT relative error")
-axes[1].set_xlabel("Frequency [Hz]")
-axes[1].set_ylabel("Relative error")
-axes[1].set_ylim(0.0, 1e-8)
-
-fig.tight_layout()
+print("FFT reconstruction summary")
+print(
+    f"  signal max abs error     : {np.max(signal_fft_rel_error):.3e}"
+)
+print(
+    "  signal max relative error: "
+    f"{np.max(signal_fft_rel_error / signal_fft_scale):.3e}"
+)
+print(
+    f"  noise max abs error      : {np.max(noise_fft_rel_error):.3e}"
+)
+print(
+    "  noise max relative error : "
+    f"{np.max(noise_fft_rel_error / noise_fft_scale):.3e}"
+)
 
 # %% [markdown]
 # ## Posterior comparison: FFT likelihood vs WDM likelihood
@@ -369,6 +459,20 @@ fig.tight_layout()
 # Carlo noise realizations. To compare the same local posterior mode, NUTS is
 # initialized near the injected parameters, matching the spirit of the original
 # `emcee` example where walkers started close to the fiducial values.
+
+# %% [markdown]
+# The inference comparison works as follows:
+#
+# - In the **FFT likelihood**, we compare the observed FFT to the FFT of a
+#   trial sinusoid and weight residuals by the assumed noise PSD.
+# - In the **WDM likelihood**, we transform each trial sinusoid into WDM
+#   coefficients and compare it to the observed WDM coefficients in the
+#   dominant channel.
+#
+# The WDM likelihood here is still an approximation: we use only one dominant
+# channel and a diagonal estimate of the noise covariance in that channel. That
+# makes the example fast and interpretable while still being close enough to
+# the FFT result to compare posteriors meaningfully.
 
 # %%
 signal_coeffs = np.asarray(signal_wdm.coeffs)
@@ -388,6 +492,8 @@ observed_wdm_jax = forward_wdm(
 
 noise_realizations = np.stack(
     [
+        # Estimate the WDM noise scale directly in coefficient space by pushing
+        # Monte Carlo noise realizations through the same forward transform.
         np.asarray(
             forward_wdm(
                 random_signal_from_psd(colored_noise_psd, n_total, dt, RNG),
@@ -416,6 +522,12 @@ print(
 # - amplitude in `(0, 0.3)`
 # - frequency in `(0.8, 1.4) Hz`
 # - phase in `[-π, π]`
+
+# %% [markdown]
+# `numpyro` handles the sampling, while `forward_wdm(..., backend="jax")`
+# keeps the WDM likelihood differentiable and compatible with JAX-based NUTS.
+# That is why this section uses the lower-level transform function rather than
+# the higher-level `TimeSeries.to_wdm()` method inside the model definition.
 
 # %%
 def numpyro_frequency_model() -> None:
@@ -476,6 +588,13 @@ print(
 # The diagonal panels show the 1D marginals and the lower triangle shows
 # pairwise projections. In this setup the FFT and WDM posteriors land nearly on
 # top of each other.
+
+# %% [markdown]
+# When the two colored contour families overlap closely, it means the WDM
+# approximation is not noticeably biasing the recovered sinusoid parameters for
+# this example. Large shifts or very different widths would indicate that the
+# WDM-domain likelihood is throwing away too much information or mis-modelling
+# the noise.
 
 # %%
 fig = corner.corner(
