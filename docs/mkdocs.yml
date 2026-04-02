@@ -83,3 +83,5 @@ nav:
   - Benchmarks: benchmarks.md
   - Examples:
       - WDM Walkthrough: examples/wdm_walkthrough.py
+  - Studies:
+      - Sinusoid In Colored Noise: studies/wdm_sinusoid_in_colored_noise.py

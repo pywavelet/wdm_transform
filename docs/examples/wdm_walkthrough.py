@@ -72,7 +72,6 @@ coeffs.plot(ax=axes[2])
 axes[2].set_title("Packed WDM Grid")
 
 fig.tight_layout()
-fig
 
 # %% [markdown]
 # For comparison, here is a standard spectrogram of the same signal.
@@ -82,7 +81,6 @@ fig, ax = plt.subplots(figsize=(10, 4))
 plot_spectrogram(series, ax=ax, spec_kwargs={"nperseg": 64, "noverlap": 48})
 ax.set_title("Reference Spectrogram")
 fig.tight_layout()
-fig
 
 # %% [markdown]
 # ## Timing snapshot
