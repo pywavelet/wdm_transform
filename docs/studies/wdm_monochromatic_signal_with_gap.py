@@ -8,25 +8,29 @@
 # ---
 
 # %% [markdown]
-# # Monochromatic Signal with a Gap
+# # Sinusoid with Gaps
 #
 # [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/pywavelet/wdm_transform/blob/main/docs/studies/wdm_monochromatic_signal_with_gap.py)
 #
-# This study looks at a very common nuisance: a clean narrow-band signal is
-# observed with stationary noise, but one chunk of the time series is missing.
+# This study upgrades the earlier toy gap example into a harder case:
 #
-# We use the package WDM transform to show two complementary facts:
+# - one persistent sinusoid
+# - the same stationary colored-noise PSD used in the colored-noise sinusoid study
+# - several missing intervals
 #
-# - a gap is awkward in the FFT domain because multiplying by a mask in time
-#   spreads power across frequency
-# - the same gap is much more local in WDM coordinates, so we can often handle
-#   it by dropping only the WDM time bins whose atoms overlap the missing
-#   interval
+# The point is not that WDM magically contains more information than the time
+# domain. The point is that gaps are local in WDM coordinates, while they
+# become globally awkward in the FFT domain.
 #
-# The exact benchmark here is still a masked time-domain likelihood that uses
-# only the observed samples. The WDM likelihood is an approximation, but it is
-# a practical one: fit in WDM space while ignoring the bins that are visibly
-# contaminated by the gap.
+# We compare three inference strategies:
+#
+# - an **exact masked time-domain likelihood** for the colored-noise model
+# - a **gap-ignorant FFT likelihood** that treats the zero-filled data as if it
+#   were complete
+# - a **localized WDM likelihood** that drops only the contaminated WDM time bins
+#
+# In this harder setting the WDM method should not beat the exact benchmark, but
+# it should have a better chance of tracking it than the gap-ignorant FFT treatment.
 
 # %%
 import subprocess
@@ -79,23 +83,53 @@ def sinusoid(
     return amplitude * np.sin(2.0 * np.pi * frequency * times + phase)
 
 
-def run_time_nuts(
-    values: np.ndarray,
-    sample_times: np.ndarray,
-    *,
-    seed: int,
-) -> dict[str, np.ndarray]:
-    jt = jnp.asarray(sample_times)
-    jy = jnp.asarray(values)
+def stationary_noise_psd(freqs: np.ndarray) -> np.ndarray:
+    """Same stationary PSD used in the colored-noise sinusoid study."""
+    return 10.0 + 100.0 * np.exp(-((np.abs(freqs) - 3.0) ** 2))
+
+
+def random_signal_from_psd(
+    psd_func,
+    n: int,
+    dt: float,
+    rng: np.random.Generator,
+) -> np.ndarray:
+    freqs = np.fft.rfftfreq(n, d=dt)
+    white = rng.normal(size=len(freqs)) + 1j * rng.normal(size=len(freqs))
+    shaped = np.sqrt(psd_func(freqs)) * white / np.sqrt(2.0)
+    return np.fft.irfft(shaped, n=n)
+
+
+def build_periodic_covariance_from_psd(psd: np.ndarray, n: int) -> np.ndarray:
+    """Build the periodic time-domain covariance implied by a discrete PSD."""
+    # Match the normalization used by `random_signal_from_psd`.
+    #
+    # For the convention in this notebook, E[|X_k|^2] = PSD(f_k) in the rFFT
+    # domain, and the periodic time-domain covariance is the inverse rFFT of
+    # that one-sided spectrum divided by the total number of samples.
+    first_row = np.fft.irfft(psd, n=n) / n
+    offsets = (np.arange(n)[:, None] - np.arange(n)[None, :]) % n
+    return first_row[offsets]
+
+
+def whiten_operator(covariance: np.ndarray) -> np.ndarray:
+    chol = np.linalg.cholesky(covariance + 1e-9 * np.eye(covariance.shape[0]))
+    return np.linalg.solve(chol, np.eye(chol.shape[0]))
+
+
+def run_exact_masked_time_nuts(seed: int) -> dict[str, np.ndarray]:
+    j_whitener = jnp.asarray(obs_whitener)
+    j_obs = jnp.asarray(obs_whitener @ observed_values)
+    j_times = jnp.asarray(observed_times)
 
     def model() -> None:
-        amp = numpyro.sample("A", dist.Uniform(0.0, 1.5))
-        freq0 = numpyro.sample("f0", dist.Uniform(0.7, 1.2))
+        amp = numpyro.sample("A", dist.Uniform(0.0, 0.3))
+        freq0 = numpyro.sample("f0", dist.Uniform(0.8, 1.4))
         phi0 = numpyro.sample("phi", dist.Uniform(-jnp.pi, jnp.pi))
-        sigma = numpyro.sample("sigma", dist.HalfNormal(0.6))
 
-        mean = amp * jnp.sin(2.0 * jnp.pi * freq0 * jt + phi0)
-        numpyro.sample("obs", dist.Normal(mean, sigma), obs=jy)
+        mean = amp * jnp.sin(2.0 * jnp.pi * freq0 * j_times + phi0)
+        mean_white = j_whitener @ mean
+        numpyro.sample("obs", dist.Normal(mean_white, 1.0), obs=j_obs)
 
     kernel = NUTS(
         model,
@@ -104,7 +138,6 @@ def run_time_nuts(
                 "A": TRUE_AMPLITUDE,
                 "f0": TRUE_FREQUENCY,
                 "phi": TRUE_PHASE,
-                "sigma": NOISE_SIGMA,
             }
         ),
     )
@@ -119,35 +152,32 @@ def run_time_nuts(
     return {name: np.asarray(values) for name, values in mcmc.get_samples().items()}
 
 
-def run_fft_nuts(
-    values: np.ndarray,
-    sample_mask: np.ndarray,
-    *,
-    seed: int,
-) -> dict[str, np.ndarray]:
-    jt = jnp.asarray(times)
-    j_mask = jnp.asarray(sample_mask)
-    j_observed = jnp.asarray(np.fft.rfft(values)[fft_keep])
-    j_fft_std_factor = jnp.sqrt(float(sample_mask.sum()) / 2.0)
+def run_gap_ignorant_fft_nuts(seed: int) -> dict[str, np.ndarray]:
+    j_times = jnp.asarray(times)
+    j_observed = jnp.asarray(np.fft.rfft(gapped_data)[fft_keep])
+    j_psd = jnp.asarray(noise_psd_rfft[fft_keep])
+    j_scale_base = jnp.sqrt((n_total / 2.0) * j_psd)
 
     def model() -> None:
-        amp = numpyro.sample("A", dist.Uniform(0.0, 1.5))
-        freq0 = numpyro.sample("f0", dist.Uniform(0.7, 1.2))
+        amp = numpyro.sample("A", dist.Uniform(0.0, 0.3))
+        freq0 = numpyro.sample("f0", dist.Uniform(0.8, 1.4))
         phi0 = numpyro.sample("phi", dist.Uniform(-jnp.pi, jnp.pi))
-        sigma = numpyro.sample("sigma", dist.HalfNormal(0.6))
+        sigma = numpyro.sample("sigma", dist.HalfNormal(1.0))
 
-        trial = amp * jnp.sin(2.0 * jnp.pi * freq0 * jt + phi0)
-        trial_fft = jnp.fft.rfft(trial * j_mask)[fft_keep]
-        fft_sigma = sigma * j_fft_std_factor
+        # Deliberately gap-ignorant: pretend the zero-filled FFT came from a
+        # complete stationary dataset with no missing samples.
+        trial = amp * jnp.sin(2.0 * jnp.pi * freq0 * j_times + phi0)
+        trial_fft = jnp.fft.rfft(trial)[fft_keep]
+        scale = sigma * j_scale_base
 
         numpyro.sample(
             "obs_real",
-            dist.Normal(jnp.real(trial_fft), fft_sigma),
+            dist.Normal(jnp.real(trial_fft), scale),
             obs=jnp.real(j_observed),
         )
         numpyro.sample(
             "obs_imag",
-            dist.Normal(jnp.imag(trial_fft), fft_sigma),
+            dist.Normal(jnp.imag(trial_fft), scale),
             obs=jnp.imag(j_observed),
         )
 
@@ -158,7 +188,6 @@ def run_fft_nuts(
                 "A": TRUE_AMPLITUDE,
                 "f0": TRUE_FREQUENCY,
                 "phi": TRUE_PHASE,
-                "sigma": NOISE_SIGMA,
             }
         ),
     )
@@ -188,10 +217,13 @@ def run_wdm_nuts(
     j_times = jnp.asarray(times)
 
     def model() -> None:
-        amp = numpyro.sample("A", dist.Uniform(0.0, 1.5))
-        freq0 = numpyro.sample("f0", dist.Uniform(0.7, 1.2))
+        amp = numpyro.sample("A", dist.Uniform(0.0, 0.3))
+        freq0 = numpyro.sample("f0", dist.Uniform(0.8, 1.4))
         phi0 = numpyro.sample("phi", dist.Uniform(-jnp.pi, jnp.pi))
+        sigma = numpyro.sample("sigma", dist.HalfNormal(1.0))
 
+        # Compare the gapped data to the ungapped signal model only in WDM bins
+        # where the gap effect is small.
         trial = amp * jnp.sin(2.0 * jnp.pi * freq0 * j_times + phi0)
         trial_wdm = forward_wdm(
             trial,
@@ -203,7 +235,11 @@ def run_wdm_nuts(
             backend="jax",
         )
         trial_subset = trial_wdm[j_keep_time_bins][:, j_keep_channels]
-        numpyro.sample("obs", dist.Normal(trial_subset, jnp.sqrt(j_variance)), obs=j_observed)
+        numpyro.sample(
+            "obs",
+            dist.Normal(trial_subset, sigma * jnp.sqrt(j_variance)),
+            obs=j_observed,
+        )
 
     kernel = NUTS(
         model,
@@ -238,34 +274,40 @@ def summarize(samples: dict[str, np.ndarray]) -> dict[str, tuple[float, float]]:
 
 
 # %% [markdown]
-# ## Synthetic data with one missing interval
+# ## Synthetic data with multiple gaps and stationary colored noise
 #
-# We use a monochromatic signal plus white noise. Then we remove one block of
-# samples and replace it with zeros in the stored time series. That zero-filling
-# is not the statistical model; it is just a convenient way to put the gapped
-# series through the FFT and WDM transforms.
+# We use almost the same setup as the colored-noise sinusoid study, but now add
+# several missing intervals and a longer total duration. This makes the
+# comparison easier to interpret because the main difference is the gaps, not a
+# completely different signal/noise regime.
 
 # %%
-nt = 32
-n_total = 1024
+nt = 48
+n_total = 1536
 dt = 0.1
 nf = n_total // nt
 
-TRUE_AMPLITUDE = 0.72
-TRUE_FREQUENCY = 0.94
-TRUE_PHASE = 0.80
-NOISE_SIGMA = 0.22
+TRUE_AMPLITUDE = 0.10
+TRUE_FREQUENCY = 1.10
+TRUE_PHASE = 0.50
 
 times = np.arange(n_total) * dt
-clean_signal = sinusoid(TRUE_AMPLITUDE, TRUE_FREQUENCY, TRUE_PHASE, times)
-noise = NOISE_SIGMA * RNG.normal(size=n_total)
+clean_signal = sinusoid(
+    TRUE_AMPLITUDE,
+    TRUE_FREQUENCY,
+    TRUE_PHASE,
+    times,
+)
+
+noise = random_signal_from_psd(stationary_noise_psd, n_total, dt, RNG)
 full_data = clean_signal + noise
 
-gap_start = 420
-gap_stop = 560
+gap_intervals = [(270, 390), (705, 840), (1140, 1260)]
 sample_mask = np.ones(n_total)
-sample_mask[gap_start:gap_stop] = 0.0
+for start, stop in gap_intervals:
+    sample_mask[start:stop] = 0.0
 observed_mask = sample_mask.astype(bool)
+
 gapped_data = full_data * sample_mask
 gapped_clean_signal = clean_signal * sample_mask
 
@@ -276,7 +318,6 @@ gapped_clean_series = TimeSeries(gapped_clean_signal, dt=dt)
 
 full_fft = full_series.to_frequency_series()
 gapped_fft = gapped_series.to_frequency_series()
-
 clean_wdm = clean_series.to_wdm(nt=nt)
 gapped_wdm = gapped_series.to_wdm(nt=nt)
 gapped_clean_wdm = gapped_clean_series.to_wdm(nt=nt)
@@ -284,21 +325,30 @@ gapped_clean_wdm = gapped_clean_series.to_wdm(nt=nt)
 clean_coeffs = np.asarray(clean_wdm.coeffs)
 gapped_coeffs = np.asarray(gapped_wdm.coeffs)
 gap_effect = np.abs(clean_coeffs - np.asarray(gapped_clean_wdm.coeffs))
-fft_keep = np.arange(1, n_total // 2)
+
+freq_rfft = np.fft.rfftfreq(n_total, d=dt)
+noise_psd_rfft = stationary_noise_psd(freq_rfft)
+full_covariance = build_periodic_covariance_from_psd(noise_psd_rfft, n_total)
+obs_indices = np.flatnonzero(observed_mask)
+observed_times = times[obs_indices]
+observed_values = gapped_data[obs_indices]
+obs_covariance = full_covariance[np.ix_(obs_indices, obs_indices)]
+obs_whitener = whiten_operator(obs_covariance)
 
 dominant_channel = int(np.argmax(np.sum(clean_coeffs**2, axis=0)))
 selected_channels = np.arange(
-    max(0, dominant_channel - 1),
-    min(clean_wdm.nf, dominant_channel + 1) + 1,
+    max(0, dominant_channel - 2),
+    min(clean_wdm.nf, dominant_channel + 2) + 1,
 )
 
-gap_bin_start = gap_start // nf
-gap_bin_stop = (gap_stop - 1) // nf
-bin_padding = 2
 excluded_mask = np.zeros(nt, dtype=bool)
-excluded_mask[
-    max(0, gap_bin_start - bin_padding) : min(nt, gap_bin_stop + bin_padding + 1)
- ] = True
+bin_padding = 1
+for start, stop in gap_intervals:
+    gap_bin_start = start // nf
+    gap_bin_stop = (stop - 1) // nf
+    excluded_mask[
+        max(0, gap_bin_start - bin_padding) : min(nt, gap_bin_stop + bin_padding + 1)
+    ] = True
 kept_time_bins = np.flatnonzero(~excluded_mask)
 excluded_bins = np.flatnonzero(excluded_mask)
 
@@ -309,12 +359,15 @@ outside_gap_mismatch = np.linalg.norm(gap_effect[kept_time_bins]) / np.linalg.no
 inside_gap_mismatch = np.linalg.norm(gap_effect[excluded_bins]) / np.linalg.norm(
     clean_coeffs[excluded_bins]
 )
+fft_keep = np.arange(1, n_total // 2)
 
 print(f"WDM shape: {gapped_wdm.shape}")
 print(
-    "Gap interval: "
-    f"samples {gap_start}:{gap_stop} "
-    f"({gap_start * dt:.1f}s to {gap_stop * dt:.1f}s)"
+    "Gap intervals: "
+    + ", ".join(
+        f"{start}:{stop} ({start * dt:.1f}s to {stop * dt:.1f}s)"
+        for start, stop in gap_intervals
+    )
 )
 print(f"Dominant signal channel: m={dominant_channel}")
 print(
@@ -327,26 +380,21 @@ print(f"Relative clean-signal WDM mismatch outside excluded bins: {outside_gap_m
 print(f"Relative clean-signal WDM mismatch inside excluded bins : {inside_gap_mismatch:.3e}")
 
 # %% [markdown]
-# The two mismatch numbers above are the basic justification for the WDM
-# approximation in this notebook:
+# The mismatch numbers above are the key locality check:
 #
-# - outside the gap-adjacent WDM bins, the zero-filled and ungapped signals
-#   look very similar in WDM space
-# - inside those bins, the gap strongly perturbs the coefficients
+# - outside the gap-adjacent WDM bins, zero-filling does not change the clean
+#   signal very much
+# - inside those bins, the effect is large
 #
-# That is exactly the behavior we want if we plan to "handle the gap" by
-# dropping only a localized set of coefficients.
+# That is why a localized WDM likelihood is a plausible approximation here.
 
 # %% [markdown]
-# ## Time, FFT, and WDM views of the gap
+# ## Time, FFT, and WDM views
 #
-# The same missing interval has very different visual signatures in different
-# representations.
-#
-# - In time, the problem is obvious: one interval is missing.
-# - In the FFT, the zero-filled gap causes broadband leakage.
-# - In WDM, the disturbance stays concentrated in a small range of WDM time
-#   bins, which we highlight below.
+# With several gaps, the time-domain issue is obvious. In the FFT, however, the
+# effect is global: the masked data no longer looks like a clean narrowband line
+# plus stationary colored noise. In WDM, the disturbance is still concentrated
+# in a limited set of time bins.
 
 # %%
 freqs = np.fft.fftfreq(n_total, d=dt)
@@ -356,8 +404,9 @@ fig, axes = plt.subplots(3, 1, figsize=(12, 11), height_ratios=[1.0, 1.0, 1.15])
 
 axes[0].plot(times, full_data, color="0.70", linewidth=1.0, label="full noisy data")
 axes[0].plot(times, gapped_data, color="tab:blue", linewidth=1.1, label="zero-filled gapped data")
-axes[0].axvspan(gap_start * dt, gap_stop * dt, color="tab:red", alpha=0.12, label="missing interval")
-axes[0].set_title("Time-domain data with one missing interval")
+for start, stop in gap_intervals:
+    axes[0].axvspan(start * dt, stop * dt, color="tab:red", alpha=0.10)
+axes[0].set_title("Time-domain data with multiple missing intervals")
 axes[0].set_xlabel("Time [s]")
 axes[0].set_ylabel("Amplitude")
 axes[0].legend(frameon=False, loc="upper right")
@@ -368,8 +417,8 @@ axes[1].plot(
     np.abs(np.asarray(gapped_fft.data))[positive],
     label="zero-filled gapped data",
 )
-axes[1].set_xlim(0.0, 2.0)
-axes[1].set_title("FFT magnitude: the gap spreads power globally")
+axes[1].set_xlim(0.0, 0.5 / dt)
+axes[1].set_title("FFT magnitude: multiple gaps spread power globally")
 axes[1].set_xlabel("Frequency [Hz]")
 axes[1].set_ylabel("Magnitude")
 axes[1].legend(frameon=False, loc="upper right")
@@ -380,42 +429,37 @@ im = axes[2].imshow(
     aspect="auto",
     cmap="viridis",
 )
-axes[2].axvspan(
-    excluded_bins[0] - 0.5,
-    excluded_bins[-1] + 0.5,
-    color="white",
-    alpha=0.15,
-    label="excluded WDM time bins",
-)
+for idx in excluded_bins:
+    axes[2].axvspan(idx - 0.5, idx + 0.5, color="white", alpha=0.10)
 axes[2].set_title("WDM magnitude of the zero-filled gapped data")
 axes[2].set_xlabel("WDM time bin n")
 axes[2].set_ylabel("WDM channel m")
-axes[2].legend(frameon=False, loc="upper right")
 fig.colorbar(im, ax=axes[2], pad=0.01, label=r"$|w_{n,m}|$")
 
 fig.tight_layout()
 
 # %% [markdown]
-# ## Locality of the gap in WDM space
+# ## Gap locality in WDM space
 #
-# To see the localization more directly, the next plots compare the clean
-# sinusoid to the same sinusoid after zero-filling the gap. The important point
-# is that the disturbance is concentrated near the gap-adjacent WDM time bins,
-# not spread uniformly across the whole coefficient grid.
+# The plots below compare the clean sinusoid to the same signal after
+# zero-filling the gaps. The contamination is concentrated near a subset of WDM
+# time bins rather than being spread across the full grid.
 
 # %%
 gap_score = gap_effect.sum(axis=1)
 
 fig, axes = plt.subplots(2, 1, figsize=(12, 8), height_ratios=[1.0, 0.7])
 im = axes[0].imshow(gap_effect.T, origin="lower", aspect="auto", cmap="magma")
-axes[0].axvspan(excluded_bins[0] - 0.5, excluded_bins[-1] + 0.5, color="white", alpha=0.15)
-axes[0].set_title("Absolute WDM change caused by inserting the gap into the clean sinusoid")
+for idx in excluded_bins:
+    axes[0].axvspan(idx - 0.5, idx + 0.5, color="white", alpha=0.10)
+axes[0].set_title("Absolute WDM change caused by the gaps in the clean signal")
 axes[0].set_xlabel("WDM time bin n")
 axes[0].set_ylabel("WDM channel m")
 fig.colorbar(im, ax=axes[0], pad=0.01, label=r"$|\Delta w_{n,m}|$")
 
 axes[1].plot(np.arange(nt), gap_score, color="tab:red")
-axes[1].axvspan(excluded_bins[0] - 0.5, excluded_bins[-1] + 0.5, color="tab:gray", alpha=0.15)
+for idx in excluded_bins:
+    axes[1].axvspan(idx - 0.5, idx + 0.5, color="tab:gray", alpha=0.12)
 axes[1].set_title("Gap-induced WDM disturbance aggregated over channel")
 axes[1].set_xlabel("WDM time bin n")
 axes[1].set_ylabel(r"$\sum_m |\Delta w_{n,m}|$")
@@ -425,118 +469,86 @@ fig.tight_layout()
 # %% [markdown]
 # ## Posterior comparison
 #
-# We now compare three inference setups:
+# Here the exact benchmark is no longer trivial:
 #
-# - **full-data time-domain posterior**: a best-case reference with no missing
-#   interval
-# - **masked time-domain posterior**: the exact benchmark for the gapped data,
-#   using only observed samples
-# - **naive FFT posterior**: fit the zero-filled gapped FFT while pretending the
-#   frequency bins are independent
-# - **WDM posterior**: compute WDM coefficients of the zero-filled gapped data,
-#   then ignore the WDM time bins whose atoms overlap the missing interval
+# - the stationary colored noise is diagonal in the *complete-data* frequency basis
+# - once we remove samples, the exact observed-data likelihood becomes dense
 #
-# The WDM posterior is the key point of the example. It does not try to model
-# the contaminated bins. It simply uses the locality of the WDM basis to throw
-# them away and fit on the unaffected remainder.
+# We therefore compare:
 #
-# The FFT-side comparison is useful for a different reason. Frequency-domain
-# analysis is not impossible here, but the exact treatment is no longer the
-# simple diagonal one used for stationary complete data. The time-domain mask
-# mixes Fourier bins, so the exact FFT likelihood would need a dense
-# mask-induced covariance matrix. The "naive FFT" fit below intentionally
-# ignores those correlations to show what that simplification does.
+# - **exact masked time-domain**: whiten the observed samples with the true
+#   colored-noise covariance submatrix
+# - **gap-ignorant FFT**: fit the zero-filled spectrum as if the data were complete
+# - **WDM kept-bins**: keep only the channels around the signal and drop the WDM
+#   time bins touched by the gaps
 
 # %%
 noise_realizations = np.stack(
     [
-        np.asarray(TimeSeries(NOISE_SIGMA * RNG.normal(size=n_total) * sample_mask, dt=dt).to_wdm(nt=nt).coeffs)
-        for _ in range(192)
+        np.asarray(
+            TimeSeries(
+                random_signal_from_psd(stationary_noise_psd, n_total, dt, RNG) * sample_mask,
+                dt=dt,
+            ).to_wdm(nt=nt).coeffs
+        )
+        for _ in range(128)
     ]
 )
 wdm_variance = noise_realizations.var(axis=0) + 1e-8
 
-full_samples = run_time_nuts(full_data, times, seed=0)
-masked_samples = run_time_nuts(full_data[observed_mask], times[observed_mask], seed=1)
-fft_samples = run_fft_nuts(gapped_data, sample_mask, seed=2)
+exact_time_samples = run_exact_masked_time_nuts(seed=0)
+fft_samples = run_gap_ignorant_fft_nuts(seed=1)
 wdm_samples = run_wdm_nuts(
     gapped_coeffs,
     wdm_variance,
     kept_time_bins,
     selected_channels,
-    seed=3,
+    seed=2,
 )
 
-full_summary = summarize(full_samples)
-masked_summary = summarize(masked_samples)
+exact_time_summary = summarize(exact_time_samples)
 fft_summary = summarize(fft_samples)
 wdm_summary = summarize(wdm_samples)
 
 print("Posterior mean ± std")
 print(
-    f"  full-data time : A={full_summary['A'][0]:.4f}±{full_summary['A'][1]:.4f}, "
-    f"f0={full_summary['f0'][0]:.5f}±{full_summary['f0'][1]:.5f}, "
-    f"phi={full_summary['phi'][0]:.4f}±{full_summary['phi'][1]:.4f}, "
-    f"sigma={full_summary['sigma'][0]:.4f}±{full_summary['sigma'][1]:.4f}"
+    f"  exact masked time : A={exact_time_summary['A'][0]:.4f}±{exact_time_summary['A'][1]:.4f}, "
+    f"f0={exact_time_summary['f0'][0]:.5f}±{exact_time_summary['f0'][1]:.5f}, "
+    f"phi={exact_time_summary['phi'][0]:.4f}±{exact_time_summary['phi'][1]:.4f}"
 )
 print(
-    f"  masked time    : A={masked_summary['A'][0]:.4f}±{masked_summary['A'][1]:.4f}, "
-    f"f0={masked_summary['f0'][0]:.5f}±{masked_summary['f0'][1]:.5f}, "
-    f"phi={masked_summary['phi'][0]:.4f}±{masked_summary['phi'][1]:.4f}, "
-    f"sigma={masked_summary['sigma'][0]:.4f}±{masked_summary['sigma'][1]:.4f}"
-)
-print(
-    f"  naive FFT      : A={fft_summary['A'][0]:.4f}±{fft_summary['A'][1]:.4f}, "
+    f"  gap-ignorant FFT : A={fft_summary['A'][0]:.4f}±{fft_summary['A'][1]:.4f}, "
     f"f0={fft_summary['f0'][0]:.5f}±{fft_summary['f0'][1]:.5f}, "
     f"phi={fft_summary['phi'][0]:.4f}±{fft_summary['phi'][1]:.4f}, "
     f"sigma={fft_summary['sigma'][0]:.4f}±{fft_summary['sigma'][1]:.4f}"
 )
 print(
-    f"  WDM kept-bins  : A={wdm_summary['A'][0]:.4f}±{wdm_summary['A'][1]:.4f}, "
+    f"  WDM kept-bins    : A={wdm_summary['A'][0]:.4f}±{wdm_summary['A'][1]:.4f}, "
     f"f0={wdm_summary['f0'][0]:.5f}±{wdm_summary['f0'][1]:.5f}, "
-    f"phi={wdm_summary['phi'][0]:.4f}±{wdm_summary['phi'][1]:.4f}"
+    f"phi={wdm_summary['phi'][0]:.4f}±{wdm_summary['phi'][1]:.4f}, "
+    f"sigma={wdm_summary['sigma'][0]:.4f}±{wdm_summary['sigma'][1]:.4f}"
 )
 
 # %% [markdown]
-# The full-data posterior is only a reference. The more important comparison is
-# between the masked time-domain fit, the naive FFT fit, and the WDM fit:
+# The exact masked-time result is the benchmark. The question is not whether WDM
+# beats it; it should not. The question is whether the WDM approximation lands
+# nearer to that benchmark than the gap-ignorant FFT treatment while using a much more
+# local nuisance model.
 #
-# - the masked time-domain posterior is the exact answer for this synthetic
-#   missing-data problem
-# - the naive FFT posterior is what you get if you stay in frequency space but
-#   ignore the gap-induced correlations between bins
-# - the WDM posterior is the localized approximation
-#
-# If the masked time and WDM results agree reasonably well, then the WDM
-# strategy is doing what we want: using the compact support of the basis to
-# isolate the gap and keep the rest of the signal informative.
-#
-# In this particular toy problem the naive FFT posterior also lands close to
-# the exact masked-time answer. That does not mean the gap is harmless in
-# frequency space. It means that, for a single strong sinusoid in white noise,
-# the diagonal FFT approximation happens to be good enough. The practical
-# difference is still that the WDM-side handling is local and easy to express:
-# exclude a few affected WDM time bins instead of constructing a dense
-# frequency-domain covariance.
+# In the current synthetic run, the WDM approximation tracks the benchmark much
+# better in amplitude than the gap-ignorant FFT fit, but it
+# still shows its own approximation error and needs a variance-inflation factor.
 
 # %%
 truths = np.array([TRUE_AMPLITUDE, TRUE_FREQUENCY, TRUE_PHASE])
 labels = [r"$A$", r"$f_0$", r"$\phi$"]
 
 fig = corner.corner(
-    pack_samples(full_samples),
+    pack_samples(exact_time_samples),
     labels=labels,
     truths=truths,
-    color="tab:blue",
-    truth_color="black",
-    levels=(0.5, 0.9),
-    plot_density=False,
-    fill_contours=False,
-)
-corner.corner(
-    pack_samples(masked_samples),
-    fig=fig,
     color="tab:green",
+    truth_color="black",
     levels=(0.5, 0.9),
     plot_density=False,
     fill_contours=False,
@@ -559,58 +571,59 @@ corner.corner(
 )
 fig.legend(
     handles=[
-        Line2D([], [], color="tab:blue", label="full-data time"),
-        Line2D([], [], color="tab:green", label="masked time"),
-        Line2D([], [], color="tab:purple", label="naive FFT"),
+        Line2D([], [], color="tab:green", label="exact masked time"),
+        Line2D([], [], color="tab:purple", label="gap-ignorant FFT"),
         Line2D([], [], color="tab:orange", label="WDM kept-bins"),
     ],
     loc="upper right",
     frameon=False,
 )
-fig.suptitle("Posterior comparison for a monochromatic signal with a gap", y=1.02)
+fig.suptitle("Posterior comparison for a sinusoid with multiple gaps", y=1.02)
 
 # %% [markdown]
-# ## Reconstructed signal from the posterior means
+# ## Posterior-mean prediction in the frequency domain
 #
-# The posterior means below give a simple visual summary. Both the exact masked
-# fit and the WDM fit recover the oscillation through the missing interval,
-# because both are fitting a global sinusoidal model even though part of the
-# data is absent.
+# The posterior means below are shown in the FFT domain rather than the time
+# domain. That view is more relevant here because the main failure mode of the
+# gap-ignorant FFT treatment is spectral leakage and amplitude bias.
 
 # %%
-masked_mean = {
-    key: value[0]
-    for key, value in masked_summary.items()
-}
-wdm_mean = {
-    key: value[0]
-    for key, value in wdm_summary.items()
-}
-full_mean = {
-    key: value[0]
-    for key, value in full_summary.items()
-}
-fft_mean = {
-    key: value[0]
-    for key, value in fft_summary.items()
-}
+exact_mean = {key: value[0] for key, value in exact_time_summary.items()}
+fft_mean = {key: value[0] for key, value in fft_summary.items()}
+wdm_mean = {key: value[0] for key, value in wdm_summary.items()}
 
-masked_fit = sinusoid(masked_mean["A"], masked_mean["f0"], masked_mean["phi"], times)
-wdm_fit = sinusoid(wdm_mean["A"], wdm_mean["f0"], wdm_mean["phi"], times)
-full_fit = sinusoid(full_mean["A"], full_mean["f0"], full_mean["phi"], times)
+exact_fit = sinusoid(exact_mean["A"], exact_mean["f0"], exact_mean["phi"], times)
 fft_fit = sinusoid(fft_mean["A"], fft_mean["f0"], fft_mean["phi"], times)
+wdm_fit = sinusoid(wdm_mean["A"], wdm_mean["f0"], wdm_mean["phi"], times)
 
-fig, ax = plt.subplots(figsize=(12, 4.5))
-ax.plot(times, full_data, color="0.80", linewidth=1.0, label="full noisy data")
-ax.plot(times[observed_mask], gapped_data[observed_mask], color="tab:blue", linewidth=1.1, label="observed samples")
-ax.axvspan(gap_start * dt, gap_stop * dt, color="tab:red", alpha=0.10, label="missing interval")
-ax.plot(times, clean_signal, color="black", linestyle="--", linewidth=1.2, label="true signal")
-ax.plot(times, masked_fit, color="tab:green", linewidth=1.3, label="masked time posterior mean")
-ax.plot(times, fft_fit, color="tab:purple", linewidth=1.3, label="naive FFT posterior mean")
-ax.plot(times, wdm_fit, color="tab:orange", linewidth=1.3, label="WDM posterior mean")
-ax.plot(times, full_fit, color="tab:blue", linestyle=":", linewidth=1.2, label="full-data posterior mean")
-ax.set_title("Posterior-mean signal estimates across the gap")
-ax.set_xlabel("Time [s]")
-ax.set_ylabel("Amplitude")
-ax.legend(frameon=False, loc="upper right", ncol=2)
+truth_fft = np.abs(np.fft.rfft(clean_signal))
+gapped_fft_mag = np.abs(np.fft.rfft(gapped_data))
+exact_fft_mag = np.abs(np.fft.rfft(exact_fit))
+fft_fit_mag = np.abs(np.fft.rfft(fft_fit))
+wdm_fit_mag = np.abs(np.fft.rfft(wdm_fit))
+
+fig, axes = plt.subplots(2, 1, figsize=(12, 8), height_ratios=[1.0, 1.0])
+
+axes[0].plot(freq_rfft, gapped_fft_mag, color="tab:blue", alpha=0.75, label="zero-filled gapped data")
+axes[0].plot(freq_rfft, truth_fft, color="black", linestyle="--", linewidth=1.2, label="true signal")
+axes[0].plot(freq_rfft, exact_fft_mag, color="tab:green", linewidth=1.3, label="exact masked time")
+axes[0].plot(freq_rfft, fft_fit_mag, color="tab:purple", linewidth=1.3, label="gap-ignorant FFT")
+axes[0].plot(freq_rfft, wdm_fit_mag, color="tab:orange", linewidth=1.3, label="WDM kept-bins")
+axes[0].set_xlim(0.0, 0.5 / dt)
+axes[0].set_title("Posterior-mean spectral prediction")
+axes[0].set_xlabel("Frequency [Hz]")
+axes[0].set_ylabel(r"$|\mathrm{FFT}|$")
+axes[0].legend(frameon=False, loc="upper right", ncol=2)
+
+axes[1].plot(freq_rfft, np.abs(gapped_fft_mag - truth_fft), color="tab:blue", alpha=0.7, label="gapped data error")
+axes[1].plot(freq_rfft, np.abs(exact_fft_mag - truth_fft), color="tab:green", label="exact masked time error")
+axes[1].plot(freq_rfft, np.abs(fft_fit_mag - truth_fft), color="tab:purple", label="gap-ignorant FFT error")
+axes[1].plot(freq_rfft, np.abs(wdm_fit_mag - truth_fft), color="tab:orange", label="WDM kept-bins error")
+axes[1].set_xlim(0.0, 0.5 / dt)
+axes[1].set_yscale("log")
+axes[1].set_title("Absolute spectral error relative to the true signal")
+axes[1].set_xlabel("Frequency [Hz]")
+axes[1].set_ylabel("Absolute error")
+axes[1].legend(frameon=False, loc="upper right", ncol=2)
+
 fig.tight_layout()

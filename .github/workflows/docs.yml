@@ -35,6 +35,14 @@ jobs:
       - name: Sync dependencies
         run: uv sync --frozen --extra docs
 
+      - name: Restore notebook execution cache
+        uses: actions/cache@v4
+        with:
+          path: .cache/mkdocs-jupyter
+          key: mkdocs-jupyter-${{ runner.os }}-${{ hashFiles('mkdocs.yml', 'pyproject.toml', 'uv.lock', 'docs/**/*.py', 'docs/**/*.md') }}
+          restore-keys: |
+            mkdocs-jupyter-${{ runner.os }}-
+
       - name: Build docs
         run: uv run mkdocs build --strict -f mkdocs.yml
 
