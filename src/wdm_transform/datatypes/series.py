@@ -11,7 +11,17 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True)
 class TimeSeries:
-    """One-dimensional sampled time-domain data."""
+    """One-dimensional sampled time-domain data.
+
+    Parameters
+    ----------
+    data : array_like
+        Sample values on a uniform time grid.
+    dt : float
+        Time spacing between adjacent samples.
+    backend : Backend
+        Array backend used for computation.
+    """
 
     data: Any
     dt: float
@@ -31,14 +41,26 @@ class TimeSeries:
 
     @property
     def n(self) -> int:
+        """Number of samples."""
         return int(self.data.shape[0])
 
     @property
     def df(self) -> float:
+        """Fourier frequency spacing implied by the sample cadence."""
         return 1.0 / (self.n * self.dt)
 
     @property
+    def duration(self) -> float:
+        """Total signal duration ``n * dt``.
+
+        This follows the discrete-Fourier convention used throughout the
+        package, not ``times[-1] - times[0]``.
+        """
+        return self.n * self.dt
+
+    @property
     def times(self) -> Any:
+        """Sample-time grid ``arange(n) * dt``."""
         return self.backend.xp.arange(self.n) * self.dt
 
     def to_frequency_series(self) -> "FrequencySeries":
@@ -67,7 +89,17 @@ class TimeSeries:
 
 @dataclass(frozen=True)
 class FrequencySeries:
-    """One-dimensional FFT-domain data with spacing metadata."""
+    """One-dimensional FFT-domain data with spacing metadata.
+
+    Parameters
+    ----------
+    data : array_like
+        Spectrum samples on the discrete Fourier grid.
+    df : float
+        Frequency spacing between adjacent Fourier bins.
+    backend : Backend
+        Array backend used for computation.
+    """
 
     data: Any
     df: float
@@ -87,14 +119,22 @@ class FrequencySeries:
 
     @property
     def n(self) -> int:
+        """Number of Fourier bins."""
         return int(self.data.shape[0])
 
     @property
     def dt(self) -> float:
+        """Time spacing implied by the discrete Fourier grid."""
         return 1.0 / (self.n * self.df)
 
     @property
+    def duration(self) -> float:
+        """Total signal duration ``n * dt`` represented by the spectrum."""
+        return self.n * self.dt
+
+    @property
     def freqs(self) -> Any:
+        """Discrete Fourier frequency grid."""
         return self.backend.fft.fftfreq(self.n, d=self.dt)
 
     def to_time_series(self, *, real: bool = False) -> TimeSeries:

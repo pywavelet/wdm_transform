@@ -164,9 +164,46 @@ class WDM:
         return (self.nt, self.nf + 1)
 
     @property
-    def df(self) -> float:
-        """Frequency resolution of the original signal."""
+    def n(self) -> int:
+        """Total number of time-domain samples represented by this transform."""
+        return self.nt * self.nf
+
+    @property
+    def sample_df(self) -> float:
+        """Fourier-bin spacing of the original signal represented by this transform."""
         return 1.0 / (self.nt * self.nf * self.dt)
+
+    @property
+    def delta_t(self) -> float:
+        """Spacing of the WDM time grid.
+
+        Each WDM time bin spans ``nf * dt`` in the original sampling.
+        """
+        return self.nf * self.dt
+
+    @property
+    def delta_f(self) -> float:
+        """Spacing of the WDM frequency grid."""
+        return 1.0 / (2.0 * self.delta_t)
+
+    @property
+    def duration(self) -> float:
+        """Total signal duration ``nt * delta_t`` represented by this transform.
+
+        Equivalently, this is ``nt * nf * dt``. This convention matches the
+        transform construction and is not the same as ``time_grid[-1] - time_grid[0]``.
+        """
+        return self.nt * self.delta_t
+
+    @property
+    def time_grid(self) -> Any:
+        """WDM time-grid coordinates ``arange(nt) * delta_t``."""
+        return self.backend.xp.arange(self.nt) * self.delta_t
+
+    @property
+    def freq_grid(self) -> Any:
+        """WDM frequency-grid coordinates ``arange(nf + 1) * delta_f``."""
+        return self.backend.xp.arange(self.nf + 1) * self.delta_f
 
     @property
     def dc_channel(self) -> Any:

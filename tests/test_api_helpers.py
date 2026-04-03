@@ -59,3 +59,32 @@ def test_plot_methods_delegate_to_plotting_helpers(monkeypatch) -> None:
         ("freq", frequency_series, {"magnitude": False}),
         ("wdm", wdm, {"show_colorbar": False}),
     ]
+
+
+def test_series_convenience_spacing_and_duration_properties() -> None:
+    time_series = TimeSeries(np.arange(8, dtype=float), dt=0.25)
+    frequency_series = FrequencySeries(np.arange(8, dtype=complex), df=0.5)
+
+    assert time_series.n == 8
+    assert time_series.df == 0.5
+    assert time_series.duration == 2.0
+    np.testing.assert_allclose(time_series.times, np.arange(8) * 0.25)
+
+    assert frequency_series.n == 8
+    assert frequency_series.dt == 0.25
+    assert frequency_series.duration == 2.0
+    np.testing.assert_allclose(frequency_series.freqs, np.fft.fftfreq(8, d=0.25))
+
+
+def test_wdm_convenience_grid_properties() -> None:
+    nt, nf, dt = 32, 16, 0.125
+    data = np.sin(2.0 * np.pi * np.arange(nt * nf) * dt * 0.2)
+    wdm = WDM.from_time_series(TimeSeries(data, dt=dt), nt=nt)
+
+    assert wdm.n == nt * nf
+    assert wdm.sample_df == 1.0 / (nt * nf * dt)
+    assert wdm.delta_t == nf * dt
+    assert wdm.delta_f == 1.0 / (2.0 * nf * dt)
+    assert wdm.duration == nt * nf * dt
+    np.testing.assert_allclose(wdm.time_grid, np.arange(nt) * (nf * dt))
+    np.testing.assert_allclose(wdm.freq_grid, np.arange(nf + 1) / (2.0 * nf * dt))
