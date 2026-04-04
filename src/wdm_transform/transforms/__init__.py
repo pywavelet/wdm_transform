@@ -43,6 +43,7 @@ def from_time_to_wdm(
     d: float,
     dt: float,
     backend: str | Backend | None = None,
+    dtype: Any | None = None,
 ) -> Any:
     """Compute WDM coefficients from a one-dimensional time-domain signal.
 
@@ -76,7 +77,18 @@ def from_time_to_wdm(
     """
     resolved_backend = get_backend(backend)
     module = _get_transform_module(resolved_backend)
-    return module.from_time_to_wdm(data, nt=nt, nf=nf, a=a, d=d, dt=dt, backend=resolved_backend)
+    kwargs = {
+        "data": data,
+        "nt": nt,
+        "nf": nf,
+        "a": a,
+        "d": d,
+        "dt": dt,
+        "backend": resolved_backend,
+    }
+    if dtype is not None:
+        kwargs["dtype"] = dtype
+    return module.from_time_to_wdm(**kwargs)
 
 
 def from_freq_to_wdm(
@@ -88,11 +100,23 @@ def from_freq_to_wdm(
     d: float,
     dt: float,
     backend: str | Backend | None = None,
+    dtype: Any | None = None,
 ) -> Any:
     """Compute WDM coefficients from full Fourier-domain samples."""
     resolved_backend = get_backend(backend)
     module = _get_transform_module(resolved_backend)
-    return module.from_freq_to_wdm(data, nt=nt, nf=nf, a=a, d=d, dt=dt, backend=resolved_backend)
+    kwargs = {
+        "data": data,
+        "nt": nt,
+        "nf": nf,
+        "a": a,
+        "d": d,
+        "dt": dt,
+        "backend": resolved_backend,
+    }
+    if dtype is not None:
+        kwargs["dtype"] = dtype
+    return module.from_freq_to_wdm(**kwargs)
 
 
 def from_wdm_to_time(
@@ -102,6 +126,7 @@ def from_wdm_to_time(
     d: float,
     dt: float,
     backend: str | Backend | None = None,
+    dtype: Any | None = None,
 ) -> Any:
     """Reconstruct a time-domain signal from WDM coefficients.
 
@@ -126,7 +151,16 @@ def from_wdm_to_time(
     """
     resolved_backend = get_backend(backend)
     module = _get_transform_module(resolved_backend)
-    return module.from_wdm_to_time(coeffs, a=a, d=d, dt=dt, backend=resolved_backend)
+    kwargs = {
+        "coeffs": coeffs,
+        "a": a,
+        "d": d,
+        "dt": dt,
+        "backend": resolved_backend,
+    }
+    if dtype is not None:
+        kwargs["dtype"] = dtype
+    return module.from_wdm_to_time(**kwargs)
 
 
 def from_wdm_to_freq(
@@ -136,6 +170,7 @@ def from_wdm_to_freq(
     a: float,
     d: float,
     backend: str | Backend | None = None,
+    dtype: Any | None = None,
 ) -> Any:
     """Reconstruct the Fourier-domain signal represented by WDM coefficients.
 
@@ -161,7 +196,16 @@ def from_wdm_to_freq(
     """
     resolved_backend = get_backend(backend)
     module = _get_transform_module(resolved_backend)
-    return module.from_wdm_to_freq(coeffs, dt=dt, a=a, d=d, backend=resolved_backend)
+    kwargs = {
+        "coeffs": coeffs,
+        "dt": dt,
+        "a": a,
+        "d": d,
+        "backend": resolved_backend,
+    }
+    if dtype is not None:
+        kwargs["dtype"] = dtype
+    return module.from_wdm_to_freq(**kwargs)
 
 
 __all__ = [

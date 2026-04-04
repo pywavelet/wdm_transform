@@ -6,8 +6,8 @@ from .base import Backend
 def load_jax_backend() -> Backend:
     """Import JAX and return a :class:`Backend` wrapper for it.
 
-    The loader enables 64-bit mode so the JAX backend matches the precision
-    used by the NumPy implementation.
+    The loader enables 64-bit mode so both float32 and float64 execution are
+    available in one process.
     """
     try:
         import jax

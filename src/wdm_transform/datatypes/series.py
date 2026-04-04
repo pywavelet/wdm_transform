@@ -95,11 +95,12 @@ class TimeSeries:
         a: float = 1.0 / 3.0,
         d: float = 1.0,
         backend: str | Backend | None = None,
+        dtype: Any | None = None,
     ) -> "WDM":
         """Compute the WDM transform of this time series."""
         from .wdm import WDM
 
-        return WDM.from_time_series(self, nt=nt, a=a, d=d, backend=backend)
+        return WDM.from_time_series(self, nt=nt, a=a, d=d, backend=backend, dtype=dtype)
 
     def plot(self, **kwargs: Any) -> tuple[Any, Any]:
         """Plot the time-domain samples using the shared plotting helper."""
@@ -195,11 +196,19 @@ class FrequencySeries:
         a: float = 1.0 / 3.0,
         d: float = 1.0,
         backend: str | Backend | None = None,
+        dtype: Any | None = None,
     ) -> "WDM":
         """Compute the WDM transform of this frequency-domain series."""
         from .wdm import WDM
 
-        return WDM.from_frequency_series(self, nt=nt, a=a, d=d, backend=backend)
+        return WDM.from_frequency_series(
+            self,
+            nt=nt,
+            a=a,
+            d=d,
+            backend=backend,
+            dtype=dtype,
+        )
 
     def plot(self, **kwargs: Any) -> tuple[Any, Any]:
         """Plot the spectrum using the shared plotting helper."""

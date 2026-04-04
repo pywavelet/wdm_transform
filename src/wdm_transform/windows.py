@@ -49,7 +49,14 @@ def cnm(backend: Backend, n: Any, m: Any) -> Any:
     return xp.exp((1j * xp.pi / 4.0) * (1.0 - (-1) ** (n + m)))
 
 
-def phi_unit(backend: Backend, f: Any, a: float, d: float) -> Any:
+def phi_unit(
+    backend: Backend,
+    f: Any,
+    a: float,
+    d: float,
+    *,
+    dtype: Any | None = None,
+) -> Any:
     r"""Unitary phi-window in the frequency domain.
 
     The window is a cosine-tapered rectangle:
@@ -73,14 +80,23 @@ def phi_unit(backend: Backend, f: Any, a: float, d: float) -> Any:
     del d
     xp = backend.xp
     b = 1.0 - 2.0 * a
-    frequencies = xp.asarray(f, dtype=float)
+    frequencies = xp.asarray(f, dtype=dtype)
     abs_f = xp.abs(frequencies)
     tapered = xp.cos((xp.pi / 2.0) * (abs_f - a) / b)
     inner = xp.where(abs_f > a, tapered, 1.0)
     return xp.where(abs_f > a + b, 0.0, inner)
 
 
-def phi_window(backend: Backend, nt: int, nf: int, dt: float, a: float, d: float) -> Any:
+def phi_window(
+    backend: Backend,
+    nt: int,
+    nf: int,
+    dt: float,
+    a: float,
+    d: float,
+    *,
+    dtype: Any | None = None,
+) -> Any:
     r"""Build the length-``nt`` phi-window used by the forward and inverse WDM transforms.
 
     The window is evaluated at the ``nt`` frequencies that tile one sub-band
@@ -108,7 +124,7 @@ def phi_window(backend: Backend, nt: int, nf: int, dt: float, a: float, d: float
     fs_full = np.fft.fftfreq(n_total, dt)
     half = nt // 2
     fs_phi = np.concatenate([fs_full[:half], fs_full[-half:]])
-    return phi_unit(backend, fs_phi / df_phi, a, d) * xp.sqrt(2.0 * nf)
+    return phi_unit(backend, fs_phi / df_phi, a, d, dtype=dtype) * xp.sqrt(2.0 * nf)
 
 
 def gnmf(

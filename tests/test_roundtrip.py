@@ -15,16 +15,28 @@ def _chirplet(times: np.ndarray, duration: float) -> np.ndarray:
     return envelope * carrier
 
 
-def _example_series(nt: int = 32, nf: int = 32, dt: float = 1.1) -> tuple[TimeSeries, int, int]:
+def _example_series(
+    nt: int = 32,
+    nf: int = 32,
+    dt: float = 1.1,
+    *,
+    dtype_name: str = "float64",
+) -> tuple[TimeSeries, int, int]:
     n_total = nt * nf
     times = np.arange(n_total) * dt
     duration = n_total * dt
-    data = _chirplet(times, duration) + 0.2 * np.sin(2.0 * np.pi * times * 0.08)
+    data = (_chirplet(times, duration) + 0.2 * np.sin(2.0 * np.pi * times * 0.08)).astype(dtype_name)
     return TimeSeries(data, dt=dt), nt, nf
 
 
 def _series_for_backend(series: TimeSeries, backend: Backend) -> TimeSeries:
     return TimeSeries(np.asarray(series.data), dt=series.dt, backend=backend)
+
+
+def _tolerances(dtype_name: str) -> tuple[float, float]:
+    if dtype_name == "float32":
+        return (1e-4, 1e-4)
+    return (1e-10, 1e-10)
 
 
 def test_time_frequency_roundtrip() -> None:
@@ -36,26 +48,35 @@ def test_time_frequency_roundtrip() -> None:
     np.testing.assert_allclose(recovered.data, series.data, atol=1e-12, rtol=1e-12)
 
 
-def test_wdm_time_roundtrip(backend_name: str, backend: Backend) -> None:
-    series, nt, nf = _example_series()
-    numpy_coeffs = WDM.from_time_series(series, nt=nt, a=1.0 / 3.0)
+def test_wdm_time_roundtrip(backend_name: str, backend: Backend, dtype_name: str) -> None:
+    atol, rtol = _tolerances(dtype_name)
+    series, nt, nf = _example_series(dtype_name=dtype_name)
+    numpy_coeffs = WDM.from_time_series(series, nt=nt, a=1.0 / 3.0, dtype=dtype_name)
 
     backend_series = _series_for_backend(series, backend)
-    coeffs = WDM.from_time_series(backend_series, nt=nt, a=1.0 / 3.0, backend=backend)
+    coeffs = WDM.from_time_series(
+        backend_series,
+        nt=nt,
+        a=1.0 / 3.0,
+        backend=backend,
+        dtype=dtype_name,
+    )
     recovered = coeffs.to_time_series()
 
     assert coeffs.coeffs.shape == (nt, nf + 1)
+    assert backend.xp.dtype(coeffs.coeffs.dtype).name == dtype_name
+    assert backend.xp.dtype(recovered.data.dtype).name == dtype_name
     np.testing.assert_allclose(
         np.asarray(coeffs.coeffs),
         np.asarray(numpy_coeffs.coeffs),
-        atol=1e-10,
-        rtol=1e-10,
+        atol=atol,
+        rtol=rtol,
     )
     np.testing.assert_allclose(
         np.asarray(recovered.data),
         np.asarray(series.data),
-        atol=1e-10,
-        rtol=1e-10,
+        atol=atol,
+        rtol=rtol,
     )
 
     if backend_name == "jax":
@@ -63,19 +84,28 @@ def test_wdm_time_roundtrip(backend_name: str, backend: Backend) -> None:
         assert isinstance(coeffs.coeffs, jax.Array)
 
 
-def test_wdm_frequency_reconstruction_matches_fft(backend: Backend) -> None:
-    series, nt, _ = _example_series()
+def test_wdm_frequency_reconstruction_matches_fft(backend: Backend, dtype_name: str) -> None:
+    atol, rtol = _tolerances(dtype_name)
+    series, nt, _ = _example_series(dtype_name=dtype_name)
     expected = series.to_frequency_series()
 
     backend_series = _series_for_backend(series, backend)
-    coeffs = WDM.from_time_series(backend_series, nt=nt, a=1.0 / 3.0, backend=backend)
+    coeffs = WDM.from_time_series(
+        backend_series,
+        nt=nt,
+        a=1.0 / 3.0,
+        backend=backend,
+        dtype=dtype_name,
+    )
     reconstructed = coeffs.to_frequency_series()
 
+    expected_complex = "complex64" if dtype_name == "float32" else "complex128"
+    assert backend.xp.dtype(reconstructed.data.dtype).name == expected_complex
     np.testing.assert_allclose(
         np.asarray(reconstructed.data),
         np.asarray(expected.data),
-        atol=1e-10,
-        rtol=1e-10,
+        atol=atol,
+        rtol=rtol,
     )
 
 

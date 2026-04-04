@@ -59,6 +59,42 @@ def test_explicit_transform_api_roundtrips_between_time_freq_and_wdm() -> None:
     )
 
 
+def test_explicit_transform_api_honors_float32_precision() -> None:
+    nt, nf, dt = 32, 32, 0.125
+    samples = np.sin(2.0 * np.pi * np.arange(nt * nf) * dt * 0.15).astype(np.float32)
+    spectrum = np.fft.fft(samples).astype(np.complex64)
+
+    coeffs_from_time = from_time_to_wdm(
+        samples,
+        nt=nt,
+        nf=nf,
+        a=0.25,
+        d=1.0,
+        dt=dt,
+        dtype=np.float32,
+    )
+    coeffs_from_freq = from_freq_to_wdm(
+        spectrum,
+        nt=nt,
+        nf=nf,
+        a=0.25,
+        d=1.0,
+        dt=dt,
+        dtype=np.float32,
+    )
+
+    assert coeffs_from_time.dtype == np.float32
+    assert coeffs_from_freq.dtype == np.float32
+    np.testing.assert_allclose(coeffs_from_freq, coeffs_from_time, atol=1e-4, rtol=1e-4)
+
+    reconstructed_time = from_wdm_to_time(coeffs_from_time, a=0.25, d=1.0, dt=dt)
+    reconstructed_freq = from_wdm_to_freq(coeffs_from_time, a=0.25, d=1.0, dt=dt)
+    assert reconstructed_time.dtype == np.float32
+    assert reconstructed_freq.dtype == np.complex64
+    np.testing.assert_allclose(reconstructed_time, samples, atol=1e-4, rtol=1e-4)
+    np.testing.assert_allclose(reconstructed_freq, spectrum, atol=1e-4, rtol=1e-4)
+
+
 def test_from_freq_to_wdm_matches_real_ifft_projection_for_nonhermitian_input() -> None:
     nt, nf, dt = 16, 16, 0.25
     rng = np.random.default_rng(1234)

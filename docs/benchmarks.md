@@ -1,9 +1,10 @@
 # Benchmarks
 
-This page shows a checked-in benchmark snapshot for the `numpy` and `jax` backends.
-The artifacts are generated manually so routine docs builds stay fast and deterministic.
-The figure includes forward runtime, inverse runtime, and round-trip reconstruction
-error against the original real-valued input signal.
+This page shows a checked-in benchmark snapshot for the `numpy` and `jax` backends
+across both `float32` and `float64` execution. The artifacts are generated manually
+so routine docs builds stay fast and deterministic. The figure includes forward
+runtime, inverse runtime, and round-trip reconstruction error against the original
+real-valued input signal.
 
 ![WDM benchmark runtimes](_static/benchmark_runtime.png)
 
@@ -15,7 +16,7 @@ The raw numbers used for the plot are available in
 Regenerate the plot and JSON artifact manually from the repository root:
 
 ```bash
-uv run python docs/examples/generate_benchmark_plot.py --backends numpy jax
+uv run python docs/examples/generate_benchmark_plot.py --backends numpy jax --dtypes float32 float64
 ```
 
 If `jax` is not installed in the active environment, the script will warn and only emit the
@@ -23,7 +24,9 @@ available backends.
 
 ## Notes
 
-- The default snapshot covers `N = 2048` through `1048576` and uses 7 timed runs per point.
+- The default benchmark range covers `N = 2048` through `33554432` and uses 7 timed runs per point.
+- Refreshing the full default snapshot is now substantially more expensive than before, especially for JAX and larger precisions.
+- Each backend is plotted once per precision, so the checked-in figure compares backend and dtype together.
 - Each measurement uses one warmup call before timed runs.
 - JAX timings are synchronized before the timer stops, so they include the actual device work.
 - The timing panels show mean runtimes in milliseconds, with a shaded band for one standard deviation.

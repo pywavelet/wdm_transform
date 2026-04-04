@@ -30,6 +30,7 @@ import jax.numpy as jnp
 from jax import jit
 
 from ..backends import Backend
+from ..precision import infer_real_precision, resolve_precision
 from ..windows import phi_window, validate_transform_shape, validate_window_parameter
 
 
@@ -86,6 +87,7 @@ def _from_spectrum_to_wdm_impl(
     """
     n_total = nt * nf
     half = nt // 2
+    real_dtype = jnp.real(x_fft).dtype
     narr = jnp.arange(nt)
     sqrt2 = jnp.sqrt(2.0)
 
@@ -122,11 +124,14 @@ def _from_spectrum_to_wdm_impl(
     ) / (nt * nf)
 
     # Assemble (nt, nf+1): [DC | interior | Nyquist]
-    return jnp.concatenate([
+    return jnp.asarray(
+        jnp.concatenate([
         coeffs_dc[:, None],
         coeffs_mid,
         coeffs_nyq[:, None],
-    ], axis=1)
+    ], axis=1),
+        dtype=real_dtype,
+    )
 
 
 @partial(jit, static_argnames=("nt", "nf"))
@@ -167,7 +172,7 @@ def _from_wdm_to_spectrum_impl(
     ylm = _cnm_jax(n_idx, m_idx) * w[:, 1:nf] * nf / jnp.sqrt(2.0)
     spectrum_blocks = jnp.fft.fft(ylm, axis=0)
 
-    x_recon = jnp.zeros(n_total, dtype=jnp.complex128)
+    x_recon = jnp.zeros(n_total, dtype=window.dtype)
     narr = jnp.arange(nt)
 
     # --- DC edge ---
@@ -224,6 +229,7 @@ def from_time_to_wdm(
     d: float,
     dt: float,
     backend: Backend,
+    dtype: Any | None = None,
 ) -> Any:
     """Forward WDM transform (JAX backend).
 
@@ -233,20 +239,23 @@ def from_time_to_wdm(
 
     Returns shape ``(nt, nf + 1)`` with all-real coefficients.
     """
-    xp = backend.xp
+    precision = resolve_precision(backend, dtype)
     validate_transform_shape(nt, nf)
     validate_window_parameter(a)
 
     n_total = nt * nf
-    samples = backend.asarray(data, dtype=xp.complex128)
+    samples = backend.asarray(data, dtype=precision.complex_dtype)
     if samples.ndim != 1:
         raise ValueError("Input time-domain data must be one-dimensional.")
     if int(samples.shape[0]) != n_total:
         raise ValueError(f"Input length {samples.shape[0]} must equal nt*nf={n_total}.")
 
-    spectrum = jnp.fft.fft(samples)
-    window = jnp.asarray(phi_window(backend, nt, nf, dt, a, d), dtype=jnp.complex128)
-    return _from_spectrum_to_wdm_impl(spectrum, window, nt, nf)
+    spectrum = jnp.asarray(jnp.fft.fft(samples), dtype=precision.complex_dtype)
+    window = jnp.asarray(
+        phi_window(backend, nt, nf, dt, a, d, dtype=precision.real_dtype),
+        dtype=precision.complex_dtype,
+    )
+    return jnp.asarray(_from_spectrum_to_wdm_impl(spectrum, window, nt, nf), dtype=precision.real_dtype)
 
 
 def from_freq_to_wdm(
@@ -258,32 +267,44 @@ def from_freq_to_wdm(
     d: float,
     dt: float,
     backend: Backend,
+    dtype: Any | None = None,
 ) -> Any:
     """Forward WDM transform from Fourier-domain samples (JAX backend)."""
-    xp = backend.xp
+    precision = resolve_precision(backend, dtype)
     validate_transform_shape(nt, nf)
     validate_window_parameter(a)
 
     n_total = nt * nf
-    spectrum = backend.asarray(data, dtype=xp.complex128)
+    spectrum = backend.asarray(data, dtype=precision.complex_dtype)
     if spectrum.ndim != 1:
         raise ValueError("Input frequency-domain data must be one-dimensional.")
     if int(spectrum.shape[0]) != n_total:
         raise ValueError(f"Input length {spectrum.shape[0]} must equal nt*nf={n_total}.")
 
-    projected = _project_to_real_signal_spectrum_impl(spectrum)
-    window = jnp.asarray(phi_window(backend, nt, nf, dt, a, d), dtype=jnp.complex128)
-    return _from_spectrum_to_wdm_impl(projected, window, nt, nf)
+    projected = jnp.asarray(_project_to_real_signal_spectrum_impl(spectrum), dtype=precision.complex_dtype)
+    window = jnp.asarray(
+        phi_window(backend, nt, nf, dt, a, d, dtype=precision.real_dtype),
+        dtype=precision.complex_dtype,
+    )
+    return jnp.asarray(_from_spectrum_to_wdm_impl(projected, window, nt, nf), dtype=precision.real_dtype)
 
 
-def from_wdm_to_time(coeffs: Any, *, a: float, d: float, dt: float, backend: Backend) -> Any:
+def from_wdm_to_time(
+    coeffs: Any,
+    *,
+    a: float,
+    d: float,
+    dt: float,
+    backend: Backend,
+    dtype: Any | None = None,
+) -> Any:
     """Inverse WDM transform (JAX backend).
 
     See ``xp_backend.from_wdm_to_time`` for the full mathematical description.
     Accepts shape ``(nt, nf + 1)``.
     """
-    xp = backend.xp
-    w = backend.asarray(coeffs, dtype=xp.float64)
+    precision = resolve_precision(backend, dtype) if dtype is not None else infer_real_precision(backend, coeffs)
+    w = backend.asarray(coeffs, dtype=precision.real_dtype)
     if w.ndim != 2:
         raise ValueError("WDM coefficients must be a two-dimensional array.")
 
@@ -292,9 +313,12 @@ def from_wdm_to_time(coeffs: Any, *, a: float, d: float, dt: float, backend: Bac
     validate_transform_shape(nt, nf)
     validate_window_parameter(a)
 
-    window = jnp.asarray(phi_window(backend, nt, nf, dt, a, d), dtype=jnp.complex128)
-    spectrum = _from_wdm_to_spectrum_impl(w, window, nt, nf)
-    return jnp.real(jnp.fft.ifft(spectrum))
+    window = jnp.asarray(
+        phi_window(backend, nt, nf, dt, a, d, dtype=precision.real_dtype),
+        dtype=precision.complex_dtype,
+    )
+    spectrum = jnp.asarray(_from_wdm_to_spectrum_impl(w, window, nt, nf), dtype=precision.complex_dtype)
+    return jnp.asarray(jnp.real(jnp.fft.ifft(spectrum)), dtype=precision.real_dtype)
 
 
 def from_wdm_to_freq(
@@ -304,10 +328,11 @@ def from_wdm_to_freq(
     a: float,
     d: float,
     backend: Backend,
+    dtype: Any | None = None,
 ) -> Any:
     """Frequency-domain reconstruction from WDM coefficients (JAX backend)."""
-    xp = backend.xp
-    w = backend.asarray(coeffs, dtype=xp.float64)
+    precision = resolve_precision(backend, dtype) if dtype is not None else infer_real_precision(backend, coeffs)
+    w = backend.asarray(coeffs, dtype=precision.real_dtype)
     if w.ndim != 2:
         raise ValueError("WDM coefficients must be a two-dimensional array.")
 
@@ -316,6 +341,9 @@ def from_wdm_to_freq(
     validate_transform_shape(nt, nf)
     validate_window_parameter(a)
 
-    window = jnp.asarray(phi_window(backend, nt, nf, dt, a, d), dtype=jnp.complex128)
-    analytic = _from_wdm_to_spectrum_impl(w, window, nt, nf)
-    return _project_to_real_signal_spectrum_impl(analytic)
+    window = jnp.asarray(
+        phi_window(backend, nt, nf, dt, a, d, dtype=precision.real_dtype),
+        dtype=precision.complex_dtype,
+    )
+    analytic = jnp.asarray(_from_wdm_to_spectrum_impl(w, window, nt, nf), dtype=precision.complex_dtype)
+    return jnp.asarray(_project_to_real_signal_spectrum_impl(analytic), dtype=precision.complex_dtype)

@@ -12,7 +12,7 @@ The coefficient matrix has shape ``(nt, nf + 1)``:
 * ``coeffs[:, 1:nf]`` — interior channels (m = 1 … nf−1)
 * ``coeffs[:, nf]``   — Nyquist channel (m = nf)
 
-All entries are real-valued (float64).
+All entries are real-valued, using either ``float32`` or ``float64``.
 """
 
 from __future__ import annotations
@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ..backends import Backend, get_backend
+from ..precision import infer_real_precision
 from ..transforms import from_freq_to_wdm, from_time_to_wdm, from_wdm_to_freq, from_wdm_to_time
 from ..windows import validate_transform_shape, validate_window_parameter
 from .series import FrequencySeries, TimeSeries
@@ -53,7 +54,8 @@ class WDM:
 
     def __post_init__(self) -> None:
         backend = get_backend(self.backend)
-        coeffs = backend.asarray(self.coeffs, dtype=backend.xp.float64)
+        precision = infer_real_precision(backend, self.coeffs)
+        coeffs = backend.asarray(self.coeffs, dtype=precision.real_dtype)
 
         if coeffs.ndim != 2:
             raise ValueError("WDM coeffs must be a two-dimensional array.")
@@ -87,6 +89,7 @@ class WDM:
         a: float = 1.0 / 3.0,
         d: float = 1.0,
         backend: str | Backend | None = None,
+        dtype: Any | None = None,
     ) -> "WDM":
         """Compute the forward WDM transform of a time-domain signal.
 
@@ -117,6 +120,7 @@ class WDM:
             d=d,
             dt=series.dt,
             backend=resolved_backend,
+            dtype=dtype,
         )
         return cls(coeffs=coeffs, dt=series.dt, a=a, d=d, backend=resolved_backend)
 
@@ -129,6 +133,7 @@ class WDM:
         a: float = 1.0 / 3.0,
         d: float = 1.0,
         backend: str | Backend | None = None,
+        dtype: Any | None = None,
     ) -> "WDM":
         """Compute the forward WDM transform from a frequency-domain signal.
 
@@ -162,6 +167,7 @@ class WDM:
             d=d,
             dt=series.dt,
             backend=resolved_backend,
+            dtype=dtype,
         )
         return cls(coeffs=coeffs, dt=series.dt, a=a, d=d, backend=resolved_backend)
 

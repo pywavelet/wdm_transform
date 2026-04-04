@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -9,8 +10,8 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-DOCS_CONFIG = ROOT / "docs" / "mkdocs.yml"
-DOCS_CONFIG_REL = Path("docs") / "mkdocs.yml"
+DOCS_CONFIG = ROOT / "mkdocs.yml"
+DOCS_CONFIG_REL = Path("mkdocs.yml")
 WALKTHROUGH = ROOT / "docs" / "examples" / "wdm_walkthrough.py"
 BENCHMARK_SCRIPT = ROOT / "docs" / "examples" / "generate_benchmark_plot.py"
 
@@ -108,6 +109,9 @@ def test_benchmark_artifact_script_executes(tmp_path: Path) -> None:
             "1024",
             "--runs",
             "1",
+            "--dtypes",
+            "float32",
+            "float64",
             "--output-json",
             str(json_path),
             "--output-plot",
@@ -122,3 +126,7 @@ def test_benchmark_artifact_script_executes(tmp_path: Path) -> None:
 
     assert json_path.exists()
     assert plot_path.exists()
+    payload = json.loads(json_path.read_text(encoding="utf-8"))
+    assert payload["metadata"]["dtypes"] == ["float32", "float64"]
+    assert "float32" in payload["forward"]["numpy"]
+    assert "float64" in payload["forward"]["numpy"]
