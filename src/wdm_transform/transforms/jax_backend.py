@@ -30,7 +30,6 @@ import jax.numpy as jnp
 from jax import jit
 
 from ..backends import Backend
-from ..datatypes.series import FrequencySeries
 from ..windows import phi_window, validate_transform_shape, validate_window_parameter
 
 
@@ -49,26 +48,16 @@ def _cnm_jax(n: Any, m: Any) -> Any:
     return jnp.exp((1j * jnp.pi / 4.0) * (1.0 - parity))
 
 
-def _phi_unit_jax(f: Any, a: float) -> Any:
-    r"""Cosine-tapered window Φ(f) evaluated at normalised frequencies (JAX version).
-
-    Identical to ``windows.phi_unit`` but uses ``jnp`` operations so it
-    can be traced by JAX's JIT compiler.
-
-    * |f| ≤ a        → 1
-    * a < |f| ≤ 1−a  → cos(π/2 · (|f|−a) / (1−2a))
-    * |f| > 1−a      → 0
-    """
-    b = 1.0 - 2.0 * a
-    abs_f = jnp.abs(f)
-    tapered = jnp.cos((jnp.pi / 2.0) * (abs_f - a) / b)
-    inner = jnp.where(abs_f > a, tapered, 1.0)
-    return jnp.where(abs_f > a + b, 0.0, inner)
+def _project_to_real_signal_spectrum_impl(spectrum: jnp.ndarray) -> jnp.ndarray:
+    """Return the discrete Fourier coefficients of ``real(ifft(spectrum))``."""
+    n_total = spectrum.shape[0]
+    mirror = (-jnp.arange(n_total)) % n_total
+    return 0.5 * (spectrum + jnp.conjugate(spectrum[mirror]))
 
 
 @partial(jit, static_argnames=("nt", "nf"))
-def _forward_wdm_impl(
-    samples: jnp.ndarray,
+def _from_spectrum_to_wdm_impl(
+    x_fft: jnp.ndarray,
     window: jnp.ndarray,
     nt: int,
     nf: int,
@@ -88,8 +77,8 @@ def _forward_wdm_impl(
 
     Parameters
     ----------
-    samples : jnp.ndarray, shape (N,)
-        Complex-valued FFT-ready input (already cast to complex128).
+    x_fft : jnp.ndarray, shape (N,)
+        Complex-valued Fourier-domain signal.
     window : jnp.ndarray, shape (nt,)
         Precomputed phi-window of length nt.
     nt, nf : int
@@ -97,7 +86,6 @@ def _forward_wdm_impl(
     """
     n_total = nt * nf
     half = nt // 2
-    x_fft = jnp.fft.fft(samples)
     narr = jnp.arange(nt)
     sqrt2 = jnp.sqrt(2.0)
 
@@ -142,7 +130,7 @@ def _forward_wdm_impl(
 
 
 @partial(jit, static_argnames=("nt", "nf"))
-def _inverse_wdm_impl(
+def _from_wdm_to_spectrum_impl(
     w: jnp.ndarray,
     window: jnp.ndarray,
     nt: int,
@@ -219,77 +207,7 @@ def _inverse_wdm_impl(
     )
     x_recon = x_recon.at[n_total // 2].add(jnp.sum(coeffs_nyq) * nf * window[0] / 2.0)
 
-    return jnp.real(jnp.fft.ifft(x_recon)) / (nf / 2.0)
-
-
-@partial(jit, static_argnames=("nt", "nf"))
-def _frequency_wdm_impl(
-    w: jnp.ndarray,
-    dt: float,
-    a: float,
-    nt: int,
-    nf: int,
-) -> jnp.ndarray:
-    r"""JIT-compiled frequency-domain reconstruction from WDM coefficients.
-
-    Evaluates the atom expansion:
-
-        X(f) = √(2·nf) · Σ_{n,m} W[n,m] · g_{n,m}(f)
-
-    All three channel types (DC, interior, Nyquist) are computed as
-    vectorised outer products and contracted via ``jnp.einsum``.
-
-    Parameters
-    ----------
-    w : jnp.ndarray, shape (nt, nf + 1)
-        Real-valued WDM coefficients.
-    dt : float
-        Sampling interval.
-    a : float
-        Window roll-off parameter.
-    nt, nf : int
-        Static shape parameters.
-    """
-    n_total = nt * nf
-    freqs = jnp.fft.fftfreq(n_total, d=dt)
-    dt_block = nf * dt
-    scaled_freqs = freqs * (2.0 * dt_block)  # f / DF where DF = 1/(2·DT)
-
-    n_idx = jnp.arange(nt)
-
-    # --- DC channel: g_{n,0}(f) = exp(-4πi·n·f·DT) · Φ(f/DF) ---
-    phase_dc = jnp.exp(-4j * jnp.pi * n_idx[:, None] * freqs[None, :] * dt_block)
-    phi_dc = _phi_unit_jax(scaled_freqs, a)
-    reconstructed = jnp.einsum("n,nk->k", w[:, 0], phase_dc) * phi_dc
-
-    # --- Nyquist channel: g_{n,nf}(f) = [Φ(f/DF+nf) + Φ(f/DF-nf)] · exp(-4πi·n·f·DT) ---
-    phi_nyq = _phi_unit_jax(scaled_freqs + nf, a) + _phi_unit_jax(scaled_freqs - nf, a)
-    reconstructed += jnp.einsum("n,nk->k", w[:, nf], phase_dc) * phi_nyq
-
-    # --- Interior channels (m = 1…nf−1), fully vectorised ---
-    mid_m = jnp.arange(1, nf)
-    mid_coeffs = w[:, 1:nf]
-
-    phase_mid = jnp.exp(-2j * jnp.pi * n_idx[:, None] * freqs[None, :] * dt_block)
-    parity = jnp.where((n_idx[:, None] * mid_m[None, :]) % 2 == 0, 1.0, -1.0)
-    cnm_vals = _cnm_jax(n_idx[:, None], mid_m[None, :])
-
-    phi_plus = _phi_unit_jax(scaled_freqs[None, :] + mid_m[:, None], a)
-    phi_minus = _phi_unit_jax(scaled_freqs[None, :] - mid_m[:, None], a)
-
-    basis = (
-        parity[:, :, None]
-        * (
-            jnp.conjugate(cnm_vals)[:, :, None] * phi_plus[None, :, :]
-            + cnm_vals[:, :, None] * phi_minus[None, :, :]
-        )
-        * phase_mid[:, None, :]
-        / jnp.sqrt(2.0)
-    )
-
-    reconstructed += jnp.einsum("nm,nmk->k", mid_coeffs, basis)
-
-    return reconstructed * jnp.sqrt(2.0 * nf)
+    return x_recon / (nf / 2.0)
 
 
 # ---------------------------------------------------------------------------
@@ -297,7 +215,7 @@ def _frequency_wdm_impl(
 # ---------------------------------------------------------------------------
 
 
-def forward_wdm(
+def from_time_to_wdm(
     data: Any,
     *,
     nt: int,
@@ -309,7 +227,7 @@ def forward_wdm(
 ) -> Any:
     """Forward WDM transform (JAX backend).
 
-    See ``xp_backend.forward_wdm`` for the full mathematical description.
+    See ``xp_backend.from_time_to_wdm`` for the full mathematical description.
     This entry point validates inputs, builds the phi-window on the host,
     converts it to a JAX array, and dispatches to the JIT-compiled kernel.
 
@@ -326,14 +244,42 @@ def forward_wdm(
     if int(samples.shape[0]) != n_total:
         raise ValueError(f"Input length {samples.shape[0]} must equal nt*nf={n_total}.")
 
+    spectrum = jnp.fft.fft(samples)
     window = jnp.asarray(phi_window(backend, nt, nf, dt, a, d), dtype=jnp.complex128)
-    return _forward_wdm_impl(samples, window, nt, nf)
+    return _from_spectrum_to_wdm_impl(spectrum, window, nt, nf)
 
 
-def inverse_wdm(coeffs: Any, *, a: float, d: float, dt: float, backend: Backend) -> Any:
+def from_freq_to_wdm(
+    data: Any,
+    *,
+    nt: int,
+    nf: int,
+    a: float,
+    d: float,
+    dt: float,
+    backend: Backend,
+) -> Any:
+    """Forward WDM transform from Fourier-domain samples (JAX backend)."""
+    xp = backend.xp
+    validate_transform_shape(nt, nf)
+    validate_window_parameter(a)
+
+    n_total = nt * nf
+    spectrum = backend.asarray(data, dtype=xp.complex128)
+    if spectrum.ndim != 1:
+        raise ValueError("Input frequency-domain data must be one-dimensional.")
+    if int(spectrum.shape[0]) != n_total:
+        raise ValueError(f"Input length {spectrum.shape[0]} must equal nt*nf={n_total}.")
+
+    projected = _project_to_real_signal_spectrum_impl(spectrum)
+    window = jnp.asarray(phi_window(backend, nt, nf, dt, a, d), dtype=jnp.complex128)
+    return _from_spectrum_to_wdm_impl(projected, window, nt, nf)
+
+
+def from_wdm_to_time(coeffs: Any, *, a: float, d: float, dt: float, backend: Backend) -> Any:
     """Inverse WDM transform (JAX backend).
 
-    See ``xp_backend.inverse_wdm`` for the full mathematical description.
+    See ``xp_backend.from_wdm_to_time`` for the full mathematical description.
     Accepts shape ``(nt, nf + 1)``.
     """
     xp = backend.xp
@@ -347,25 +293,19 @@ def inverse_wdm(coeffs: Any, *, a: float, d: float, dt: float, backend: Backend)
     validate_window_parameter(a)
 
     window = jnp.asarray(phi_window(backend, nt, nf, dt, a, d), dtype=jnp.complex128)
-    return _inverse_wdm_impl(w, window, nt, nf)
+    spectrum = _from_wdm_to_spectrum_impl(w, window, nt, nf)
+    return jnp.real(jnp.fft.ifft(spectrum))
 
 
-def frequency_wdm(
+def from_wdm_to_freq(
     coeffs: Any,
     *,
     dt: float,
     a: float,
     d: float,
     backend: Backend,
-) -> FrequencySeries:
-    """Frequency-domain reconstruction from WDM coefficients (JAX backend).
-
-    See ``xp_backend.frequency_wdm`` for the full mathematical description.
-    Builds the full (nt, nf−1, N) atom tensor and contracts via ``einsum``.
-    Accepts shape ``(nt, nf + 1)``.
-    """
-    # Assume d=1 for simplicity for now; ask Giorgio if/when this should vary.
-    del d
+) -> Any:
+    """Frequency-domain reconstruction from WDM coefficients (JAX backend)."""
     xp = backend.xp
     w = backend.asarray(coeffs, dtype=xp.float64)
     if w.ndim != 2:
@@ -376,9 +316,6 @@ def frequency_wdm(
     validate_transform_shape(nt, nf)
     validate_window_parameter(a)
 
-    reconstructed = _frequency_wdm_impl(w, dt, a, nt, nf)
-    return FrequencySeries(
-        reconstructed,
-        df=1.0 / (nt * nf * dt),
-        backend=backend,
-    )
+    window = jnp.asarray(phi_window(backend, nt, nf, dt, a, d), dtype=jnp.complex128)
+    analytic = _from_wdm_to_spectrum_impl(w, window, nt, nf)
+    return _project_to_real_signal_spectrum_impl(analytic)

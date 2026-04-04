@@ -68,7 +68,7 @@ from matplotlib.lines import Line2D
 from numpyro.infer import MCMC, NUTS, init_to_value
 
 from wdm_transform import TimeSeries
-from wdm_transform.transforms import forward_wdm
+from wdm_transform.transforms import from_time_to_wdm
 
 
 RNG = np.random.default_rng(21)
@@ -225,7 +225,7 @@ def run_wdm_nuts(
         # Compare the gapped data to the ungapped signal model only in WDM bins
         # where the gap effect is small.
         trial = amp * jnp.sin(2.0 * jnp.pi * freq0 * j_times + phi0)
-        trial_wdm = forward_wdm(
+        trial_wdm = from_time_to_wdm(
             trial,
             nt=nt,
             nf=nf,

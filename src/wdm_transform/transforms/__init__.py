@@ -34,7 +34,7 @@ def _get_transform_module(backend: str | Backend | None) -> ModuleType:
     return import_module(module_name)
 
 
-def forward_wdm(
+def from_time_to_wdm(
     data: Any,
     *,
     nt: int,
@@ -76,10 +76,26 @@ def forward_wdm(
     """
     resolved_backend = get_backend(backend)
     module = _get_transform_module(resolved_backend)
-    return module.forward_wdm(data, nt=nt, nf=nf, a=a, d=d, dt=dt, backend=resolved_backend)
+    return module.from_time_to_wdm(data, nt=nt, nf=nf, a=a, d=d, dt=dt, backend=resolved_backend)
 
 
-def inverse_wdm(
+def from_freq_to_wdm(
+    data: Any,
+    *,
+    nt: int,
+    nf: int,
+    a: float,
+    d: float,
+    dt: float,
+    backend: str | Backend | None = None,
+) -> Any:
+    """Compute WDM coefficients from full Fourier-domain samples."""
+    resolved_backend = get_backend(backend)
+    module = _get_transform_module(resolved_backend)
+    return module.from_freq_to_wdm(data, nt=nt, nf=nf, a=a, d=d, dt=dt, backend=resolved_backend)
+
+
+def from_wdm_to_time(
     coeffs: Any,
     *,
     a: float,
@@ -110,10 +126,10 @@ def inverse_wdm(
     """
     resolved_backend = get_backend(backend)
     module = _get_transform_module(resolved_backend)
-    return module.inverse_wdm(coeffs, a=a, d=d, dt=dt, backend=resolved_backend)
+    return module.from_wdm_to_time(coeffs, a=a, d=d, dt=dt, backend=resolved_backend)
 
 
-def frequency_wdm(
+def from_wdm_to_freq(
     coeffs: Any,
     *,
     dt: float,
@@ -139,13 +155,18 @@ def frequency_wdm(
 
     Returns
     -------
-    FrequencySeries
-        Frequency-domain reconstruction on the discrete Fourier grid implied by
+    array_like
+        Complex-valued Fourier samples on the discrete Fourier grid implied by
         ``dt`` and the coefficient shape.
     """
     resolved_backend = get_backend(backend)
     module = _get_transform_module(resolved_backend)
-    return module.frequency_wdm(coeffs, dt=dt, a=a, d=d, backend=resolved_backend)
+    return module.from_wdm_to_freq(coeffs, dt=dt, a=a, d=d, backend=resolved_backend)
 
 
-__all__ = ["forward_wdm", "inverse_wdm", "frequency_wdm"]
+__all__ = [
+    "from_time_to_wdm",
+    "from_freq_to_wdm",
+    "from_wdm_to_time",
+    "from_wdm_to_freq",
+]

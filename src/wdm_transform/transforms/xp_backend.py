@@ -43,11 +43,113 @@ from __future__ import annotations
 from typing import Any
 
 from ..backends import Backend
-from ..datatypes.series import FrequencySeries
-from ..windows import cnm, gnmf, phi_unit, phi_window, validate_transform_shape, validate_window_parameter
+from ..windows import cnm, phi_window, validate_transform_shape, validate_window_parameter
 
 
-def forward_wdm(
+def _project_to_real_signal_spectrum(spectrum: Any, backend: Backend) -> Any:
+    """Return the discrete Fourier coefficients of ``real(ifft(spectrum))``."""
+    xp = backend.xp
+    n_total = int(spectrum.shape[0])
+    mirror = (-xp.arange(n_total)) % n_total
+    return 0.5 * (spectrum + xp.conjugate(spectrum[mirror]))
+
+
+def _compute_wdm_from_spectrum(
+    x_fft: Any,
+    *,
+    nt: int,
+    nf: int,
+    window: Any,
+    backend: Backend,
+) -> Any:
+    """Project a full Fourier-domain signal onto the WDM basis."""
+    xp = backend.xp
+    n_total = nt * nf
+    coeffs = xp.zeros((nt, nf + 1), dtype=xp.float64)
+    half = nt // 2
+    narr = xp.arange(nt)
+
+    # --- DC edge channel (m = 0) ---
+    block = x_fft[1:half] * window[1:half]
+    larr = xp.arange(1, half)
+    coeffs[:, 0] = xp.real(
+        xp.sum(xp.exp(4j * xp.pi * larr[None, :] * narr[:, None] / nt) * block[None, :], axis=1)
+        + x_fft[0] * window[0] / 2.0
+    ) / (nt * nf)
+
+    # --- Interior sub-bands (m = 1 … nf−1) ---
+    for m in range(1, nf):
+        phase = xp.conjugate(cnm(backend, narr, m))
+        block = xp.concatenate(
+            [
+                x_fft[m * half:(m + 1) * half],
+                x_fft[(m - 1) * half:m * half],
+            ]
+        )
+        xnm_time = backend.fft.ifft(block * window)
+        coeffs[:, m] = (xp.sqrt(2.0) / nf) * xp.real(phase * xnm_time)
+
+    # --- Nyquist edge channel (m = nf) ---
+    block = x_fft[n_total // 2 - half:n_total // 2] * window[-half:]
+    larr = xp.arange(n_total // 2 - half, n_total // 2)
+    coeffs[:, nf] = xp.real(
+        xp.sum(xp.exp(4j * xp.pi * larr[None, :] * narr[:, None] / nt) * block[None, :], axis=1)
+        + x_fft[n_total // 2] * window[0] / 2.0
+    ) / (nt * nf)
+
+    return coeffs
+
+
+def _reconstruct_spectrum_from_wdm(
+    w: Any,
+    *,
+    nt: int,
+    nf: int,
+    window: Any,
+    backend: Backend,
+) -> Any:
+    """Reconstruct the Fourier-domain signal represented by WDM coefficients."""
+    xp = backend.xp
+    n_total = nt * nf
+    half = nt // 2
+    coeffs_dc = w[:, 0]
+    coeffs_nyq = w[:, nf]
+
+    n_idx = xp.arange(nt)[:, None]
+    m_idx = xp.arange(1, nf)[None, :]
+    ylm = cnm(backend, n_idx, m_idx) * w[:, 1:nf] * nf / xp.sqrt(2.0)
+    spectrum_blocks = backend.fft.fft(ylm, axis=0)
+
+    x_recon = xp.zeros(n_total, dtype=xp.complex128)
+    narr = xp.arange(nt)
+
+    # --- DC edge: direct DFT synthesis into bins [1, half) ---
+    larr = xp.arange(1, half)
+    x_recon[1:half] += (
+        xp.sum(coeffs_dc[:, None] * xp.exp(-4j * xp.pi * narr[:, None] * larr[None, :] / nt), axis=0)
+        * nf
+        * window[1:half]
+    )
+    x_recon[0] += xp.sum(coeffs_dc) * nf * window[0] / 2.0
+
+    # --- Interior sub-bands: place each windowed block at its offset ---
+    for m in range(1, nf):
+        block = spectrum_blocks[:, m - 1] * window
+        x_recon[(m - 1) * half:(m + 1) * half] += xp.concatenate([block[half:], block[:half]])
+
+    # --- Nyquist edge: direct DFT synthesis near N/2 ---
+    larr = xp.arange(n_total // 2 - half, n_total // 2)
+    x_recon[n_total // 2 - half:n_total // 2] += (
+        xp.sum(coeffs_nyq[:, None] * xp.exp(-4j * xp.pi * narr[:, None] * larr[None, :] / nt), axis=0)
+        * nf
+        * window[-half:]
+    )
+    x_recon[n_total // 2] += xp.sum(coeffs_nyq) * nf * window[0] / 2.0
+
+    return x_recon / (nf / 2.0)
+
+
+def from_time_to_wdm(
     data: Any,
     *,
     nt: int,
@@ -129,59 +231,42 @@ def forward_wdm(
     if int(samples.shape[0]) != n_total:
         raise ValueError(f"Input length {samples.shape[0]} must equal nt*nf={n_total}.")
 
-    # Full-length FFT of the input signal
     x_fft = backend.fft.fft(samples)
-
-    # Build the length-nt phi-window, scaled by √(2·nf) for unitarity
     window = backend.asarray(phi_window(backend, nt, nf, dt, a, d), dtype=xp.complex128)
-
-    coeffs = xp.zeros((nt, nf + 1), dtype=xp.float64)
-    half = nt // 2
-    narr = xp.arange(nt)
-
-    # --- DC edge channel (m = 0) ---
-    # Extract the lowest half frequency bins, window them, and project
-    # onto the DFT basis exp(4πi·l·n/nt).
-    block = x_fft[1:half] * window[1:half]
-    larr = xp.arange(1, half)
-    coeffs[:, 0] = xp.real(
-        xp.sum(xp.exp(4j * xp.pi * larr[None, :] * narr[:, None] / nt) * block[None, :], axis=1)
-        + x_fft[0] * window[0] / 2.0
-    ) / (nt * nf)
-
-    # --- Interior sub-bands (m = 1 … nf−1) ---
-    # For each channel m, the relevant spectrum slice is
-    # [m·half, (m+1)·half) ∪ [(m-1)·half, m·half), i.e. a length-nt
-    # block centred on frequency index m·half.  We concatenate upper
-    # then lower halves, multiply by the phi-window, IFFT, and extract
-    # the real part after phase correction by conj(C_{n,m}).
-    for m in range(1, nf):
-        phase = xp.conjugate(cnm(backend, narr, m))
-        block = xp.concatenate(
-            [
-                x_fft[m * half:(m + 1) * half],
-                x_fft[(m - 1) * half:m * half],
-            ]
-        )
-        xnm_time = backend.fft.ifft(block * window)
-        coeffs[:, m] = (xp.sqrt(2.0) / nf) * xp.real(phase * xnm_time)
-
-    # --- Nyquist edge channel (m = nf) ---
-    # Same structure as DC but centred at N/2.
-    block = x_fft[n_total // 2 - half:n_total // 2] * window[-half:]
-    larr = xp.arange(n_total // 2 - half, n_total // 2)
-    coeffs[:, nf] = xp.real(
-        xp.sum(xp.exp(4j * xp.pi * larr[None, :] * narr[:, None] / nt) * block[None, :], axis=1)
-        + x_fft[n_total // 2] * window[0] / 2.0
-    ) / (nt * nf)
-
-    return coeffs
+    return _compute_wdm_from_spectrum(x_fft, nt=nt, nf=nf, window=window, backend=backend)
 
 
-def inverse_wdm(coeffs: Any, *, a: float, d: float, dt: float, backend: Backend) -> Any:
+def from_freq_to_wdm(
+    data: Any,
+    *,
+    nt: int,
+    nf: int,
+    a: float,
+    d: float,
+    dt: float,
+    backend: Backend,
+) -> Any:
+    """Compute WDM coefficients from full Fourier-domain samples."""
+    xp = backend.xp
+    validate_transform_shape(nt, nf)
+    validate_window_parameter(a)
+
+    n_total = nt * nf
+    spectrum = backend.asarray(data, dtype=xp.complex128)
+    if spectrum.ndim != 1:
+        raise ValueError("Input frequency-domain data must be one-dimensional.")
+    if int(spectrum.shape[0]) != n_total:
+        raise ValueError(f"Input length {spectrum.shape[0]} must equal nt*nf={n_total}.")
+
+    projected = _project_to_real_signal_spectrum(spectrum, backend)
+    window = backend.asarray(phi_window(backend, nt, nf, dt, a, d), dtype=xp.complex128)
+    return _compute_wdm_from_spectrum(projected, nt=nt, nf=nf, window=window, backend=backend)
+
+
+def from_wdm_to_time(coeffs: Any, *, a: float, d: float, dt: float, backend: Backend) -> Any:
     r"""Reconstruct a time-domain signal from WDM coefficients.
 
-    This inverts ``forward_wdm``.  The reconstruction operates in the
+    This inverts ``from_time_to_wdm``.  The reconstruction operates in the
     frequency domain: each sub-band's contribution to the full spectrum
     X(f) is computed and accumulated, then a single inverse FFT recovers
     x(t).
@@ -218,8 +303,8 @@ def inverse_wdm(coeffs: Any, *, a: float, d: float, dt: float, backend: Backend)
 
     Analogous to DC but targeting the top half of the spectrum.
 
-    Finally, an inverse FFT of the accumulated X(f) gives x(t), scaled
-    by 2/nf for normalisation.
+    Finally, taking the real part of the inverse FFT of the accumulated
+    spectrum gives x(t).
 
     Parameters
     ----------
@@ -247,100 +332,20 @@ def inverse_wdm(coeffs: Any, *, a: float, d: float, dt: float, backend: Backend)
     validate_transform_shape(nt, nf)
     validate_window_parameter(a)
 
-    n_total = nt * nf
-    half = nt // 2
     window = backend.asarray(phi_window(backend, nt, nf, dt, a, d), dtype=xp.complex128)
-
-    coeffs_dc = w[:, 0]
-    coeffs_nyq = w[:, nf]
-
-    # Build modulated coefficients y[n, m] = C_{n,m} · W[n, m] · nf / √2
-    # for interior channels, and FFT along the time axis
-    n_idx = xp.arange(nt)[:, None]
-    m_idx = xp.arange(1, nf)[None, :]
-    ylm = cnm(backend, n_idx, m_idx) * w[:, 1:nf] * nf / xp.sqrt(2.0)
-    spectrum_blocks = backend.fft.fft(ylm, axis=0)
-
-    x_recon = xp.zeros(n_total, dtype=xp.complex128)
-    narr = xp.arange(nt)
-
-    # --- DC edge: direct DFT synthesis into bins [1, half) ---
-    larr = xp.arange(1, half)
-    x_recon[1:half] += (
-        xp.sum(coeffs_dc[:, None] * xp.exp(-4j * xp.pi * narr[:, None] * larr[None, :] / nt), axis=0)
-        * nf
-        * window[1:half]
-    )
-    x_recon[0] += xp.sum(coeffs_dc) * nf * window[0] / 2.0
-
-    # --- Interior sub-bands: place each windowed block at its offset ---
-    # spectrum_blocks[:, m-1] · Φ is split into [upper, lower] halves and
-    # written to indices [(m-1)·half, (m+1)·half).
-    for m in range(1, nf):
-        block = spectrum_blocks[:, m - 1] * window
-        x_recon[(m - 1) * half:(m + 1) * half] += xp.concatenate([block[half:], block[:half]])
-
-    # --- Nyquist edge: direct DFT synthesis near N/2 ---
-    larr = xp.arange(n_total // 2 - half, n_total // 2)
-    x_recon[n_total // 2 - half:n_total // 2] += (
-        xp.sum(coeffs_nyq[:, None] * xp.exp(-4j * xp.pi * narr[:, None] * larr[None, :] / nt), axis=0)
-        * nf
-        * window[-half:]
-    )
-    x_recon[n_total // 2] += xp.sum(coeffs_nyq) * nf * window[0] / 2.0
-
-    # Inverse FFT and normalise: factor 2/nf completes the unitarity relation
-    return xp.real(backend.fft.ifft(x_recon)) / (nf / 2.0)
+    spectrum = _reconstruct_spectrum_from_wdm(w, nt=nt, nf=nf, window=window, backend=backend)
+    return xp.real(backend.fft.ifft(spectrum))
 
 
-def frequency_wdm(
+def from_wdm_to_freq(
     coeffs: Any,
     *,
-    dt: float,
     a: float,
     d: float,
+    dt: float,
     backend: Backend,
-) -> FrequencySeries:
-    r"""Reconstruct the frequency-domain signal directly from WDM coefficients.
-
-    Rather than going through the time domain, this evaluates the Gabor
-    atom expansion in the frequency domain:
-
-        X(f) = √(2·nf) · Σ_{n,m}  W[n, m] · g_{n,m}(f)
-
-    where g_{n,m}(f) are the WDM basis atoms (see ``windows.gnmf``).
-
-    The implementation precomputes three atom tables:
-
-    * ``g0_tab[n, k]``    — DC atoms     (m = 0),   shape (nt, N)
-    * ``gN_tab[n, k]``    — Nyquist atoms (m = nf),  shape (nt, N)
-    * ``gmid_tab[n, m, k]`` — interior atoms (m = 1…nf−1), shape (nt, nf−1, N)
-
-    and contracts them with the coefficient matrix via ``einsum``:
-
-        X[k] = Σ_n W[n,0] · g0[n,k]
-             + Σ_n W[n,nf] · gN[n,k]
-             + Σ_{n,m} W[n,m] · gmid[n,m,k]
-
-    This is O(nt · nf · N) in memory but avoids Python loops over
-    (n, m) pairs, giving a large speed-up for moderate problem sizes.
-
-    Parameters
-    ----------
-    coeffs : array, shape (nt, nf + 1), float64
-        Real-valued WDM coefficients.
-    dt : float
-        Sampling interval of the original signal.
-    a, d : float
-        Window parameters (d is reserved/unused).
-    backend : Backend
-        Array / FFT backend.
-
-    Returns
-    -------
-    FrequencySeries
-        Reconstructed frequency-domain signal, with ``df = 1 / (N · dt)``.
-    """
+) -> Any:
+    """Reconstruct the Fourier-domain signal represented by WDM coefficients."""
     xp = backend.xp
     w = backend.asarray(coeffs, dtype=xp.float64)
     if w.ndim != 2:
@@ -351,27 +356,6 @@ def frequency_wdm(
     validate_transform_shape(nt, nf)
     validate_window_parameter(a)
 
-    n_total = nt * nf
-    freqs = backend.fft.fftfreq(n_total, d=dt)
-    dt_block = nf * dt
-
-    # Precompute atom tables: g0[n, k], gN[n, k], gmid[n, m-1, k]
-    g0_tab = xp.stack([gnmf(backend, n, 0, freqs, dt_block, nf, a, d) for n in range(nt)])
-    gN_tab = xp.stack([gnmf(backend, n, nf, freqs, dt_block, nf, a, d) for n in range(nt)])
-    gmid_tab = xp.stack([
-        xp.stack([gnmf(backend, n, m, freqs, dt_block, nf, a, d) for m in range(1, nf)])
-        for n in range(nt)
-    ])
-
-    # Contract: sum over time-shift index n (and channel index m for interior)
-    reconstructed = (
-        xp.einsum("n,nk->k", w[:, 0], g0_tab)
-        + xp.einsum("n,nk->k", w[:, nf], gN_tab)
-        + xp.einsum("nm,nmk->k", w[:, 1:nf], gmid_tab)
-    )
-
-    return FrequencySeries(
-        reconstructed * xp.sqrt(2.0 * nf),
-        df=1.0 / (n_total * dt),
-        backend=backend,
-    )
+    window = backend.asarray(phi_window(backend, nt, nf, dt, a, d), dtype=xp.complex128)
+    analytic = _reconstruct_spectrum_from_wdm(w, nt=nt, nf=nf, window=window, backend=backend)
+    return _project_to_real_signal_spectrum(analytic, backend)

@@ -27,4 +27,4 @@ available backends.
 - Each measurement uses one warmup call before timed runs.
 - JAX timings are synchronized before the timer stops, so they include the actual device work.
 - The timing panels show mean runtimes in milliseconds, with a shaded band for one standard deviation.
-- The error panel shows the maximum absolute difference after `inverse_wdm(forward_wdm(x))`.
+- The error panel shows the maximum absolute difference after `from_wdm_to_time(from_time_to_wdm(x))`.

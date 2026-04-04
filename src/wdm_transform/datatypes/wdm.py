@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ..backends import Backend, get_backend
-from ..transforms import forward_wdm, frequency_wdm, inverse_wdm
+from ..transforms import from_freq_to_wdm, from_time_to_wdm, from_wdm_to_freq, from_wdm_to_time
 from ..windows import validate_transform_shape, validate_window_parameter
 from .series import FrequencySeries, TimeSeries
 
@@ -109,7 +109,7 @@ class WDM:
                 f"TimeSeries length {series.n} is not divisible by nt={nt}."
             )
         nf = series.n // nt
-        coeffs = forward_wdm(
+        coeffs = from_time_to_wdm(
             series.data,
             nt=nt,
             nf=nf,
@@ -132,8 +132,8 @@ class WDM:
     ) -> "WDM":
         """Compute the forward WDM transform from a frequency-domain signal.
 
-        The signal is first converted to the time domain via inverse FFT,
-        then the standard forward WDM transform is applied.
+        Any non-Hermitian component of ``series`` is discarded so the result
+        matches applying the WDM transform to ``real(ifft(series.data))``.
 
         Parameters
         ----------
@@ -148,8 +148,22 @@ class WDM:
         backend : str, Backend, or None
             Override backend; defaults to the series' backend.
         """
-        time_series = series.to_time_series(real=True)
-        return cls.from_time_series(time_series, nt=nt, a=a, d=d, backend=backend)
+        resolved_backend = get_backend(backend or series.backend)
+        if series.n % nt != 0:
+            raise ValueError(
+                f"FrequencySeries length {series.n} is not divisible by nt={nt}."
+            )
+        nf = series.n // nt
+        coeffs = from_freq_to_wdm(
+            series.data,
+            nt=nt,
+            nf=nf,
+            a=a,
+            d=d,
+            dt=series.dt,
+            backend=resolved_backend,
+        )
+        return cls(coeffs=coeffs, dt=series.dt, a=a, d=d, backend=resolved_backend)
 
     @property
     def nt(self) -> int:
@@ -247,7 +261,7 @@ class WDM:
 
     def to_time_series(self) -> TimeSeries:
         """Reconstruct the time-domain signal via the inverse WDM transform."""
-        recovered = inverse_wdm(
+        recovered = from_wdm_to_time(
             self.coeffs,
             a=self.a,
             d=self.d,
@@ -258,13 +272,14 @@ class WDM:
 
     def to_frequency_series(self) -> FrequencySeries:
         """Reconstruct the frequency-domain signal from the Gabor atom expansion."""
-        return frequency_wdm(
+        recovered = from_wdm_to_freq(
             self.coeffs,
             dt=self.dt,
             a=self.a,
             d=self.d,
             backend=self.backend,
         )
+        return FrequencySeries(recovered, df=self.df, backend=self.backend)
 
     def plot(self, **kwargs: Any) -> tuple[Any, Any]:
         """Plot the WDM coefficient grid using the shared plotting helper."""
