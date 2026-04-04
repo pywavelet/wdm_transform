@@ -69,7 +69,14 @@ class WDM:
         object.__setattr__(self, "coeffs", coeffs)
 
     def __repr__(self) -> str:
-        return f"WDM(nt={self.nt}, nf={self.nf}, dt={self.dt}, a={self.a}, d={self.d})"
+        return (
+            "WDM("
+            f"nt={self.nt}, nf={self.nf}, n={self.n}, "
+            f"dt={self.dt}, df={self.df}, fs={self.fs}, nyquist={self.nyquist}, "
+            f"delta_t={self.delta_t}, delta_f={self.delta_f}, "
+            f"duration={self.duration}, a={self.a}, d={self.d}"
+            ")"
+        )
 
     @classmethod
     def from_time_series(
@@ -169,21 +176,44 @@ class WDM:
         return self.nt * self.nf
 
     @property
-    def sample_df(self) -> float:
-        """Fourier-bin spacing of the original signal represented by this transform."""
+    def df(self) -> float:
+        """Fourier-bin spacing of the underlying original signal.
+
+        This is the discrete-Fourier spacing implied by the original sample
+        cadence. For the WDM frequency-grid spacing, use :attr:`delta_f`.
+        """
         return 1.0 / (self.nt * self.nf * self.dt)
+
+    @property
+    def fs(self) -> float:
+        """Sampling frequency of the underlying original time series."""
+        return 1.0 / self.dt
+
+    @property
+    def nyquist(self) -> float:
+        """Nyquist frequency of the underlying original signal.
+
+        This is also the frequency of the highest WDM channel,
+        ``freq_grid[-1]``.
+        """
+        return 0.5 * self.fs
 
     @property
     def delta_t(self) -> float:
         """Spacing of the WDM time grid.
 
         Each WDM time bin spans ``nf * dt`` in the original sampling.
+        For the underlying original sample spacing, use :attr:`dt`.
         """
         return self.nf * self.dt
 
     @property
     def delta_f(self) -> float:
-        """Spacing of the WDM frequency grid."""
+        """Spacing of the WDM frequency grid.
+
+        This is the spacing between adjacent WDM channels. For the underlying
+        Fourier-bin spacing of the original signal, use :attr:`df`.
+        """
         return 1.0 / (2.0 * self.delta_t)
 
     @property

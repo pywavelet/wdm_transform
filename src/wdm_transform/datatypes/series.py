@@ -39,6 +39,12 @@ class TimeSeries:
         object.__setattr__(self, "backend", backend)
         object.__setattr__(self, "data", data)
 
+    def __repr__(self) -> str:
+        return (
+            f"TimeSeries(n={self.n}, dt={self.dt}, df={self.df}, "
+            f"fs={self.fs}, nyquist={self.nyquist}, duration={self.duration})"
+        )
+
     @property
     def n(self) -> int:
         """Number of samples."""
@@ -48,6 +54,16 @@ class TimeSeries:
     def df(self) -> float:
         """Fourier frequency spacing implied by the sample cadence."""
         return 1.0 / (self.n * self.dt)
+
+    @property
+    def fs(self) -> float:
+        """Sampling frequency of the underlying time-domain grid."""
+        return 1.0 / self.dt
+
+    @property
+    def nyquist(self) -> float:
+        """Nyquist frequency of the underlying sampled signal."""
+        return 0.5 * self.fs
 
     @property
     def duration(self) -> float:
@@ -117,6 +133,12 @@ class FrequencySeries:
         object.__setattr__(self, "backend", backend)
         object.__setattr__(self, "data", data)
 
+    def __repr__(self) -> str:
+        return (
+            f"FrequencySeries(n={self.n}, df={self.df}, dt={self.dt}, "
+            f"fs={self.fs}, nyquist={self.nyquist}, duration={self.duration})"
+        )
+
     @property
     def n(self) -> int:
         """Number of Fourier bins."""
@@ -126,6 +148,16 @@ class FrequencySeries:
     def dt(self) -> float:
         """Time spacing implied by the discrete Fourier grid."""
         return 1.0 / (self.n * self.df)
+
+    @property
+    def fs(self) -> float:
+        """Sampling frequency of the underlying time-domain signal."""
+        return 1.0 / self.dt
+
+    @property
+    def nyquist(self) -> float:
+        """Nyquist frequency of the underlying sampled signal."""
+        return 0.5 * self.fs
 
     @property
     def duration(self) -> float:

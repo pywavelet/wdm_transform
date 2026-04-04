@@ -76,7 +76,36 @@ class TestWDMRepr:
         r = repr(WDM(coeffs=data, dt=0.5))
         assert "nt=4" in r
         assert "nf=4" in r
+        assert "n=16" in r
         assert "dt=0.5" in r
+        assert "df=0.125" in r
+        assert "fs=2.0" in r
+        assert "nyquist=1.0" in r
+        assert "delta_t=2.0" in r
+        assert "delta_f=0.25" in r
+        assert "duration=8.0" in r
+        assert "array" not in r.lower()
+
+
+class TestSeriesRepr:
+    def test_time_series_repr_is_compact(self) -> None:
+        r = repr(TimeSeries(np.zeros(8), dt=0.25))
+        assert "n=8" in r
+        assert "dt=0.25" in r
+        assert "df=0.5" in r
+        assert "fs=4.0" in r
+        assert "nyquist=2.0" in r
+        assert "duration=2.0" in r
+        assert "array" not in r.lower()
+
+    def test_frequency_series_repr_is_compact(self) -> None:
+        r = repr(FrequencySeries(np.zeros(8, dtype=complex), df=0.5))
+        assert "n=8" in r
+        assert "df=0.5" in r
+        assert "dt=0.25" in r
+        assert "fs=4.0" in r
+        assert "nyquist=2.0" in r
+        assert "duration=2.0" in r
         assert "array" not in r.lower()
 
 
