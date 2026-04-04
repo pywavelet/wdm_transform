@@ -43,7 +43,6 @@ from __future__ import annotations
 from typing import Any
 
 from ..backends import Backend
-from ..precision import infer_real_precision, resolve_precision
 from ..windows import cnm, phi_window, validate_transform_shape, validate_window_parameter
 
 
@@ -62,13 +61,11 @@ def _compute_wdm_from_spectrum(
     nf: int,
     window: Any,
     backend: Backend,
-    precision_name: str,
 ) -> Any:
     """Project a full Fourier-domain signal onto the WDM basis."""
     xp = backend.xp
     n_total = nt * nf
-    coeffs_dtype = xp.float32 if precision_name == "float32" else xp.float64
-    coeffs = xp.zeros((nt, nf + 1), dtype=coeffs_dtype)
+    coeffs = xp.zeros((nt, nf + 1), dtype=xp.float64)
     half = nt // 2
     narr = xp.arange(nt)
 
@@ -110,7 +107,6 @@ def _reconstruct_spectrum_from_wdm(
     nf: int,
     window: Any,
     backend: Backend,
-    precision_name: str,
 ) -> Any:
     """Reconstruct the Fourier-domain signal represented by WDM coefficients."""
     xp = backend.xp
@@ -124,8 +120,7 @@ def _reconstruct_spectrum_from_wdm(
     ylm = cnm(backend, n_idx, m_idx) * w[:, 1:nf] * nf / xp.sqrt(2.0)
     spectrum_blocks = backend.fft.fft(ylm, axis=0)
 
-    spectrum_dtype = xp.complex64 if precision_name == "float32" else xp.complex128
-    x_recon = xp.zeros(n_total, dtype=spectrum_dtype)
+    x_recon = xp.zeros(n_total, dtype=xp.complex128)
     narr = xp.arange(nt)
 
     # --- DC edge: direct DFT synthesis into bins [1, half) ---
@@ -163,7 +158,6 @@ def from_time_to_wdm(
     d: float,
     dt: float,
     backend: Backend,
-    dtype: Any | None = None,
 ) -> Any:
     r"""Compute the forward WDM transform of a time-domain signal.
 
@@ -222,25 +216,24 @@ def from_time_to_wdm(
 
     Returns
     -------
-    coeffs : array, shape (nt, nf + 1), float32 or float64
+    coeffs : array, shape (nt, nf + 1), float64
         Real-valued WDM coefficients.  Column m corresponds to
         frequency channel m.
     """
-    precision = resolve_precision(backend, dtype)
     validate_transform_shape(nt, nf)
     validate_window_parameter(a)
 
     n_total = nt * nf
-    samples = backend.asarray(data, dtype=precision.complex_dtype)
+    samples = backend.asarray(data, dtype=backend.xp.complex128)
     if samples.ndim != 1:
         raise ValueError("Input time-domain data must be one-dimensional.")
     if int(samples.shape[0]) != n_total:
         raise ValueError(f"Input length {samples.shape[0]} must equal nt*nf={n_total}.")
 
-    x_fft = backend.asarray(backend.fft.fft(samples), dtype=precision.complex_dtype)
+    x_fft = backend.asarray(backend.fft.fft(samples), dtype=backend.xp.complex128)
     window = backend.asarray(
-        phi_window(backend, nt, nf, dt, a, d, dtype=precision.real_dtype),
-        dtype=precision.complex_dtype,
+        phi_window(backend, nt, nf, dt, a, d),
+        dtype=backend.xp.complex128,
     )
     return _compute_wdm_from_spectrum(
         x_fft,
@@ -248,7 +241,6 @@ def from_time_to_wdm(
         nf=nf,
         window=window,
         backend=backend,
-        precision_name=precision.name,
     )
 
 
@@ -261,15 +253,13 @@ def from_freq_to_wdm(
     d: float,
     dt: float,
     backend: Backend,
-    dtype: Any | None = None,
 ) -> Any:
     """Compute WDM coefficients from full Fourier-domain samples."""
-    precision = resolve_precision(backend, dtype)
     validate_transform_shape(nt, nf)
     validate_window_parameter(a)
 
     n_total = nt * nf
-    spectrum = backend.asarray(data, dtype=precision.complex_dtype)
+    spectrum = backend.asarray(data, dtype=backend.xp.complex128)
     if spectrum.ndim != 1:
         raise ValueError("Input frequency-domain data must be one-dimensional.")
     if int(spectrum.shape[0]) != n_total:
@@ -277,11 +267,11 @@ def from_freq_to_wdm(
 
     projected = backend.asarray(
         _project_to_real_signal_spectrum(spectrum, backend),
-        dtype=precision.complex_dtype,
+        dtype=backend.xp.complex128,
     )
     window = backend.asarray(
-        phi_window(backend, nt, nf, dt, a, d, dtype=precision.real_dtype),
-        dtype=precision.complex_dtype,
+        phi_window(backend, nt, nf, dt, a, d),
+        dtype=backend.xp.complex128,
     )
     return _compute_wdm_from_spectrum(
         projected,
@@ -289,7 +279,6 @@ def from_freq_to_wdm(
         nf=nf,
         window=window,
         backend=backend,
-        precision_name=precision.name,
     )
 
 
@@ -300,7 +289,6 @@ def from_wdm_to_time(
     d: float,
     dt: float,
     backend: Backend,
-    dtype: Any | None = None,
 ) -> Any:
     r"""Reconstruct a time-domain signal from WDM coefficients.
 
@@ -346,7 +334,7 @@ def from_wdm_to_time(
 
     Parameters
     ----------
-    coeffs : array, shape (nt, nf + 1), float32 or float64
+    coeffs : array, shape (nt, nf + 1), float64
         Real-valued WDM coefficients.
     a, d : float
         Window parameters (d is reserved/unused).
@@ -357,12 +345,11 @@ def from_wdm_to_time(
 
     Returns
     -------
-    signal : array, shape (nt * nf,), float32 or float64
+    signal : array, shape (nt * nf,), float64
         Reconstructed time-domain signal.
     """
     xp = backend.xp
-    precision = resolve_precision(backend, dtype) if dtype is not None else infer_real_precision(backend, coeffs)
-    w = backend.asarray(coeffs, dtype=precision.real_dtype)
+    w = backend.asarray(coeffs, dtype=xp.float64)
     if w.ndim != 2:
         raise ValueError("WDM coefficients must be a two-dimensional array.")
 
@@ -372,8 +359,8 @@ def from_wdm_to_time(
     validate_window_parameter(a)
 
     window = backend.asarray(
-        phi_window(backend, nt, nf, dt, a, d, dtype=precision.real_dtype),
-        dtype=precision.complex_dtype,
+        phi_window(backend, nt, nf, dt, a, d),
+        dtype=xp.complex128,
     )
     spectrum = _reconstruct_spectrum_from_wdm(
         w,
@@ -381,9 +368,8 @@ def from_wdm_to_time(
         nf=nf,
         window=window,
         backend=backend,
-        precision_name=precision.name,
     )
-    return backend.asarray(xp.real(backend.fft.ifft(spectrum)), dtype=precision.real_dtype)
+    return xp.real(backend.fft.ifft(spectrum))
 
 
 def from_wdm_to_freq(
@@ -393,11 +379,10 @@ def from_wdm_to_freq(
     d: float,
     dt: float,
     backend: Backend,
-    dtype: Any | None = None,
 ) -> Any:
     """Reconstruct the Fourier-domain signal represented by WDM coefficients."""
-    precision = resolve_precision(backend, dtype) if dtype is not None else infer_real_precision(backend, coeffs)
-    w = backend.asarray(coeffs, dtype=precision.real_dtype)
+    xp = backend.xp
+    w = backend.asarray(coeffs, dtype=xp.float64)
     if w.ndim != 2:
         raise ValueError("WDM coefficients must be a two-dimensional array.")
 
@@ -407,8 +392,8 @@ def from_wdm_to_freq(
     validate_window_parameter(a)
 
     window = backend.asarray(
-        phi_window(backend, nt, nf, dt, a, d, dtype=precision.real_dtype),
-        dtype=precision.complex_dtype,
+        phi_window(backend, nt, nf, dt, a, d),
+        dtype=xp.complex128,
     )
     analytic = _reconstruct_spectrum_from_wdm(
         w,
@@ -416,9 +401,5 @@ def from_wdm_to_freq(
         nf=nf,
         window=window,
         backend=backend,
-        precision_name=precision.name,
     )
-    return backend.asarray(
-        _project_to_real_signal_spectrum(analytic, backend),
-        dtype=precision.complex_dtype,
-    )
+    return _project_to_real_signal_spectrum(analytic, backend)

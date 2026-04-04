@@ -1,6 +1,4 @@
 from __future__ import annotations
-
-import json
 import os
 import subprocess
 import sys
@@ -109,9 +107,6 @@ def test_benchmark_artifact_script_executes(tmp_path: Path) -> None:
             "1024",
             "--runs",
             "1",
-            "--dtypes",
-            "float32",
-            "float64",
             "--output-json",
             str(json_path),
             "--output-plot",
@@ -126,7 +121,3 @@ def test_benchmark_artifact_script_executes(tmp_path: Path) -> None:
 
     assert json_path.exists()
     assert plot_path.exists()
-    payload = json.loads(json_path.read_text(encoding="utf-8"))
-    assert payload["metadata"]["dtypes"] == ["float32", "float64"]
-    assert "float32" in payload["forward"]["numpy"]
-    assert "float64" in payload["forward"]["numpy"]

@@ -58,9 +58,3 @@ def backend_name(request: pytest.FixtureRequest) -> str:
 @pytest.fixture
 def backend(backend_name: str) -> Backend:
     return get_backend(backend_name)
-
-
-@pytest.fixture(params=[pytest.param("float32", id="float32"), pytest.param("float64", id="float64")])
-def dtype_name(request: pytest.FixtureRequest) -> str:
-    return request.param
-

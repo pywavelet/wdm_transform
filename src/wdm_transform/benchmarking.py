@@ -19,7 +19,6 @@ import numpy as np
 from . import backends, transforms
 
 DEFAULT_BACKENDS = ["numpy", "jax"]
-DEFAULT_DTYPES = ["float64"]
 DEFAULT_N_VALUES = [
     2048,
     4096,
@@ -116,7 +115,6 @@ def _measure_runtime(
 def benchmark_forward(
     signal: np.ndarray,
     backend_name: str,
-    dtype_name: str,
     nt: int,
     nf: int,
     num_runs: int = 7,
@@ -126,8 +124,8 @@ def benchmark_forward(
     Returns ``(mean_seconds, std_seconds)``.
     """
     backend = backends.get_backend(backend_name)
-    fixed_params = {**FIXED_PARAMS, "backend": backend, "dtype": dtype_name}
-    backend_data = backend.asarray(signal, dtype=getattr(backend.xp, dtype_name))
+    fixed_params = {**FIXED_PARAMS, "backend": backend}
+    backend_data = backend.asarray(signal)
 
     return _measure_runtime(
         lambda: transforms.from_time_to_wdm(backend_data, nt=nt, nf=nf, **fixed_params),
@@ -138,7 +136,6 @@ def benchmark_forward(
 def benchmark_inverse(
     coeffs: np.ndarray,
     backend_name: str,
-    dtype_name: str,
     num_runs: int = 7,
 ) -> tuple[float, float]:  # pragma: no cover
     """Benchmark the inverse WDM transform.
@@ -146,8 +143,8 @@ def benchmark_inverse(
     Returns ``(mean_seconds, std_seconds)``.
     """
     backend = backends.get_backend(backend_name)
-    fixed_params = {**FIXED_PARAMS, "backend": backend, "dtype": dtype_name}
-    backend_coeffs = backend.asarray(coeffs, dtype=getattr(backend.xp, dtype_name))
+    fixed_params = {**FIXED_PARAMS, "backend": backend}
+    backend_coeffs = backend.asarray(coeffs)
 
     return _measure_runtime(
         lambda: transforms.from_wdm_to_time(backend_coeffs, **fixed_params),
@@ -158,14 +155,13 @@ def benchmark_inverse(
 def benchmark_roundtrip_error(
     signal: np.ndarray,
     backend_name: str,
-    dtype_name: str,
     nt: int,
     nf: int,
 ) -> dict[str, float | int]:  # pragma: no cover
     """Compute reconstruction error after a forward and inverse transform."""
     backend = backends.get_backend(backend_name)
-    fixed_params = {**FIXED_PARAMS, "backend": backend, "dtype": dtype_name}
-    backend_signal = backend.asarray(signal, dtype=getattr(backend.xp, dtype_name))
+    fixed_params = {**FIXED_PARAMS, "backend": backend}
+    backend_signal = backend.asarray(signal)
 
     coeffs = transforms.from_time_to_wdm(backend_signal, nt=nt, nf=nf, **fixed_params)
     recovered = transforms.from_wdm_to_time(coeffs, **fixed_params)
@@ -203,7 +199,6 @@ def _result_record(
 
 def run_benchmarks(  # pragma: no cover
     backends_to_test: list[str],
-    dtypes_to_test: list[str],
     n_values: list[int],
     num_runs: int = 7,
 ) -> dict[str, Any]:
@@ -213,7 +208,6 @@ def run_benchmarks(  # pragma: no cover
         "metadata": {
             "requested_backends": backends_to_test,
             "available_backends": available_backends,
-            "dtypes": dtypes_to_test,
             "n_values": n_values,
             "num_runs": num_runs,
             "parameters": FIXED_PARAMS,
@@ -239,40 +233,34 @@ def run_benchmarks(  # pragma: no cover
         results["forward"][backend_name] = {}
         print(f"\nBackend: {backend_name}")
         print("-" * 40)
+        for n in n_values:
+            factorization = find_factorization(n)
+            if factorization is None:
+                print(f"  N={n:>8}: SKIPPED (no valid factorization)")
+                continue
 
-        for dtype_name in dtypes_to_test:
-            results["forward"][backend_name][dtype_name] = {}
-            print(f"  Precision: {dtype_name}")
-
-            for n in n_values:
-                factorization = find_factorization(n)
-                if factorization is None:
-                    print(f"    N={n:>8}: SKIPPED (no valid factorization)")
-                    continue
-
-                nt, nf = factorization
-                signal = generate_benchmark_signal(nt * nf).astype(dtype_name)
-                try:
-                    mean_seconds, std_seconds = benchmark_forward(
-                        signal,
-                        backend_name,
-                        dtype_name,
-                        nt,
-                        nf,
-                        num_runs,
-                    )
-                    results["forward"][backend_name][dtype_name][n] = _result_record(
-                        mean_seconds,
-                        std_seconds,
-                        nt,
-                        nf,
-                    )
-                    print(
-                        f"    N={n:>8}: {mean_seconds*1e3:>10.4f} ms "
-                        f"+/- {std_seconds*1e3:>8.4f} ms (nt={nt}, nf={nf})"
-                    )
-                except Exception as exc:
-                    print(f"    N={n:>8}: FAILED ({type(exc).__name__}: {exc})")
+            nt, nf = factorization
+            signal = generate_benchmark_signal(nt * nf)
+            try:
+                mean_seconds, std_seconds = benchmark_forward(
+                    signal,
+                    backend_name,
+                    nt,
+                    nf,
+                    num_runs,
+                )
+                results["forward"][backend_name][n] = _result_record(
+                    mean_seconds,
+                    std_seconds,
+                    nt,
+                    nf,
+                )
+                print(
+                    f"  N={n:>8}: {mean_seconds*1e3:>10.4f} ms "
+                    f"+/- {std_seconds*1e3:>8.4f} ms (nt={nt}, nf={nf})"
+                )
+            except Exception as exc:
+                print(f"  N={n:>8}: FAILED ({type(exc).__name__}: {exc})")
 
     print("\n" + "=" * 70)
     print("INVERSE WDM TRANSFORM BENCHMARKS")
@@ -282,38 +270,32 @@ def run_benchmarks(  # pragma: no cover
         results["inverse"][backend_name] = {}
         print(f"\nBackend: {backend_name}")
         print("-" * 40)
+        for n in n_values:
+            factorization = find_factorization(n)
+            if factorization is None:
+                print(f"  N={n:>8}: SKIPPED (no valid factorization)")
+                continue
 
-        for dtype_name in dtypes_to_test:
-            results["inverse"][backend_name][dtype_name] = {}
-            print(f"  Precision: {dtype_name}")
-
-            for n in n_values:
-                factorization = find_factorization(n)
-                if factorization is None:
-                    print(f"    N={n:>8}: SKIPPED (no valid factorization)")
-                    continue
-
-                nt, nf = factorization
-                coeffs = generate_benchmark_coeffs(nt, nf).astype(dtype_name)
-                try:
-                    mean_seconds, std_seconds = benchmark_inverse(
-                        coeffs,
-                        backend_name,
-                        dtype_name,
-                        num_runs,
-                    )
-                    results["inverse"][backend_name][dtype_name][n] = _result_record(
-                        mean_seconds,
-                        std_seconds,
-                        nt,
-                        nf,
-                    )
-                    print(
-                        f"    N={n:>8}: {mean_seconds*1e3:>10.4f} ms "
-                        f"+/- {std_seconds*1e3:>8.4f} ms (nt={nt}, nf={nf})"
-                    )
-                except Exception as exc:
-                    print(f"    N={n:>8}: FAILED ({type(exc).__name__}: {exc})")
+            nt, nf = factorization
+            coeffs = generate_benchmark_coeffs(nt, nf)
+            try:
+                mean_seconds, std_seconds = benchmark_inverse(
+                    coeffs,
+                    backend_name,
+                    num_runs,
+                )
+                results["inverse"][backend_name][n] = _result_record(
+                    mean_seconds,
+                    std_seconds,
+                    nt,
+                    nf,
+                )
+                print(
+                    f"  N={n:>8}: {mean_seconds*1e3:>10.4f} ms "
+                    f"+/- {std_seconds*1e3:>8.4f} ms (nt={nt}, nf={nf})"
+                )
+            except Exception as exc:
+                print(f"  N={n:>8}: FAILED ({type(exc).__name__}: {exc})")
 
     print("\n" + "=" * 70)
     print("ROUNDTRIP RECONSTRUCTION ERROR")
@@ -323,35 +305,29 @@ def run_benchmarks(  # pragma: no cover
         results["error"][backend_name] = {}
         print(f"\nBackend: {backend_name}")
         print("-" * 40)
+        for n in n_values:
+            factorization = find_factorization(n)
+            if factorization is None:
+                print(f"  N={n:>8}: SKIPPED (no valid factorization)")
+                continue
 
-        for dtype_name in dtypes_to_test:
-            results["error"][backend_name][dtype_name] = {}
-            print(f"  Precision: {dtype_name}")
-
-            for n in n_values:
-                factorization = find_factorization(n)
-                if factorization is None:
-                    print(f"    N={n:>8}: SKIPPED (no valid factorization)")
-                    continue
-
-                nt, nf = factorization
-                signal = generate_benchmark_signal(nt * nf).astype(dtype_name)
-                try:
-                    error_record = benchmark_roundtrip_error(
-                        signal,
-                        backend_name,
-                        dtype_name,
-                        nt,
-                        nf,
-                    )
-                    results["error"][backend_name][dtype_name][n] = error_record
-                    print(
-                        f"    N={n:>8}: max abs={error_record['max_abs_error']:.3e}, "
-                        f"rel L2={error_record['relative_l2_error']:.3e} "
-                        f"(nt={nt}, nf={nf})"
-                    )
-                except Exception as exc:
-                    print(f"    N={n:>8}: FAILED ({type(exc).__name__}: {exc})")
+            nt, nf = factorization
+            signal = generate_benchmark_signal(nt * nf)
+            try:
+                error_record = benchmark_roundtrip_error(
+                    signal,
+                    backend_name,
+                    nt,
+                    nf,
+                )
+                results["error"][backend_name][n] = error_record
+                print(
+                    f"  N={n:>8}: max abs={error_record['max_abs_error']:.3e}, "
+                    f"rel L2={error_record['relative_l2_error']:.3e} "
+                    f"(nt={nt}, nf={nf})"
+                )
+            except Exception as exc:
+                print(f"  N={n:>8}: FAILED ({type(exc).__name__}: {exc})")
 
     return results
 
@@ -373,30 +349,17 @@ def print_summary(results: dict[str, Any]) -> None:  # pragma: no cover
             print(f"\n{transform_type.upper()} TRANSFORM:")
         print("-" * 40)
 
-        labels = [
-            (backend_name, dtype_name)
-            for backend_name, dtype_results in backends_data.items()
-            for dtype_name in dtype_results
-        ]
-        all_n = sorted(
-            {
-                n
-                for dtype_results in backends_data.values()
-                for records in dtype_results.values()
-                for n in records
-            }
-        )
-        header = f"{'N':>10} | " + " | ".join(
-            f"{backend}/{dtype_name:>4}" for backend, dtype_name in labels
-        )
+        labels = list(backends_data)
+        all_n = sorted({n for records in backends_data.values() for n in records})
+        header = f"{'N':>10} | " + " | ".join(f"{backend:>12}" for backend in labels)
         print(header)
         print("-" * len(header))
 
         for n in all_n:
             row = f"{n:>10} | "
             values = []
-            for backend_name, dtype_name in labels:
-                record = backends_data.get(backend_name, {}).get(dtype_name, {}).get(n)
+            for backend_name in labels:
+                record = backends_data.get(backend_name, {}).get(n)
                 if record is None:
                     values.append(f"{'SKIPPED':>12}")
                     continue
@@ -447,54 +410,37 @@ def plot_results(  # pragma: no cover
             "zorder": 4,
         },
     }
-    dtype_styles = {
-        "float32": {
-            "linestyle": "--",
-            "marker": "s",
-            "markerfacecolor": "white",
-            "markeredgewidth": 1.6,
-        },
-        "float64": {
-            "linestyle": "-",
-            "marker": "o",
-            "markerfacecolor": None,
-            "markeredgewidth": 1.2,
-        },
-    }
-
     for ax, transform_type in zip(axes, ("forward", "inverse", "error"), strict=True):
         backends_data = results.get(transform_type, {})
-        for backend_name, dtype_results in backends_data.items():
-            for dtype_name, backend_results in dtype_results.items():
-                ns = sorted(backend_results)
-                if not ns:
-                    continue
-                style = {
-                    "linewidth": 2.2,
-                    "markersize": 6.5,
-                    "label": f"{backend_name} {dtype_name}",
-                    **backend_styles.get(backend_name, {}),
-                    **dtype_styles.get(dtype_name, {}),
-                }
-                if style["markerfacecolor"] is None:
-                    style["markerfacecolor"] = style["color"]
-                if transform_type == "error":
-                    error_values = [backend_results[n]["max_abs_error"] for n in ns]
-                    ax.plot(ns, error_values, **style)
-                else:
-                    mean_ms = [backend_results[n]["mean_seconds"] * 1e3 for n in ns]
-                    std_ms = [backend_results[n]["std_seconds"] * 1e3 for n in ns]
-                    line = ax.plot(ns, mean_ms, **style)[0]
-                    lower = np.maximum(np.array(mean_ms) - np.array(std_ms), 1e-9)
-                    upper = np.array(mean_ms) + np.array(std_ms)
-                    ax.fill_between(
-                        ns,
-                        lower,
-                        upper,
-                        color=line.get_color(),
-                        alpha=0.12,
-                        zorder=1,
-                    )
+        for backend_name, backend_results in backends_data.items():
+            ns = sorted(backend_results)
+            if not ns:
+                continue
+            style = {
+                "linewidth": 2.2,
+                "markersize": 6.5,
+                "label": backend_name,
+                "linestyle": "-",
+                "marker": "o",
+                **backend_styles.get(backend_name, {}),
+            }
+            if transform_type == "error":
+                error_values = [backend_results[n]["max_abs_error"] for n in ns]
+                ax.plot(ns, error_values, **style)
+            else:
+                mean_ms = [backend_results[n]["mean_seconds"] * 1e3 for n in ns]
+                std_ms = [backend_results[n]["std_seconds"] * 1e3 for n in ns]
+                line = ax.plot(ns, mean_ms, **style)[0]
+                lower = np.maximum(np.array(mean_ms) - np.array(std_ms), 1e-9)
+                upper = np.array(mean_ms) + np.array(std_ms)
+                ax.fill_between(
+                    ns,
+                    lower,
+                    upper,
+                    color=line.get_color(),
+                    alpha=0.12,
+                    zorder=1,
+                )
 
         ax.set_title(transform_titles[transform_type])
         ax.set_xlabel("Input size N")
@@ -547,13 +493,6 @@ Examples:
         help="Backends to benchmark (default: numpy jax)",
     )
     parser.add_argument(
-        "--dtypes",
-        nargs="+",
-        default=DEFAULT_DTYPES,
-        choices=["float32", "float64"],
-        help="Real precisions to benchmark (default: float64)",
-    )
-    parser.add_argument(
         "--n",
         nargs="+",
         type=int,
@@ -586,7 +525,6 @@ Examples:
 
     results = run_benchmarks(
         backends_to_test=args.backends,
-        dtypes_to_test=args.dtypes,
         n_values=args.n,
         num_runs=args.runs,
     )

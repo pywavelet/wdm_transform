@@ -69,20 +69,6 @@ class TestWDMShape:
         w = WDM.from_time_series(series, nt=nt)
         assert w.coeffs.dtype == np.float64
 
-    @pytest.mark.parametrize("dtype_name", ["float32", "float64"])
-    def test_coeff_dtype_matches_requested_precision(self, dtype_name: str) -> None:
-        nt, nf, dt = 32, 32, 1.1
-        n_total = nt * nf
-        signal = np.sin(2.0 * np.pi * np.arange(n_total) * dt * 0.08).astype(dtype_name)
-        series = TimeSeries(signal, dt=dt)
-        w = WDM.from_time_series(series, nt=nt, dtype=dtype_name)
-        assert w.coeffs.dtype == np.dtype(dtype_name)
-
-    def test_invalid_precision_raises(self) -> None:
-        series = TimeSeries(np.zeros(128), dt=1.0)
-        with pytest.raises(ValueError, match="dtype must be float32 or float64"):
-            WDM.from_time_series(series, nt=8, dtype=np.int32)
-
 
 class TestWDMRepr:
     def test_repr_is_compact(self) -> None:
@@ -135,33 +121,22 @@ class TestEdgeChannelAccessors:
 
 
 class TestFromFrequencySeries:
-    @pytest.mark.parametrize(
-        ("dtype_name", "atol", "rtol"),
-        [("float32", 1e-4, 1e-4), ("float64", 1e-10, 1e-10)],
-    )
-    def test_roundtrip_via_frequency_series(
-        self,
-        dtype_name: str,
-        atol: float,
-        rtol: float,
-    ) -> None:
+    def test_roundtrip_via_frequency_series(self) -> None:
         nt, nf, dt = 32, 32, 1.1
         n_total = nt * nf
         times = np.arange(n_total) * dt
         T = n_total * dt
-        signal = (
-            np.exp(-((times - T / 2) ** 2) / (T / 4) ** 2)
-            * np.cos(2.0 * np.pi * times * (0.1 + times * 0.153 / T) + 0.3)
-        ).astype(dtype_name)
+        signal = np.exp(-((times - T / 2) ** 2) / (T / 4) ** 2) * np.cos(
+            2.0 * np.pi * times * (0.1 + times * 0.153 / T) + 0.3
+        )
         ts = TimeSeries(signal, dt=dt)
         fs = ts.to_frequency_series()
 
-        w_from_time = WDM.from_time_series(ts, nt=nt, dtype=dtype_name)
-        w_from_freq = WDM.from_frequency_series(fs, nt=nt, dtype=dtype_name)
+        w_from_time = WDM.from_time_series(ts, nt=nt)
+        w_from_freq = WDM.from_frequency_series(fs, nt=nt)
 
         np.testing.assert_allclose(
             w_from_freq.coeffs,
             w_from_time.coeffs,
-            atol=atol,
-            rtol=rtol,
+            atol=1e-10,
         )

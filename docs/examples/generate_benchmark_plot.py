@@ -22,7 +22,6 @@ if str(SRC) not in sys.path:
 
 from wdm_transform.benchmarking import (  # noqa: E402
     DEFAULT_BACKENDS,
-    DEFAULT_DTYPES,
     DEFAULT_N_VALUES,
     plot_results,
     print_summary,
@@ -41,13 +40,6 @@ def main() -> None:
         default=DEFAULT_BACKENDS,
         choices=["numpy", "jax", "cupy"],
         help="Backends to benchmark (default: numpy jax)",
-    )
-    parser.add_argument(
-        "--dtypes",
-        nargs="+",
-        default=["float32", "float64"],
-        choices=DEFAULT_DTYPES + ["float32"],
-        help="Real precisions to benchmark for docs artifacts (default: float32 float64)",
     )
     parser.add_argument(
         "--n",
@@ -84,7 +76,6 @@ def main() -> None:
 
     results = run_benchmarks(
         backends_to_test=args.backends,
-        dtypes_to_test=args.dtypes,
         n_values=args.n,
         num_runs=args.runs,
     )
