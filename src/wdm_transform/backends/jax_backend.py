@@ -4,6 +4,11 @@ from .base import Backend
 
 
 def load_jax_backend() -> Backend:
+    """Import JAX and return a :class:`Backend` wrapper for it.
+
+    The loader enables 64-bit mode so the JAX backend matches the precision
+    used by the NumPy implementation.
+    """
     try:
         import jax
         jax.config.update("jax_enable_x64", True)

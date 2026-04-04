@@ -4,12 +4,9 @@ import numpy as np
 from pathlib import Path
 import pytest
 
-from wdm_transform import TimeSeries, WDM
+from wdm_transform import FrequencySeries, TimeSeries, WDM
 from wdm_transform.backends import Backend, get_backend
-from wdm_transform.freqseries import FrequencySeries
 from wdm_transform.plotting import plot_periodogram, plot_spectrogram
-from wdm_transform.timeseries import TimeSeries as TimeSeriesModule
-from wdm_transform.wdm import WDM as WDMModule
 
 
 def _chirplet(times: np.ndarray, duration: float) -> np.ndarray:
@@ -83,8 +80,6 @@ def test_wdm_frequency_reconstruction_matches_fft(backend: Backend) -> None:
 
 
 def test_top_level_module_exports_and_env_backend(monkeypatch) -> None:
-    assert TimeSeriesModule is TimeSeries
-    assert WDMModule is WDM
     assert FrequencySeries.__name__ == "FrequencySeries"
 
     monkeypatch.setenv("WDM_BACKEND", "numpy")

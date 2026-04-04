@@ -44,6 +44,36 @@ def forward_wdm(
     dt: float,
     backend: str | Backend | None = None,
 ) -> Any:
+    """Compute WDM coefficients from a one-dimensional time-domain signal.
+
+    Parameters
+    ----------
+    data : array_like
+        Input samples with length ``nt * nf``.
+    nt : int
+        Number of WDM time bins.
+    nf : int
+        Number of interior WDM frequency channels.
+    a : float
+        Window roll-off parameter.
+    d : float
+        Reserved window parameter.
+    dt : float
+        Sampling interval of the input signal.
+    backend : str, Backend, or None
+        Backend name or instance. When omitted, :func:`wdm_transform.get_backend`
+        chooses the default backend.
+
+    Returns
+    -------
+    array_like
+        Real-valued coefficient array with shape ``(nt, nf + 1)``.
+
+    Notes
+    -----
+    This is the backend-dispatched public entry point. It forwards to the
+    NumPy/CuPy or JAX implementation after resolving ``backend``.
+    """
     resolved_backend = get_backend(backend)
     module = _get_transform_module(resolved_backend)
     return module.forward_wdm(data, nt=nt, nf=nf, a=a, d=d, dt=dt, backend=resolved_backend)
@@ -57,6 +87,27 @@ def inverse_wdm(
     dt: float,
     backend: str | Backend | None = None,
 ) -> Any:
+    """Reconstruct a time-domain signal from WDM coefficients.
+
+    Parameters
+    ----------
+    coeffs : array_like
+        Real-valued WDM coefficient array with shape ``(nt, nf + 1)``.
+    a : float
+        Window roll-off parameter.
+    d : float
+        Reserved window parameter.
+    dt : float
+        Sampling interval of the original signal.
+    backend : str, Backend, or None
+        Backend name or instance. When omitted, :func:`wdm_transform.get_backend`
+        chooses the default backend.
+
+    Returns
+    -------
+    array_like
+        Reconstructed one-dimensional time-domain samples.
+    """
     resolved_backend = get_backend(backend)
     module = _get_transform_module(resolved_backend)
     return module.inverse_wdm(coeffs, a=a, d=d, dt=dt, backend=resolved_backend)
@@ -70,6 +121,28 @@ def frequency_wdm(
     d: float,
     backend: str | Backend | None = None,
 ) -> Any:
+    """Reconstruct the Fourier-domain signal represented by WDM coefficients.
+
+    Parameters
+    ----------
+    coeffs : array_like
+        Real-valued WDM coefficient array with shape ``(nt, nf + 1)``.
+    dt : float
+        Sampling interval of the original signal.
+    a : float
+        Window roll-off parameter.
+    d : float
+        Reserved window parameter.
+    backend : str, Backend, or None
+        Backend name or instance. When omitted, :func:`wdm_transform.get_backend`
+        chooses the default backend.
+
+    Returns
+    -------
+    FrequencySeries
+        Frequency-domain reconstruction on the discrete Fourier grid implied by
+        ``dt`` and the coefficient shape.
+    """
     resolved_backend = get_backend(backend)
     module = _get_transform_module(resolved_backend)
     return module.frequency_wdm(coeffs, dt=dt, a=a, d=d, backend=resolved_backend)
