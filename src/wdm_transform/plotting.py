@@ -63,12 +63,11 @@ def _fmt_time_axis(
 
 
 def _wdm_time_grid(wdm: WDM) -> np.ndarray:
-    return np.arange(wdm.nt, dtype=float) * (wdm.nf * wdm.dt)
+    return _to_numpy(wdm.time_grid)
 
 
 def _wdm_freq_grid(wdm: WDM) -> np.ndarray:
-    df_channel = 1.0 / (2.0 * wdm.nf * wdm.dt)
-    return np.arange(wdm.nf + 1, dtype=float) * df_channel
+    return _to_numpy(wdm.freq_grid)
 
 
 def _wdm_unpacked_grid(wdm: WDM) -> np.ndarray:
@@ -275,10 +274,10 @@ def plot_wdm_grid(
     axis.set_ylim(freq_range)
 
     if detailed_axes:
-        dt_bin = wdm.nf * wdm.dt
-        df_bin = 1.0 / (2.0 * wdm.nf * wdm.dt)
-        axis.set_xlabel(rf"Time bins [$\Delta T$={dt_bin:.4g}s, Nt={wdm.nt}]")
-        axis.set_ylabel(rf"Frequency bins [$\Delta F$={df_bin:.4g}Hz, Nf={wdm.nf + 1}]")
+        axis.set_xlabel(rf"Time bins [$\Delta T$={wdm.delta_t:.4g}s, Nt={wdm.nt}]")
+        axis.set_ylabel(
+            rf"Frequency bins [$\Delta F$={wdm.delta_f:.4g}Hz, Nf={wdm.nf + 1}]"
+        )
 
     label = kwargs.get("label", "")
     info = f"{wdm.nf + 1}x{wdm.nt}" if show_gridinfo else ""
