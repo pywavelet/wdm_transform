@@ -80,6 +80,11 @@ class TimeSeries:
         return self.backend.xp.arange(self.n) * self.dt
 
     def to_frequency_series(self) -> "FrequencySeries":
+        """Return the discrete Fourier transform of this series.
+
+        The output keeps the same backend and uses the Fourier spacing implied
+        by ``self.dt``.
+        """
         transformed = self.backend.fft.fft(self.data)
         return FrequencySeries(transformed, df=self.df, backend=self.backend)
 
@@ -170,6 +175,14 @@ class FrequencySeries:
         return self.backend.fft.fftfreq(self.n, d=self.dt)
 
     def to_time_series(self, *, real: bool = False) -> TimeSeries:
+        """Return the inverse discrete Fourier transform as a time series.
+
+        Parameters
+        ----------
+        real : bool, default=False
+            If ``True``, discard any residual imaginary part after the inverse
+            FFT and return a real-valued series.
+        """
         recovered = self.backend.fft.ifft(self.data)
         if real:
             recovered = self.backend.xp.real(recovered)
