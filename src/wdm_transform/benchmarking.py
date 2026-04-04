@@ -123,7 +123,7 @@ def benchmark_forward(
     backend_data = backend.asarray(signal)
 
     return _measure_runtime(
-        lambda: transforms.forward_wdm(backend_data, nt=nt, nf=nf, **fixed_params),
+        lambda: transforms.from_time_to_wdm(backend_data, nt=nt, nf=nf, **fixed_params),
         num_runs,
     )
 
@@ -142,7 +142,7 @@ def benchmark_inverse(
     backend_coeffs = backend.asarray(coeffs)
 
     return _measure_runtime(
-        lambda: transforms.inverse_wdm(backend_coeffs, **fixed_params),
+        lambda: transforms.from_wdm_to_time(backend_coeffs, **fixed_params),
         num_runs,
     )
 
@@ -158,8 +158,8 @@ def benchmark_roundtrip_error(
     fixed_params = {**FIXED_PARAMS, "backend": backend}
     backend_signal = backend.asarray(signal)
 
-    coeffs = transforms.forward_wdm(backend_signal, nt=nt, nf=nf, **fixed_params)
-    recovered = transforms.inverse_wdm(coeffs, **fixed_params)
+    coeffs = transforms.from_time_to_wdm(backend_signal, nt=nt, nf=nf, **fixed_params)
+    recovered = transforms.from_wdm_to_time(coeffs, **fixed_params)
     _synchronize_result(recovered)
 
     recovered_np = np.asarray(recovered)

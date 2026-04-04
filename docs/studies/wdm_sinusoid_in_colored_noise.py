@@ -72,7 +72,7 @@ from numpyro.infer import MCMC, NUTS, init_to_value
 
 from wdm_transform import TimeSeries, get_backend
 from wdm_transform.plotting import plot_spectrogram
-from wdm_transform.transforms import forward_wdm
+from wdm_transform.transforms import from_time_to_wdm
 from wdm_transform.windows import gnmf
 
 
@@ -502,7 +502,7 @@ inference_channel = int(np.argmax(np.sum(signal_coeffs**2, axis=0)))
 jax_times = jnp.arange(n_total) * dt
 jax_psd = jnp.asarray(colored_noise_psd(freqs))
 jax_fft_data = jnp.asarray(np.asarray(data_fft.data))
-observed_wdm_jax = forward_wdm(
+observed_wdm_jax = from_time_to_wdm(
     data,
     nt=nt,
     nf=nf,
@@ -517,7 +517,7 @@ noise_realizations = np.stack(
         # Estimate the WDM noise scale directly in coefficient space by pushing
         # Monte Carlo noise realizations through the same forward transform.
         np.asarray(
-            forward_wdm(
+            from_time_to_wdm(
                 random_signal_from_psd(colored_noise_psd, n_total, dt, RNG),
                 nt=nt,
                 nf=nf,
@@ -546,7 +546,7 @@ print(
 # - phase in `[-π, π]`
 
 # %% [markdown]
-# `numpyro` handles the sampling, while `forward_wdm(..., backend="jax")`
+# `numpyro` handles the sampling, while `from_time_to_wdm(..., backend="jax")`
 # keeps the WDM likelihood differentiable and compatible with JAX-based NUTS.
 # That is why this section uses the lower-level transform function rather than
 # the higher-level `TimeSeries.to_wdm()` method inside the model definition.
@@ -568,7 +568,7 @@ def numpyro_wdm_model() -> None:
     phi0 = numpyro.sample("phi", dist.Uniform(-jnp.pi, jnp.pi))
 
     model = amp * jnp.sin(2.0 * jnp.pi * freq0 * jax_times + phi0)
-    coeffs = forward_wdm(
+    coeffs = from_time_to_wdm(
         model,
         nt=nt,
         nf=nf,
