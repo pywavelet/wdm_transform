@@ -179,7 +179,7 @@ def summarize_samples(samples: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
 
 # %%
 nt = 32
-n_total = 1024
+n_total = 8000
 dt = 0.1
 nf = n_total // nt
 

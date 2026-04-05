@@ -142,7 +142,7 @@ from wdm_time_varying_psd import (  # noqa: E402
 RNG = np.random.default_rng(7)
 dt = 0.1
 nt = 32
-n_total = 8000
+n_total = 8192
 nf = n_total // nt
 dgp = "LS2"
 
@@ -575,6 +575,117 @@ _ = save_figure(fig, "signal_recovery")
 
 # %% [markdown]
 # ![Signal recovery](../wdm_monochromatic_gibbs_assets/signal_recovery.png)
+
+# %% [markdown]
+# ## Baseline: Frequency-domain Whittle with stationary noise
+#
+# As a baseline we run signal inference with the simplest possible noise model:
+# a *time-stationary* PSD estimated once from the raw data using Welch's method,
+# then fixed throughout.  The likelihood is the standard frequency-domain Whittle:
+#
+# $$
+# \log p(x \mid A, f_0, \varphi)
+#   \approx -\frac{1}{2}\sum_{k=0}^{N-1}
+#   \frac{|X_k - H_k(A,f_0,\varphi)|^2}{\hat{S}(|f_k|)},
+# $$
+#
+# where $X_k = \mathrm{FFT}(x)_k$, $H_k = \mathrm{FFT}(h)_k$, and
+# $\hat{S}(f)$ is the Welch one-sided PSD converted to FFT-bin variance units
+# $\hat{S}_{\rm bin}(f) = \hat{S}_{\rm Welch}(f) \cdot f_s / 2$.
+#
+# The LS2 noise is time-varying: the PSD at $f_0 = 1.5\,\mathrm{Hz}$ changes
+# across time bins.  Welch averages over all time, so the stationary estimate
+# misspecifies the noise structure — the Gibbs comparison shows the cost.
+#
+# > **Note:** the Welch estimate is run on the raw data (signal + noise), so it
+# > carries a narrow spike at $f_0$ from the signal itself.  A refined version
+# > would iterate (subtract signal, re-estimate PSD), but a single-shot estimate
+# > is the realistic "naive" baseline.
+
+# %%
+from scipy.signal import welch as scipy_welch
+
+# Welch PSD estimate from raw data — one-sided, units amplitude²/Hz
+_nperseg = max(256, n_total // 8)
+f_welch_stat, S_welch_stat = scipy_welch(
+    data, fs=1.0 / dt, nperseg=_nperseg, scaling="density"
+)
+
+# Convert to FFT-bin variance: E[|X_k|²] = S_welch(|f_k|) * fs / 2
+# where X_k = jnp.fft.fft(x)[k]  (unnormalized sum convention)
+_freqs_full = np.fft.fftfreq(n_total, d=dt)
+S_fft_stat_np = np.interp(np.abs(_freqs_full), f_welch_stat, S_welch_stat) / (2.0 * dt)
+S_fft_stat_jax = jnp.asarray(S_fft_stat_np)
+X_fft_data_jax = jnp.asarray(np.fft.fft(data))
+
+# Quick sanity: the mean of S_fft_stat_np / n_total should match var(noise)
+_psd_var_check = float(np.mean(S_fft_stat_np) / n_total)
+print(f"PSD-implied variance: {_psd_var_check:.4f}  |  empirical var(data): {np.var(data):.4f}")
+
+# %% [markdown]
+# ### Stationary NUTS
+
+# %%
+def stationary_whittle_model(X_data, S_bins, f0_lo, f0_hi):
+    """Standard FFT Whittle likelihood with a fixed stationary noise PSD."""
+    A   = numpyro.sample("A",   dist.HalfNormal(2.0))
+    f0  = numpyro.sample("f0",  dist.Uniform(f0_lo, f0_hi))
+    phi = numpyro.sample("phi", dist.Uniform(-jnp.pi, jnp.pi))
+
+    h = A * jnp.sin(2.0 * jnp.pi * f0 * TIMES_JAX + phi)
+    diff = X_data - jnp.fft.fft(h)
+    numpyro.factor("whittle_fft", -0.5 * jnp.sum(jnp.abs(diff) ** 2 / S_bins))
+
+
+kernel_stat = NUTS(
+    stationary_whittle_model,
+    init_strategy=init_to_value(
+        values={"A": A_current, "f0": f0_current, "phi": phi_current}
+    ),
+    target_accept_prob=0.85,
+)
+mcmc_stat = MCMC(
+    kernel_stat,
+    num_warmup=500,
+    num_samples=800,
+    num_chains=1,
+    progress_bar=False,
+)
+mcmc_stat.run(random.PRNGKey(999), X_fft_data_jax, S_fft_stat_jax, F0_LO, F0_HI)
+stat_samples = {k: np.asarray(v) for k, v in mcmc_stat.get_samples().items()}
+print("Stationary FFT Whittle NUTS complete.")
+for key, truth in [("A", A_TRUE), ("f0", F0_TRUE), ("phi", PHI_TRUE)]:
+    med = float(np.median(stat_samples[key]))
+    q5, q95 = np.percentile(stat_samples[key], [5, 95])
+    print(f"  {key}: median={med:.4f}  90% CI=[{q5:.4f}, {q95:.4f}]  (true={truth})")
+
+# %% [markdown]
+# ### Posterior comparison: Gibbs (time-varying) vs Stationary FFT Whittle
+
+# %%
+fig, axes = plt.subplots(1, 3, figsize=(15, 4.5), constrained_layout=True)
+_labels = ["Amplitude  A", "Frequency  f₀ [Hz]", "Phase  φ [rad]"]
+_keys   = ["A",             "f0",                  "phi"]
+_truths = [A_TRUE,           F0_TRUE,               PHI_TRUE]
+
+for ax, key, truth, label in zip(axes, _keys, _truths, _labels):
+    ax.hist(
+        pooled[key], bins=60, density=True,
+        color="tab:blue", alpha=0.55, label="Gibbs (WDM, time-varying noise)",
+    )
+    ax.hist(
+        stat_samples[key], bins=60, density=True,
+        color="tab:orange", alpha=0.55, label="Stationary FFT Whittle",
+    )
+    ax.axvline(truth, color="tab:red", ls="--", lw=2.0, label="True value")
+    ax.set_title(label)
+    ax.set_xlabel(label)
+
+axes[0].legend(fontsize=8)
+_ = save_figure(fig, "stationary_vs_gibbs_comparison")
+
+# %% [markdown]
+# ![Stationary vs Gibbs comparison](../wdm_monochromatic_gibbs_assets/stationary_vs_gibbs_comparison.png)
 
 # %% [markdown]
 # ## Summary
