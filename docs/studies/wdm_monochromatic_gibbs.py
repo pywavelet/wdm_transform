@@ -141,14 +141,14 @@ from wdm_time_varying_psd import (  # noqa: E402
 # %%
 RNG = np.random.default_rng(7)
 dt = 0.1
-nt = 24
-n_total = 576
+nt = 32
+n_total = 8000
 nf = n_total // nt
 dgp = "LS2"
 
 # True signal parameters — A must be large enough for reasonable per-pixel SNR.
-# LS2 noise PSD at 1.5 Hz is ~3, so per-pixel signal power is A²/2.
-# A=3.0 gives per-pixel SNR ≈ 9/6 ≈ 1.5, which is clearly detectable.
+# With 8000 samples and nt=32 (nf=250), increased data per pixel improves estimation.
+# A=3.0 gives sufficient SNR for signal recovery with the larger dataset.
 A_TRUE   = 3.0
 F0_TRUE  = 1.5    # Hz — sits between LS2 noise peaks
 PHI_TRUE = 0.6    # rad
