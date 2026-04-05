@@ -33,6 +33,7 @@
 # it should have a better chance of tracking it than the gap-ignorant FFT treatment.
 
 # %%
+from pathlib import Path
 import subprocess
 import sys
 
@@ -69,6 +70,24 @@ from numpyro.infer import MCMC, NUTS, init_to_value
 
 from wdm_transform import TimeSeries
 from wdm_transform.transforms import from_time_to_wdm
+
+if "__file__" in globals():
+    NOTEBOOK_DIR = Path(__file__).resolve().parent
+else:
+    cwd = Path.cwd()
+    docs_studies_dir = cwd / "docs" / "studies"
+    NOTEBOOK_DIR = docs_studies_dir if docs_studies_dir.exists() else cwd
+
+FIGURE_OUTPUT_DIR = NOTEBOOK_DIR / "wdm_monochromatic_signal_with_gap_assets"
+FIGURE_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def save_figure(fig: plt.Figure, stem: str, *, dpi: int = 160) -> Path:
+    """Save a study figure to a docs-local assets directory and close it."""
+    path = FIGURE_OUTPUT_DIR / f"{stem}.png"
+    fig.savefig(path, dpi=dpi, bbox_inches="tight")
+    plt.close(fig)
+    return path
 
 
 RNG = np.random.default_rng(21)
@@ -437,6 +456,10 @@ axes[2].set_ylabel("WDM channel m")
 fig.colorbar(im, ax=axes[2], pad=0.01, label=r"$|w_{n,m}|$")
 
 fig.tight_layout()
+_ = save_figure(fig, "time_fft_wdm_views")
+
+# %% [markdown]
+# ![Time, FFT, and WDM views](../wdm_monochromatic_signal_with_gap_assets/time_fft_wdm_views.png)
 
 # %% [markdown]
 # ## Gap locality in WDM space
@@ -465,6 +488,10 @@ axes[1].set_xlabel("WDM time bin n")
 axes[1].set_ylabel(r"$\sum_m |\Delta w_{n,m}|$")
 
 fig.tight_layout()
+_ = save_figure(fig, "gap_locality_in_wdm_space")
+
+# %% [markdown]
+# ![Gap locality in WDM space](../wdm_monochromatic_signal_with_gap_assets/gap_locality_in_wdm_space.png)
 
 # %% [markdown]
 # ## Posterior comparison
@@ -579,6 +606,10 @@ fig.legend(
     frameon=False,
 )
 fig.suptitle("Posterior comparison for a sinusoid with multiple gaps", y=1.02)
+_ = save_figure(fig, "posterior_comparison")
+
+# %% [markdown]
+# ![Posterior comparison](../wdm_monochromatic_signal_with_gap_assets/posterior_comparison.png)
 
 # %% [markdown]
 # ## Posterior-mean prediction in the frequency domain
@@ -627,3 +658,7 @@ axes[1].set_ylabel("Absolute error")
 axes[1].legend(frameon=False, loc="upper right", ncol=2)
 
 fig.tight_layout()
+_ = save_figure(fig, "posterior_mean_frequency_prediction")
+
+# %% [markdown]
+# ![Posterior-mean prediction in the frequency domain](../wdm_monochromatic_signal_with_gap_assets/posterior_mean_frequency_prediction.png)

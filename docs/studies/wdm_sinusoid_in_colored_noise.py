@@ -36,6 +36,7 @@
 # looks in each basis and how closely the inferred sinusoid parameters agree.
 
 # %%
+from pathlib import Path
 import subprocess
 import sys
 
@@ -74,6 +75,24 @@ from wdm_transform import TimeSeries, get_backend
 from wdm_transform.plotting import plot_spectrogram
 from wdm_transform.transforms import from_time_to_wdm
 from wdm_transform.windows import gnmf
+
+if "__file__" in globals():
+    NOTEBOOK_DIR = Path(__file__).resolve().parent
+else:
+    cwd = Path.cwd()
+    docs_studies_dir = cwd / "docs" / "studies"
+    NOTEBOOK_DIR = docs_studies_dir if docs_studies_dir.exists() else cwd
+
+FIGURE_OUTPUT_DIR = NOTEBOOK_DIR / "wdm_sinusoid_in_colored_noise_assets"
+FIGURE_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def save_figure(fig: plt.Figure, stem: str, *, dpi: int = 160) -> Path:
+    """Save a study figure to a docs-local assets directory and close it."""
+    path = FIGURE_OUTPUT_DIR / f"{stem}.png"
+    fig.savefig(path, dpi=dpi, bbox_inches="tight")
+    plt.close(fig)
+    return path
 
 
 RNG = np.random.default_rng(4)
@@ -283,6 +302,10 @@ axes[1].set_ylabel("m")
 fig.colorbar(im0, ax=axes[0])
 fig.colorbar(im1, ax=axes[1])
 fig.tight_layout()
+_ = save_figure(fig, "basis_overlap_checks")
+
+# %% [markdown]
+# ![Basis overlap checks](../wdm_sinusoid_in_colored_noise_assets/basis_overlap_checks.png)
 
 # %% [markdown]
 # In this example the overlaps are essentially diagonal, which is exactly what
@@ -371,6 +394,10 @@ data_wdm.plot(ax=axes[2], cmap="viridis")
 axes[2].set_title("Packed WDM coefficients")
 
 fig.tight_layout()
+_ = save_figure(fig, "time_frequency_wdm_views")
+
+# %% [markdown]
+# ![Time, frequency, and WDM views](../wdm_sinusoid_in_colored_noise_assets/time_frequency_wdm_views.png)
 
 # %% [markdown]
 # A standard spectrogram gives a familiar comparison point for the same data.
@@ -380,6 +407,10 @@ fig, ax = plt.subplots(figsize=(11, 4))
 plot_spectrogram(data_series, ax=ax, spec_kwargs={"nperseg": 64, "noverlap": 48})
 ax.set_title("Reference spectrogram")
 fig.tight_layout()
+_ = save_figure(fig, "reference_spectrogram")
+
+# %% [markdown]
+# ![Reference spectrogram](../wdm_sinusoid_in_colored_noise_assets/reference_spectrogram.png)
 
 # %% [markdown]
 # ## Energy and SNR comparisons
@@ -646,3 +677,7 @@ fig.legend(
     loc="upper right",
     frameon=False,
 )
+_ = save_figure(fig, "posterior_comparison")
+
+# %% [markdown]
+# ![Posterior comparison](../wdm_sinusoid_in_colored_noise_assets/posterior_comparison.png)

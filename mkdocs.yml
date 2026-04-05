@@ -59,9 +59,12 @@ plugins:
         - "__pycache__/*"
         - "examples/generate_benchmark_plot.py"
         - "examples/generate_wdm_assets.py"
+        - "studies/wdm_monochromatic_gibbs.py"
+        - "studies/wdm_time_varying_psd.py"
       execute: true
       include_source: true
       show_input: true
+      custom_mathjax_url: https://cdnjs.cloudflare.com/ajax/libs/mathjax/2.7.7/latest.js?config=TeX-AMS_CHTML-full,Safe
 
 markdown_extensions:
   - admonition
@@ -88,6 +91,7 @@ nav:
   - Case Studies:
       - Sinusoid In Colored Noise: studies/wdm_sinusoid_in_colored_noise.py
       - Time-Varying WDM PSD: studies/wdm_time_varying_psd.py
+      - Monochromatic Signal in Time-Varying Noise: studies/wdm_monochromatic_gibbs.py
       - Deglitching: studies/wdm_deglitching_with_thresholding.py
       - Signal With A Gap: studies/wdm_monochromatic_signal_with_gap.py
   - Reference:

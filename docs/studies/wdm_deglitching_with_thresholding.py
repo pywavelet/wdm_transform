@@ -26,6 +26,7 @@
 # harder to express with a plain FFT.
 
 # %%
+from pathlib import Path
 import subprocess
 import sys
 
@@ -63,6 +64,24 @@ from matplotlib.lines import Line2D
 from numpyro.infer import MCMC, NUTS, init_to_value
 
 from wdm_transform import TimeSeries, WDM
+
+if "__file__" in globals():
+    NOTEBOOK_DIR = Path(__file__).resolve().parent
+else:
+    cwd = Path.cwd()
+    docs_studies_dir = cwd / "docs" / "studies"
+    NOTEBOOK_DIR = docs_studies_dir if docs_studies_dir.exists() else cwd
+
+FIGURE_OUTPUT_DIR = NOTEBOOK_DIR / "wdm_deglitching_with_thresholding_assets"
+FIGURE_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def save_figure(fig: plt.Figure, stem: str, *, dpi: int = 160) -> Path:
+    """Save a study figure to a docs-local assets directory and close it."""
+    path = FIGURE_OUTPUT_DIR / f"{stem}.png"
+    fig.savefig(path, dpi=dpi, bbox_inches="tight")
+    plt.close(fig)
+    return path
 
 
 RNG = np.random.default_rng(12)
@@ -313,6 +332,10 @@ observed_wdm.plot(ax=axes[1], cmap="viridis")
 axes[1].set_title("Observed WDM coefficient grid")
 
 fig.tight_layout()
+_ = save_figure(fig, "contamination_overview")
+
+# %% [markdown]
+# ![Observed contamination overview](../wdm_deglitching_with_thresholding_assets/contamination_overview.png)
 
 # %% [markdown]
 # ## Build a simple glitch score
@@ -372,6 +395,10 @@ axes[2].set_ylabel("Score")
 axes[2].legend(frameon=False, loc="upper right")
 
 fig.tight_layout()
+_ = save_figure(fig, "glitch_score_breakdown")
+
+# %% [markdown]
+# ![Glitch score breakdown](../wdm_deglitching_with_thresholding_assets/glitch_score_breakdown.png)
 
 # %% [markdown]
 # ## Reconstruct the cleaned series
@@ -465,6 +492,10 @@ axes[1].set_ylabel("Amplitude")
 axes[1].legend(frameon=False, loc="upper right")
 
 fig.tight_layout()
+_ = save_figure(fig, "iterative_score_and_reconstruction")
+
+# %% [markdown]
+# ![Iterative score and reconstruction](../wdm_deglitching_with_thresholding_assets/iterative_score_and_reconstruction.png)
 
 # %% [markdown]
 # The next figure compares the full time series and then zooms into the glitch
@@ -500,6 +531,10 @@ for ax, center in zip(axes[1:], glitch_centers):
 
 axes[-1].set_xlabel("Time [s]")
 fig.tight_layout()
+_ = save_figure(fig, "deglitching_time_domain_zoom")
+
+# %% [markdown]
+# ![Deglitching time-domain result and zooms](../wdm_deglitching_with_thresholding_assets/deglitching_time_domain_zoom.png)
 
 # %% [markdown]
 # ## PSD estimate before and after cleanup
@@ -525,6 +560,10 @@ ax.set_xlabel("Frequency [Hz]")
 ax.set_ylabel("PSD")
 ax.legend(frameon=False, loc="best")
 fig.tight_layout()
+_ = save_figure(fig, "welch_psd_cleanup_comparison")
+
+# %% [markdown]
+# ![Welch PSD estimate before and after cleanup](../wdm_deglitching_with_thresholding_assets/welch_psd_cleanup_comparison.png)
 
 # %% [markdown]
 # ## Downstream signal inference with `numpyro`
@@ -631,6 +670,10 @@ fig.legend(
     loc="upper right",
     frameon=False,
 )
+_ = save_figure(fig, "posterior_comparison")
+
+# %% [markdown]
+# ![Posterior comparison](../wdm_deglitching_with_thresholding_assets/posterior_comparison.png)
 
 # %% [markdown]
 # ## Remarks
