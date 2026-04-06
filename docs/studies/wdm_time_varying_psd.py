@@ -1261,7 +1261,7 @@ def plot_wdm_psd_results(
 RNG = np.random.default_rng(42)
 dt = 0.1
 nt = 24
-n_total = 8192
+n_total = 2048
 dgp = "LS2"
 
 data = simulate_tv_arma(n_total, dgp=dgp, rng=RNG)

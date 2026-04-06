@@ -142,7 +142,7 @@ from wdm_time_varying_psd import (  # noqa: E402
 RNG = np.random.default_rng(7)
 dt = 0.1
 nt = 32
-n_total = 8192
+n_total = 2048
 nf = n_total // nt
 dgp = "LS2"
 

@@ -59,7 +59,7 @@ plugins:
         - "__pycache__/*"
         - "examples/generate_benchmark_plot.py"
         - "examples/generate_wdm_assets.py"
-      execute: false
+      execute: true
       include_source: true
       show_input: true
       custom_mathjax_url: https://cdnjs.cloudflare.com/ajax/libs/mathjax/2.7.7/latest.js?config=TeX-AMS_CHTML-full,Safe

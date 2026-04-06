@@ -302,7 +302,7 @@ def summarize(samples: dict[str, np.ndarray]) -> dict[str, tuple[float, float]]:
 
 # %%
 nt = 48
-n_total = 8192
+n_total = 2048
 dt = 0.1
 nf = n_total // nt
 
