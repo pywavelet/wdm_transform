@@ -1,0 +1,116 @@
+Signal RMS:  2.1213
+Noise RMS:   1.1949
+Data SNR:    1.78
+Dominant WDM channel for signal: m=19 (1.484 Hz)
+Initialising S[n,m] from raw data (Gamma Whittle)…
+Trimmed WDM grid: (30, 63)
+Initial S range: [0.009, 69.383]
+Signal frequency search range: [1.172, 1.797] Hz
+
+── Gibbs iteration 1/25 ──
+  Signal block (NUTS)… A=0.0619, f0=1.6184, phi=-0.1831
+  Noise block (Gamma Whittle)… S range: [0.010, 67.942]
+
+── Gibbs iteration 2/25 ──
+  Signal block (NUTS)… A=2.8991, f0=1.5000, phi=0.6577
+  Noise block (Gamma Whittle)… S range: [0.016, 9.704]
+
+── Gibbs iteration 3/25 ──
+  Signal block (NUTS)… A=3.0097, f0=1.5000, phi=0.6067
+  Noise block (Gamma Whittle)… S range: [0.017, 9.881]
+
+── Gibbs iteration 4/25 ──
+  Signal block (NUTS)… A=3.0251, f0=1.5000, phi=0.6020
+  Noise block (Gamma Whittle)… S range: [0.018, 9.535]
+
+── Gibbs iteration 5/25 ──
+  Signal block (NUTS)… A=3.0266, f0=1.5000, phi=0.6036
+  Noise block (Gamma Whittle)… S range: [0.018, 9.447]
+
+── Gibbs iteration 6/25 ──
+  Signal block (NUTS)… A=3.0236, f0=1.5000, phi=0.6050
+  Noise block (Gamma Whittle)… S range: [0.017, 9.523]
+
+── Gibbs iteration 7/25 ──
+  Signal block (NUTS)… A=3.0238, f0=1.5000, phi=0.5951
+  Noise block (Gamma Whittle)… S range: [0.017, 10.166]
+
+── Gibbs iteration 8/25 ──
+  Signal block (NUTS)… A=3.0289, f0=1.5000, phi=0.6049
+  Noise block (Gamma Whittle)… S range: [0.017, 9.419]
+
+── Gibbs iteration 9/25 ──
+  Signal block (NUTS)… A=3.0246, f0=1.5000, phi=0.6091
+  Noise block (Gamma Whittle)… S range: [0.017, 9.373]
+
+── Gibbs iteration 10/25 ──
+  Signal block (NUTS)… A=3.0237, f0=1.5000, phi=0.6078
+  Noise block (Gamma Whittle)… S range: [0.017, 9.788]
+
+── Gibbs iteration 11/25 ──
+  Signal block (NUTS)… A=3.0280, f0=1.5000, phi=0.6042
+  Noise block (Gamma Whittle)… S range: [0.017, 9.170]
+
+── Gibbs iteration 12/25 ──
+  Signal block (NUTS)… A=3.0224, f0=1.5000, phi=0.6007
+  Noise block (Gamma Whittle)… S range: [0.016, 9.616]
+
+── Gibbs iteration 13/25 ──
+  Signal block (NUTS)… A=3.0230, f0=1.5000, phi=0.6041
+  Noise block (Gamma Whittle)… S range: [0.017, 8.963]
+
+── Gibbs iteration 14/25 ──
+  Signal block (NUTS)… A=3.0243, f0=1.5000, phi=0.6031
+  Noise block (Gamma Whittle)… S range: [0.018, 9.784]
+
+── Gibbs iteration 15/25 ──
+  Signal block (NUTS)… A=3.0232, f0=1.5000, phi=0.6053
+  Noise block (Gamma Whittle)… S range: [0.018, 9.651]
+
+── Gibbs iteration 16/25 ──
+  Signal block (NUTS)… A=3.0247, f0=1.5000, phi=0.6016
+  Noise block (Gamma Whittle)… S range: [0.017, 9.580]
+
+── Gibbs iteration 17/25 ──
+  Signal block (NUTS)… A=3.0268, f0=1.5000, phi=0.6103
+  Noise block (Gamma Whittle)… S range: [0.017, 9.668]
+
+── Gibbs iteration 18/25 ──
+  Signal block (NUTS)… A=3.0251, f0=1.5000, phi=0.6039
+  Noise block (Gamma Whittle)… S range: [0.017, 9.727]
+
+── Gibbs iteration 19/25 ──
+  Signal block (NUTS)… A=3.0245, f0=1.5000, phi=0.6008
+  Noise block (Gamma Whittle)… S range: [0.017, 10.103]
+
+── Gibbs iteration 20/25 ──
+  Signal block (NUTS)… A=3.0220, f0=1.5000, phi=0.6071
+  Noise block (Gamma Whittle)… S range: [0.016, 9.367]
+
+── Gibbs iteration 21/25 ──
+  Signal block (NUTS)… A=3.0317, f0=1.5000, phi=0.6041
+  Noise block (Gamma Whittle)… S range: [0.017, 10.008]
+
+── Gibbs iteration 22/25 ──
+  Signal block (NUTS)… A=3.0313, f0=1.5000, phi=0.6043
+  Noise block (Gamma Whittle)… S range: [0.016, 10.129]
+
+── Gibbs iteration 23/25 ──
+  Signal block (NUTS)… A=3.0250, f0=1.5000, phi=0.6004
+  Noise block (Gamma Whittle)… S range: [0.017, 9.564]
+
+── Gibbs iteration 24/25 ──
+  Signal block (NUTS)… A=3.0294, f0=1.5000, phi=0.6062
+  Noise block (Gamma Whittle)… S range: [0.016, 9.328]
+
+── Gibbs iteration 25/25 ──
+  Signal block (NUTS)… A=3.0175, f0=1.5000, phi=0.6045
+  Noise block (Gamma Whittle)… S range: [0.017, 10.024]
+
+Gibbs sampler complete.
+Pooled 2600 NUTS samples from Gibbs iterations 13–25
+PSD-implied variance: 0.0029  |  empirical var(data): 6.0121
+Stationary FFT Whittle NUTS complete.
+  A: median=3.0563  90% CI=[3.0370, 3.0749]  (true=3.0)
+  f0: median=1.5001  90% CI=[1.5000, 1.5001]  (true=1.5)
+  phi: median=0.5378  90% CI=[0.5295, 0.5457]  (true=0.6)

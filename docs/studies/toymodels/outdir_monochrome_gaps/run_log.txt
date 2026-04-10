@@ -1,0 +1,8 @@
+Adjusted WDM tiling from nt=48 to nt=64 so that n_total=2048 factors into an even (nt, nf)=(64, 32) grid.
+WDM shape: (64, 33)
+Gap intervals: 270:390 (27.0s to 39.0s), 705:840 (70.5s to 84.0s), 1140:1260 (114.0s to 126.0s)
+Dominant signal channel: m=7
+Selected channels for WDM inference: [5, 6, 7, 8, 9] (centers near [0.78125 0.9375  1.09375 1.25    1.40625])
+Excluded WDM time bins: [7, 8, 9, 10, 11, 12, 13, 21, 22, 23, 24, 25, 26, 27, 34, 35, 36, 37, 38, 39, 40]
+Relative clean-signal WDM mismatch outside excluded bins: 4.448e-02
+Relative clean-signal WDM mismatch inside excluded bins : 7.498e-01

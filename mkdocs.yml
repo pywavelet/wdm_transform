@@ -75,6 +75,9 @@ markdown_extensions:
       anchor_linenums: true
   - pymdownx.inlinehilite
   - pymdownx.superfences
+  - pymdownx.snippets:
+      base_path: ["."]       # relative to where mkdocs is run (repo root)
+      check_paths: true
   - toc:
       permalink: true
 
@@ -87,6 +90,7 @@ nav:
   - Tutorial:
       - WDM Walkthrough: examples/wdm_walkthrough.py
   - Case Studies:
+      - LISA GB Inference: studies/wdm_lisa_example.py
       - Sinusoid In Colored Noise: studies/wdm_sinusoid_in_colored_noise.py
       - Time-Varying WDM PSD: studies/wdm_time_varying_psd.py
       - Monochromatic Signal in Time-Varying Noise: studies/wdm_monochromatic_gibbs.py

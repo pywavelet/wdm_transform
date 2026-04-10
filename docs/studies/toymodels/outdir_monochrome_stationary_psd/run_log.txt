@@ -1,0 +1,31 @@
+WDM shape: (32, 251)
+Dominant WDM channel: m=55
+Channel center near the sinusoid: 1.10000 Hz
+Relative time-domain reconstruction error: 1.956e-14
+Relative FFT-domain reconstruction error: 1.956e-14
+Signal energies
+  time: 40.000000
+  fft : 40.000000
+  wdm : 40.000000
+
+Noise energies
+  time: 44.095749
+  fft : 44.095749
+  wdm : 44.082243
+
+SNR estimates
+  time-domain norm ratio: 0.952427
+  fft-domain norm ratio : 0.952427
+  wdm-domain norm ratio : 0.952573
+FFT reconstruction summary
+  signal max abs error     : 6.355e-14
+  signal max relative error: 1.585e-03
+  noise max abs error      : 6.633e-12
+  noise max relative error : 4.207e-12
+Using dominant WDM channel m=55
+Median estimated WDM noise variance in that channel: 1.6468e-03
+
+Posterior mean ± std
+  FFT : A=0.10012±0.00064, f0=1.10000±0.00000, phi=0.50240±0.01409
+  WDM : A=0.10007±0.00061, f0=1.10000±0.00000, phi=0.50473±0.01280
+  Delta mean: dA=-5.33339e-05, df0=-6.79720e-07, dphi=2.32804e-03
