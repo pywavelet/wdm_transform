@@ -123,28 +123,39 @@ def _load_freq_style_samples(data: np.lib.npyio.NpzFile) -> tuple[np.ndarray, li
 	if gb1.shape[1] < 4 or gb2.shape[1] < 4:
 		raise ValueError("Freq-style samples must have columns [f0, fdot, A, phi0].")
 	ns = min(gb1.shape[0], gb2.shape[0])
-	merged = np.column_stack(
-		[
-			gb1[:ns, 0],
-			gb1[:ns, 1],
-			gb1[:ns, 2],
-			gb1[:ns, 3],
-			gb2[:ns, 0],
-			gb2[:ns, 1],
-			gb2[:ns, 2],
-			gb2[:ns, 3],
-		]
-	)
+	has_snr = (gb1.shape[1] >= 5 and gb2.shape[1] >= 5)
+	
+	cols = [
+		gb1[:ns, 0], gb1[:ns, 1], gb1[:ns, 2], gb1[:ns, 3],
+	]
+	if has_snr:
+		cols.append(gb1[:ns, 4])
+		
+	cols += [
+		gb2[:ns, 0], gb2[:ns, 1], gb2[:ns, 2], gb2[:ns, 3],
+	]
+	if has_snr:
+		cols.append(gb2[:ns, 4])
+		
+	merged = np.column_stack(cols)
+	
 	labels = [
 		"source 1 frequency [Hz]",
 		"source 1 chirp fdot [1/s]",
 		"source 1 amplitude",
 		"source 1 phase [rad]",
+	]
+	if has_snr:
+		labels.append("source 1 SNR")
+		
+	labels += [
 		"source 2 frequency [Hz]",
 		"source 2 chirp fdot [1/s]",
 		"source 2 amplitude",
 		"source 2 phase [rad]",
 	]
+	if has_snr:
+		labels.append("source 2 SNR")
 
 	truth_map: dict[str, float] = {}
 	if "source_params" in data:
@@ -155,11 +166,23 @@ def _load_freq_style_samples(data: np.lib.npyio.NpzFile) -> tuple[np.ndarray, li
 				labels[1]: float(src[0, 1]),
 				labels[2]: float(src[0, 2]),
 				labels[3]: float((src[0, 7] + np.pi) % (2.0 * np.pi) - np.pi),
-				labels[4]: float(src[1, 0]),
-				labels[5]: float(src[1, 1]),
-				labels[6]: float(src[1, 2]),
-				labels[7]: float((src[1, 7] + np.pi) % (2.0 * np.pi) - np.pi),
 			}
+			offset = 4
+			
+			if has_snr and "snr_optimal" in data:
+				snrs_true = _to_float_array(data["snr_optimal"])
+				truth_map["source 1 SNR"] = float(snrs_true[0])
+				offset += 1
+				
+			truth_map.update({
+				labels[offset]: float(src[1, 0]),
+				labels[offset+1]: float(src[1, 1]),
+				labels[offset+2]: float(src[1, 2]),
+				labels[offset+3]: float((src[1, 7] + np.pi) % (2.0 * np.pi) - np.pi),
+			})
+
+			if has_snr and "snr_optimal" in data:
+				truth_map["source 2 SNR"] = float(snrs_true[1])
 
 	return merged, labels, truth_map
 
@@ -360,9 +383,13 @@ def plot_corner_per_source(
 		print("corner package not installed; skipping corner plots.")
 		return
 
-	# For each source (4 params per source): [f, fdot, A, phi]
+	# For each source (4 or 5 params per source): [f, fdot, A, phi, (SNR)]
+	has_snr = "source 1 SNR" in labels
+	param_count = 5 if has_snr else 4
+	
 	for source_idx, source_name in enumerate(["source_1", "source_2"]):
-		param_indices = [4 * source_idx, 4 * source_idx + 1, 4 * source_idx + 2, 4 * source_idx + 3]
+		start_idx = param_count * source_idx
+		param_indices = [start_idx + i for i in range(param_count)]
 		source_labels = [labels[i].replace(f"source {source_idx + 1} ", "") for i in param_indices]
 
 		samples_a = run_a.samples[:, param_indices]

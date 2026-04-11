@@ -230,10 +230,12 @@ def generate_a_wdm_band(params: jnp.ndarray, src_idx: int) -> jnp.ndarray:
 # ── Per-source SNR ────────────────────────────────────────────────────────────
 noise_var_band = noise_var[:, band]
 
+snrs_optimal = []
 print("\nPer-source matched-filter SNR (A channel, WDM band):")
 for i, src in enumerate(SOURCE_PARAMS):
     h_band = np.asarray(generate_a_wdm_band(jnp.asarray(src, dtype=jnp.float64), i))
     snr = matched_filter_snr_wdm(h_band, noise_var_band)
+    snrs_optimal.append(float(snr))
     print(f"  GB {i + 1}: SNR = {snr:.1f}")
 
 # ── Inference setup ───────────────────────────────────────────────────────────
@@ -342,45 +344,47 @@ def numpyro_wdm_model(setup: InferenceSetup) -> None:
     theta_parts = []
     t_c = setup.t_obs / 2.0
     for i in range(n_sources):
-        logf0_i = numpyro.sample(
-            f"logf0_{i}",
-            dist.TruncatedNormal(
-                loc=setup.prior_center[i, 0],
-                scale=setup.prior_scale[i, 0],
-                low=setup.logf0_bounds[i, 0],
-                high=setup.logf0_bounds[i, 1],
-            ),
-        )
-        logfdot_i = numpyro.sample(
-            f"logfdot_{i}",
-            dist.TruncatedNormal(
-                loc=setup.prior_center[i, 1],
-                scale=setup.prior_scale[i, 1],
-                low=setup.logfdot_bounds[i, 0],
-                high=setup.logfdot_bounds[i, 1],
-            ),
-        )
-        logA_i = numpyro.sample(
-            f"logA_{i}",
-            dist.TruncatedNormal(
-                loc=setup.prior_center[i, 2],
-                scale=setup.prior_scale[i, 2],
-                low=setup.logA_bounds[i, 0],
-                high=setup.logA_bounds[i, 1],
-            ),
-        )
-        delta_phi_c_i = numpyro.sample(f"delta_phi_c_{i}", dist.Normal(0.0, 1.0))
+        # Scale parameters to have O(1) posterior variance. This prevents NUTS mass-matrix 
+        # adaptation from hitting regularization floors which causes gradient vanishing 
+        # (wandering the full prior due to template truncation).
+        snr_guess = 300.0
+        
+        # logf0: analytical Fisher std on f0 is ~2e-10 Hz. For f0=1e-3, d(logf0) ~ 2e-7
+        scale_logf0 = 2e-7
+        scale_logfdot = setup.prior_scale[i, 1]  # prior dominated
+        scale_logA = 1.0 / snr_guess
+        scale_phi_c = 1.0 / snr_guess
+
+        del_logf0 = numpyro.sample(f"del_logf0_{i}", dist.Normal(0.0, 1.0))
+        del_logfdot = numpyro.sample(f"del_logfdot_{i}", dist.Normal(0.0, 1.0))
+        del_logA = numpyro.sample(f"del_logA_{i}", dist.Normal(0.0, 1.0))
+        delta_phi_c_i = numpyro.sample(f"del_phi_c_{i}", dist.Normal(0.0, 1.0))
+
+        logf0_i = setup.prior_center[i, 0] + scale_logf0 * del_logf0
+        logfdot_i = setup.prior_center[i, 1] + scale_logfdot * del_logfdot
+        logA_i = setup.prior_center[i, 2] + scale_logA * del_logA
+        delta_phi_c_eff = scale_phi_c * delta_phi_c_i
+
+        numpyro.factor(f"prior_logf0_{i}", dist.TruncatedNormal(
+            loc=setup.prior_center[i, 0], scale=setup.prior_scale[i, 0],
+            low=setup.logf0_bounds[i, 0], high=setup.logf0_bounds[i, 1]).log_prob(logf0_i))
+        numpyro.factor(f"prior_logfdot_{i}", dist.TruncatedNormal(
+            loc=setup.prior_center[i, 1], scale=setup.prior_scale[i, 1],
+            low=setup.logfdot_bounds[i, 0], high=setup.logfdot_bounds[i, 1]).log_prob(logfdot_i))
+        numpyro.factor(f"prior_logA_{i}", dist.TruncatedNormal(
+            loc=setup.prior_center[i, 2], scale=setup.prior_scale[i, 2],
+            low=setup.logA_bounds[i, 0], high=setup.logA_bounds[i, 1]).log_prob(logA_i))
 
         f0_i = numpyro.deterministic(f"f0_{i}", jnp.exp(logf0_i))
         fdot_i = numpyro.deterministic(f"fdot_{i}", jnp.exp(logfdot_i))
         numpyro.deterministic(
             f"phi_c_{i}",
-            setup.phase_ref[i, 1] + setup.prior_scale[i, 3] * delta_phi_c_i,
+            setup.phase_ref[i, 1] + delta_phi_c_eff,
         )
         phi0_i = numpyro.deterministic(
             f"phi0_{i}",
             setup.phase_ref[i, 0]
-            + setup.prior_scale[i, 3] * delta_phi_c_i
+            + delta_phi_c_eff
             - 2 * jnp.pi * (f0_i - jnp.exp(setup.prior_center[i, 0])) * t_c
             - jnp.pi * (fdot_i - jnp.exp(setup.prior_center[i, 1])) * t_c**2,
         )
@@ -404,10 +408,10 @@ init_values = {
     name: value
     for i in range(n_sources)
     for name, value in (
-        (f"logf0_{i}", float(setup.prior_center[i, 0])),
-        (f"logfdot_{i}", float(setup.prior_center[i, 1])),
-        (f"logA_{i}", float(setup.prior_center[i, 2])),
-        (f"delta_phi_c_{i}", 0.0),
+        (f"del_logf0_{i}", 0.0),
+        (f"del_logfdot_{i}", 0.0),
+        (f"del_logA_{i}", 0.0),
+        (f"del_phi_c_{i}", 0.0),
     )
 }
 
@@ -452,6 +456,33 @@ for i in range(n_sources):
     print(f"\n{'═' * 56}  GB {i + 1}")
     print_posterior_summary(samples_i, truth_i, PARAM_NAMES)
     check_posterior_coverage(samples_i, truth_i, PARAM_NAMES)
+    
+    # SNR computation for samples
+    samples_i_full = np.tile(SOURCE_PARAMS[i], (samples_i.shape[0], 1))
+    samples_i_full[:, 0] = samples_i[:, 0]
+    samples_i_full[:, 1] = samples_i[:, 1]
+    samples_i_full[:, 2] = samples_i[:, 2]
+    samples_i_full[:, 7] = samples_i[:, 3]
+    
+    noise_var_j = jnp.asarray(noise_var[:, band], dtype=jnp.float64)
+
+    @jax.jit
+    def _get_snrs(ps):
+        def _single_snr(p):
+            a_loc_s, _, _ = jgb.sum_tdi(p.reshape(1, -1), kmin=SRC_KMIN[i], kmax=SRC_KMAX[i])
+            local_start = SRC_KMIN[i] - kmin_rfft
+            local_end = SRC_KMAX[i] - kmin_rfft
+            x_local = jnp.zeros(band_rfft_size, dtype=jnp.complex128).at[local_start:local_end].set(a_loc_s)
+            h_wdm = _wdm_band_from_local_rfft(
+                x_local, _window_j, NT, NF, kmin_rfft, band.start, band.stop
+            )
+            snr2 = jnp.sum(h_wdm**2 / noise_var_j)
+            return jnp.sqrt(snr2)
+        return jax.vmap(_single_snr)(ps)
+
+    snr_samples = np.asarray(_get_snrs(jnp.array(samples_i_full)))
+    samples_i = np.column_stack([samples_i, snr_samples])
+
     all_samples.append(samples_i)
 
 # ── Save posteriors ───────────────────────────────────────────────────────────
@@ -461,6 +492,7 @@ np.savez(
     source_params=SOURCE_PARAMS,
     samples_gb1=all_samples[0],
     samples_gb2=all_samples[1],
+    snr_optimal=snrs_optimal,
 )
 print(f"\nSaved posteriors to {_out_path}")
 
@@ -512,15 +544,15 @@ save_figure(fig, FIGURE_OUTPUT_DIR, "wdm_band_fit")
 # ![Band-limited WDM fit](../lisa_wdm_mcmc_assets/wdm_band_fit.png)
 
 # %%
-corner_labels = [r"$f_0$", r"$\dot{f}$", r"$A$", r"$\phi_0$"]
+corner_labels = [r"$f_0$", r"$\dot{f}$", r"$A$", r"$\phi_0$", "SNR"]
 for i, (samples_i, stem) in enumerate(
     zip(all_samples, ["gb1_corner", "gb2_corner"], strict=True)
 ):
     truth_i = [SOURCE_PARAMS[i, 0], SOURCE_PARAMS[i, 1],
-                SOURCE_PARAMS[i, 2], wrap_phase(SOURCE_PARAMS[i, 7])]
+               SOURCE_PARAMS[i, 2], wrap_phase(SOURCE_PARAMS[i, 7]), snrs_optimal[i]]
     fig = corner.corner(
         samples_i, labels=corner_labels, truths=truth_i, truth_color="tab:red",
-        quantiles=[0.05, 0.5, 0.95], show_titles=True,
+        quantiles=[0.05, 0.5, 0.95], show_titles=True, title_kwargs={"fontsize": 10}
     )
     save_figure(fig, FIGURE_OUTPUT_DIR, stem)
 

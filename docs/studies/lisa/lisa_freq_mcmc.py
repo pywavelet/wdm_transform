@@ -205,11 +205,21 @@ BANDS = [
 ]
 
 # ── Per-source SNR ────────────────────────────────────────────────────────────
+snrs_optimal = []
 print("\nPer-source matched-filter SNR (A channel):")
-for band in BANDS:
-    h = source_a_band(band.fixed_params, band.band_kmin, band.band_kmax)
-    snr = matched_filter_snr_rfft(h, band.noise_psd, band.freqs, dt=dt)
-    print(f"  {band.label}: SNR = {snr:.1f}")
+for i, src in enumerate(SOURCE_PARAMS):
+    k_center = int(np.rint(src[0] * t_obs))
+    kmin = max(k_center - jgb.n, 0)
+    kmax = min(k_center + jgb.n, n_freq)
+    band_freqs = freqs[kmin:kmax]
+    noise_band = np.maximum(np.interp(band_freqs, freqs, noise_psd_full), 1e-60)
+    
+    h = source_a_band_jax(jnp.asarray(src, dtype=jnp.float64), int(kmin), int(kmax))
+    snr = matched_filter_snr_rfft(
+        np.asarray(h), noise_band, band_freqs, dt=dt
+    )
+    snrs_optimal.append(float(snr))
+    print(f"  GB {i + 1}: SNR = {snr:.1f}")
 
 # ── NUTS per source ───────────────────────────────────────────────────────────
 
@@ -327,26 +337,53 @@ for i, band in enumerate(BANDS):
     mcmc.print_summary(exclude_deterministic=False)
 
     s = mcmc.get_samples()
-    all_samples.append(np.column_stack([
+    samples_i = np.column_stack([
         np.asarray(s["f0"]),
         np.asarray(s["fdot"]),
         np.asarray(s["A"]),
         np.asarray(s["phi0"]),
-    ]))
+    ])
+
+    # SNR computation for samples
+    samples_i_full = np.tile(SOURCE_PARAMS[i], (samples_i.shape[0], 1))
+    samples_i_full[:, 0] = samples_i[:, 0]
+    samples_i_full[:, 1] = samples_i[:, 1]
+    samples_i_full[:, 2] = samples_i[:, 2]
+    samples_i_full[:, 7] = samples_i[:, 3]
+
+    psd_j = jnp.asarray(band.noise_psd, dtype=jnp.float64)
+    df_j = jnp.asarray(df, dtype=jnp.float64)
+    kmin_stat = band.band_kmin
+    kmax_stat = band.band_kmax
+
+    @jax.jit
+    def _get_snrs(ps):
+        def _single_snr(p):
+            h = source_a_band_jax(p.reshape(1, -1), kmin_stat, kmax_stat)
+            h_tilde = dt * h
+            snr2 = 4.0 * df_j * jnp.sum(jnp.abs(h_tilde)**2 / psd_j)
+            return jnp.sqrt(snr2)
+        return jax.vmap(_single_snr)(ps)
+
+    snr_samples = np.asarray(_get_snrs(jnp.array(samples_i_full)))
+    samples_i = np.column_stack([samples_i, snr_samples])
+    
+    all_samples.append(samples_i)
 
 # ── Posterior summaries and coverage ─────────────────────────────────────────
-PARAM_NAMES = ["f0 [Hz]", "fdot [Hz/s]", "A", "phi0 [rad]"]
+PARAM_NAMES = ["f0 [Hz]", "fdot [Hz/s]", "A", "phi0 [rad]", "SNR"]
 
-for band, samples in zip(BANDS, all_samples, strict=True):
-    truth = np.array([
+for i, (band, samples_i) in enumerate(zip(BANDS, all_samples, strict=True)):
+    truth_i = np.array([
         band.fixed_params[0],
         band.fixed_params[1],
         band.fixed_params[2],
         band.fixed_params[7],
+        snrs_optimal[i],
     ])
-    print(f"\n{'═' * 56}  {band.label}")
-    print_posterior_summary(samples, truth, PARAM_NAMES)
-    check_posterior_coverage(samples, truth, PARAM_NAMES)
+    print(f"\n{'═' * 56}  GB {i + 1}")
+    print_posterior_summary(samples_i, truth_i, PARAM_NAMES)
+    check_posterior_coverage(samples_i, truth_i, PARAM_NAMES)
 
 # ── Plots ─────────────────────────────────────────────────────────────────────
 fig, axes = plt.subplots(2, 1, figsize=(11, 7), constrained_layout=True)
@@ -367,23 +404,15 @@ for ax, band, samples in zip(axes, BANDS, all_samples, strict=True):
 axes[-1].set_xlabel("Frequency [Hz]")
 save_figure(fig, FIGURE_OUTPUT_DIR, "local_frequency_bands")
 
-corner_labels = [r"$f_0$", r"$\dot{f}$", r"$A$", r"$\phi_0$"]
-for band, samples, stem in zip(
-    BANDS, all_samples, ["gb1_corner", "gb2_corner"], strict=True
+corner_labels = [r"$f_0$", r"$\dot{f}$", r"$A$", r"$\phi_0$", "SNR"]
+for i, (samples_i, stem) in enumerate(
+    zip(all_samples, ["gb1_corner", "gb2_corner"], strict=True)
 ):
-    truth = [
-        band.fixed_params[0],
-        band.fixed_params[1],
-        band.fixed_params[2],
-        band.fixed_params[7],
-    ]
+    truth_i = [SOURCE_PARAMS[i, 0], SOURCE_PARAMS[i, 1],
+               SOURCE_PARAMS[i, 2], wrap_phase(SOURCE_PARAMS[i, 7]), snrs_optimal[i]]
     fig = corner.corner(
-        samples,
-        labels=corner_labels,
-        truths=truth,
-        truth_color="tab:red",
-        quantiles=[0.05, 0.5, 0.95],
-        show_titles=True,
+        samples_i, labels=corner_labels, truths=truth_i, truth_color="tab:red",
+        quantiles=[0.05, 0.5, 0.95], show_titles=True, title_kwargs={"fontsize": 10}
     )
     save_figure(fig, FIGURE_OUTPUT_DIR, stem)
 
@@ -394,5 +423,6 @@ np.savez(
     source_params=SOURCE_PARAMS,
     samples_gb1=all_samples[0],
     samples_gb2=all_samples[1],
+    snr_optimal=snrs_optimal,
 )
 print(f"\nSaved posteriors to {_out_path}")

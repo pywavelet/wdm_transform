@@ -179,6 +179,46 @@ The joint fit still produces source-level posteriors, shown here as one corner p
 --8<-- "docs/studies/lisa/lisa_wdm_mcmc.py"
 ```
 
+## Comparison of Methods
+
+### Results
+
+To assess the two inference approaches (frequency-domain vs. WDM-domain), the script
+[`compare_mcmc_results.py`](./compare_mcmc_results.py) loads both posterior files and produces
+side-by-side visualizations.
+
+**Marginal posterior histograms:**
+
+![Posterior marginals comparison](compare_mcmc_results_assets/posterior_marginals_compare.png)
+
+**Credible intervals (5th, median, 95th percentiles):**
+
+![Posterior intervals comparison](compare_mcmc_results_assets/posterior_interval_compare.png)
+
+**Joint corner plots per source (overlaid runs):**
+
+![Comparison corner GB 1](compare_mcmc_results_assets/corner_source_1.png)
+
+![Comparison corner GB 2](compare_mcmc_results_assets/corner_source_2.png)
+
+**Source-wise SNR comparison (if available):**
+
+![SNR comparison](compare_mcmc_results_assets/snr_compare.png)
+
+To generate these figures, run:
+
+```bash
+python docs/studies/lisa/compare_mcmc_results.py
+```
+
+This compares the default WDM and frequency-domain posteriors. You can also pass custom paths:
+
+```bash
+python docs/studies/lisa/compare_mcmc_results.py \
+  --run-a path/to/wdm_posteriors.npz --name-a "WDM" \
+  --run-b path/to/freq_posteriors.npz --name-b "Frequency"
+```
+
 ## Notes
 
 - `data_generation.py` is the expensive step because it computes and caches the response tensor
