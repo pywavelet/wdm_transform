@@ -69,4 +69,4 @@ If they are noticeably different, common causes are:
 
 For a full executed example with plots and posterior overlays, go to:
 
-- [Sinusoid In Colored Noise](../studies/wdm_sinusoid_in_colored_noise.py)
+- [Sinusoid In Colored Noise](../studies/toymodels/monochrome_stationary_psd.md)

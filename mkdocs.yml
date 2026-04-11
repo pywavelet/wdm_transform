@@ -59,6 +59,8 @@ plugins:
         - "__pycache__/*"
         - "examples/generate_benchmark_plot.py"
         - "examples/generate_wdm_assets.py"
+        - "studies/*.py"
+        - "studies/**/*.py"
       execute: true
       include_source: true
       show_input: true
@@ -90,12 +92,12 @@ nav:
   - Tutorial:
       - WDM Walkthrough: examples/wdm_walkthrough.py
   - Case Studies:
-      - LISA GB Inference: studies/wdm_lisa_example.py
-      - Sinusoid In Colored Noise: studies/wdm_sinusoid_in_colored_noise.py
-      - Time-Varying WDM PSD: studies/wdm_time_varying_psd.py
-      - Monochromatic Signal in Time-Varying Noise: studies/wdm_monochromatic_gibbs.py
-      - Deglitching: studies/wdm_deglitching_with_thresholding.py
-      - Signal With A Gap: studies/wdm_monochromatic_signal_with_gap.py
+      - LISA GB Inference: studies/lisa/lisa_demo.md
+      - Sinusoid In Colored Noise: studies/toymodels/monochrome_stationary_psd.md
+      - Time-Varying WDM PSD: studies/toymodels/tv_psd.md
+      - Monochromatic Signal in Time-Varying Noise: studies/toymodels/monochrome_tv_psd.md
+      - Deglitching: studies/toymodels/deglitching.md
+      - Signal With A Gap: studies/toymodels/monochrome_gaps.md
   - Reference:
       - API Overview: guide/api-overview.md
       - Package Layout: guide/package-layout.md

@@ -31,10 +31,10 @@ Use the executed walkthrough to see the package API and plots in one place:
 
 These are longer worked examples showing how WDM behaves in specific analysis problems:
 
-- [Sinusoid In Colored Noise](studies/wdm_sinusoid_in_colored_noise.py)
-- [Time-Varying WDM PSD](studies/wdm_time_varying_psd.py)
-- [Deglitching](studies/wdm_deglitching_with_thresholding.py)
-- [Signal With A Gap](studies/wdm_monochromatic_signal_with_gap.py)
+- [Sinusoid In Colored Noise](studies/toymodels/monochrome_stationary_psd.md)
+- [Time-Varying WDM PSD](studies/toymodels/tv_psd.md)
+- [Deglitching](studies/toymodels/deglitching.md)
+- [Signal With A Gap](studies/toymodels/monochrome_gaps.md)
 
 ### Reference
 

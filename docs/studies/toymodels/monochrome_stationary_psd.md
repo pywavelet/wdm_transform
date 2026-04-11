@@ -73,7 +73,7 @@ others. That is why these plots matter. They justify reading the WDM grid as
 a meaningful time-frequency decomposition rather than just a generic linear
 change of coordinates.
 
-![Basis overlap checks](../outdir_monochrome_stationary_psd/basis_overlap_checks.png)
+![Basis overlap checks](outdir_monochrome_stationary_psd/basis_overlap_checks.png)
 
 In this example the overlaps are essentially diagonal, which is exactly what
 we want. That means:
@@ -110,11 +110,11 @@ The three panels below show the same data from different angles:
 The WDM plot is the most useful one if you care about *where in time* a
 narrow-band feature is active, not just *which frequency* it has.
 
-![Time, frequency, and WDM views](../outdir_monochrome_stationary_psd/time_frequency_wdm_views.png)
+![Time, frequency, and WDM views](outdir_monochrome_stationary_psd/time_frequency_wdm_views.png)
 
 A standard spectrogram gives a familiar comparison point for the same data.
 
-![Reference spectrogram](../outdir_monochrome_stationary_psd/reference_spectrogram.png)
+![Reference spectrogram](outdir_monochrome_stationary_psd/reference_spectrogram.png)
 
 ## Energy and SNR comparisons
 
@@ -183,7 +183,7 @@ this example. Large shifts or very different widths would indicate that the
 WDM-domain likelihood is throwing away too much information or mis-modelling
 the noise.
 
-![Posterior comparison](../outdir_monochrome_stationary_psd/posterior_comparison.png)
+![Posterior comparison](outdir_monochrome_stationary_psd/posterior_comparison.png)
 
 ## Run log
 

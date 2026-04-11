@@ -49,7 +49,7 @@ the experiment block is excluded so docs builds stay fast.
 
 ## Data overview
 
-![Data overview](../outdir_monochrome_tv_psd/data_overview.png)
+![Data overview](outdir_monochrome_tv_psd/data_overview.png)
 
 ## JAX-differentiable WDM signal template
 
@@ -90,22 +90,22 @@ gives NUTS a sensible starting point.
 
 ## Convergence trace
 
-![Gibbs convergence trace](../outdir_monochrome_tv_psd/gibbs_trace.png)
+![Gibbs convergence trace](outdir_monochrome_tv_psd/gibbs_trace.png)
 
 ## Posterior of signal parameters (pooled second half of chain)
 
 Discard the first half of Gibbs iterations as burn-in and pool the
 within-iteration NUTS samples from the remaining sweeps.
 
-![Signal parameter posterior](../outdir_monochrome_tv_psd/signal_posterior_corner.png)
+![Signal parameter posterior](outdir_monochrome_tv_psd/signal_posterior_corner.png)
 
 ## Recovered noise PSD surface
 
-![Recovered noise PSD surface](../outdir_monochrome_tv_psd/noise_psd_surface.png)
+![Recovered noise PSD surface](outdir_monochrome_tv_psd/noise_psd_surface.png)
 
 ## Signal recovery
 
-![Signal recovery](../outdir_monochrome_tv_psd/signal_recovery.png)
+![Signal recovery](outdir_monochrome_tv_psd/signal_recovery.png)
 
 ## Baseline: Frequency-domain Whittle with stationary noise
 
@@ -136,7 +136,7 @@ misspecifies the noise structure — the Gibbs comparison shows the cost.
 
 ### Posterior comparison: Gibbs (time-varying) vs Stationary FFT Whittle
 
-![Stationary vs Gibbs comparison](../outdir_monochrome_tv_psd/stationary_vs_gibbs_comparison.png)
+![Stationary vs Gibbs comparison](outdir_monochrome_tv_psd/stationary_vs_gibbs_comparison.png)
 
 ## Summary
 
@@ -175,117 +175,117 @@ Signal RMS:  2.1213
 Noise RMS:   1.1949
 Data SNR:    1.78
 Dominant WDM channel for signal: m=19 (1.484 Hz)
-Initialising S[n,m] from raw data (Gamma Whittle)…
+Initialising S[n,m] from raw data (Whittle)…
 Trimmed WDM grid: (30, 63)
-Initial S range: [0.009, 69.383]
+Initial S range: [0.021, 50.610]
 Signal frequency search range: [1.172, 1.797] Hz
 
 ── Gibbs iteration 1/25 ──
-  Signal block (NUTS)… A=0.0619, f0=1.6184, phi=-0.1831
-  Noise block (Gamma Whittle)… S range: [0.010, 67.942]
+  Signal block (NUTS)… A=2.9660, f0=1.5000, phi=0.5976
+  Noise block (Whittle)… S range: [0.031, 9.532]
 
 ── Gibbs iteration 2/25 ──
-  Signal block (NUTS)… A=2.8991, f0=1.5000, phi=0.6577
-  Noise block (Gamma Whittle)… S range: [0.016, 9.704]
+  Signal block (NUTS)… A=3.0177, f0=1.5000, phi=0.6028
+  Noise block (Whittle)… S range: [0.033, 8.895]
 
 ── Gibbs iteration 3/25 ──
-  Signal block (NUTS)… A=3.0097, f0=1.5000, phi=0.6067
-  Noise block (Gamma Whittle)… S range: [0.017, 9.881]
+  Signal block (NUTS)… A=3.0161, f0=1.5000, phi=0.6013
+  Noise block (Whittle)… S range: [0.033, 9.206]
 
 ── Gibbs iteration 4/25 ──
-  Signal block (NUTS)… A=3.0251, f0=1.5000, phi=0.6020
-  Noise block (Gamma Whittle)… S range: [0.018, 9.535]
+  Signal block (NUTS)… A=3.0142, f0=1.5000, phi=0.6067
+  Noise block (Whittle)… S range: [0.036, 9.358]
 
 ── Gibbs iteration 5/25 ──
-  Signal block (NUTS)… A=3.0266, f0=1.5000, phi=0.6036
-  Noise block (Gamma Whittle)… S range: [0.018, 9.447]
+  Signal block (NUTS)… A=3.0193, f0=1.5000, phi=0.6035
+  Noise block (Whittle)… S range: [0.034, 10.012]
 
 ── Gibbs iteration 6/25 ──
-  Signal block (NUTS)… A=3.0236, f0=1.5000, phi=0.6050
-  Noise block (Gamma Whittle)… S range: [0.017, 9.523]
+  Signal block (NUTS)… A=3.0128, f0=1.5000, phi=0.6002
+  Noise block (Whittle)… S range: [0.032, 10.126]
 
 ── Gibbs iteration 7/25 ──
-  Signal block (NUTS)… A=3.0238, f0=1.5000, phi=0.5951
-  Noise block (Gamma Whittle)… S range: [0.017, 10.166]
+  Signal block (NUTS)… A=3.0198, f0=1.5000, phi=0.5909
+  Noise block (Whittle)… S range: [0.030, 9.391]
 
 ── Gibbs iteration 8/25 ──
-  Signal block (NUTS)… A=3.0289, f0=1.5000, phi=0.6049
-  Noise block (Gamma Whittle)… S range: [0.017, 9.419]
+  Signal block (NUTS)… A=3.0196, f0=1.5000, phi=0.6067
+  Noise block (Whittle)… S range: [0.031, 9.679]
 
 ── Gibbs iteration 9/25 ──
-  Signal block (NUTS)… A=3.0246, f0=1.5000, phi=0.6091
-  Noise block (Gamma Whittle)… S range: [0.017, 9.373]
+  Signal block (NUTS)… A=3.0219, f0=1.5000, phi=0.6098
+  Noise block (Whittle)… S range: [0.033, 9.334]
 
 ── Gibbs iteration 10/25 ──
-  Signal block (NUTS)… A=3.0237, f0=1.5000, phi=0.6078
-  Noise block (Gamma Whittle)… S range: [0.017, 9.788]
+  Signal block (NUTS)… A=3.0185, f0=1.5000, phi=0.6014
+  Noise block (Whittle)… S range: [0.032, 9.306]
 
 ── Gibbs iteration 11/25 ──
-  Signal block (NUTS)… A=3.0280, f0=1.5000, phi=0.6042
-  Noise block (Gamma Whittle)… S range: [0.017, 9.170]
+  Signal block (NUTS)… A=3.0270, f0=1.5000, phi=0.6019
+  Noise block (Whittle)… S range: [0.030, 9.299]
 
 ── Gibbs iteration 12/25 ──
-  Signal block (NUTS)… A=3.0224, f0=1.5000, phi=0.6007
-  Noise block (Gamma Whittle)… S range: [0.016, 9.616]
+  Signal block (NUTS)… A=3.0221, f0=1.5000, phi=0.6069
+  Noise block (Whittle)… S range: [0.032, 10.099]
 
 ── Gibbs iteration 13/25 ──
-  Signal block (NUTS)… A=3.0230, f0=1.5000, phi=0.6041
-  Noise block (Gamma Whittle)… S range: [0.017, 8.963]
+  Signal block (NUTS)… A=3.0255, f0=1.5000, phi=0.6033
+  Noise block (Whittle)… S range: [0.031, 9.223]
 
 ── Gibbs iteration 14/25 ──
-  Signal block (NUTS)… A=3.0243, f0=1.5000, phi=0.6031
-  Noise block (Gamma Whittle)… S range: [0.018, 9.784]
+  Signal block (NUTS)… A=3.0226, f0=1.5000, phi=0.6041
+  Noise block (Whittle)… S range: [0.034, 10.323]
 
 ── Gibbs iteration 15/25 ──
-  Signal block (NUTS)… A=3.0232, f0=1.5000, phi=0.6053
-  Noise block (Gamma Whittle)… S range: [0.018, 9.651]
+  Signal block (NUTS)… A=3.0175, f0=1.5000, phi=0.6059
+  Noise block (Whittle)… S range: [0.032, 10.045]
 
 ── Gibbs iteration 16/25 ──
-  Signal block (NUTS)… A=3.0247, f0=1.5000, phi=0.6016
-  Noise block (Gamma Whittle)… S range: [0.017, 9.580]
+  Signal block (NUTS)… A=3.0212, f0=1.5000, phi=0.6047
+  Noise block (Whittle)… S range: [0.034, 9.189]
 
 ── Gibbs iteration 17/25 ──
-  Signal block (NUTS)… A=3.0268, f0=1.5000, phi=0.6103
-  Noise block (Gamma Whittle)… S range: [0.017, 9.668]
+  Signal block (NUTS)… A=3.0223, f0=1.5000, phi=0.6043
+  Noise block (Whittle)… S range: [0.036, 9.247]
 
 ── Gibbs iteration 18/25 ──
-  Signal block (NUTS)… A=3.0251, f0=1.5000, phi=0.6039
-  Noise block (Gamma Whittle)… S range: [0.017, 9.727]
+  Signal block (NUTS)… A=3.0241, f0=1.5000, phi=0.6058
+  Noise block (Whittle)… S range: [0.034, 9.582]
 
 ── Gibbs iteration 19/25 ──
-  Signal block (NUTS)… A=3.0245, f0=1.5000, phi=0.6008
-  Noise block (Gamma Whittle)… S range: [0.017, 10.103]
+  Signal block (NUTS)… A=3.0225, f0=1.5000, phi=0.6007
+  Noise block (Whittle)… S range: [0.032, 8.959]
 
 ── Gibbs iteration 20/25 ──
-  Signal block (NUTS)… A=3.0220, f0=1.5000, phi=0.6071
-  Noise block (Gamma Whittle)… S range: [0.016, 9.367]
+  Signal block (NUTS)… A=3.0264, f0=1.5000, phi=0.6045
+  Noise block (Whittle)… S range: [0.032, 10.231]
 
 ── Gibbs iteration 21/25 ──
-  Signal block (NUTS)… A=3.0317, f0=1.5000, phi=0.6041
-  Noise block (Gamma Whittle)… S range: [0.017, 10.008]
+  Signal block (NUTS)… A=3.0262, f0=1.5000, phi=0.6049
+  Noise block (Whittle)… S range: [0.031, 9.370]
 
 ── Gibbs iteration 22/25 ──
-  Signal block (NUTS)… A=3.0313, f0=1.5000, phi=0.6043
-  Noise block (Gamma Whittle)… S range: [0.016, 10.129]
+  Signal block (NUTS)… A=3.0271, f0=1.5000, phi=0.5973
+  Noise block (Whittle)… S range: [0.032, 9.467]
 
 ── Gibbs iteration 23/25 ──
-  Signal block (NUTS)… A=3.0250, f0=1.5000, phi=0.6004
-  Noise block (Gamma Whittle)… S range: [0.017, 9.564]
+  Signal block (NUTS)… A=3.0319, f0=1.5000, phi=0.5992
+  Noise block (Whittle)… S range: [0.031, 9.444]
 
 ── Gibbs iteration 24/25 ──
-  Signal block (NUTS)… A=3.0294, f0=1.5000, phi=0.6062
-  Noise block (Gamma Whittle)… S range: [0.016, 9.328]
+  Signal block (NUTS)… A=3.0269, f0=1.5000, phi=0.6020
+  Noise block (Whittle)… S range: [0.032, 11.120]
 
 ── Gibbs iteration 25/25 ──
-  Signal block (NUTS)… A=3.0175, f0=1.5000, phi=0.6045
-  Noise block (Gamma Whittle)… S range: [0.017, 10.024]
+  Signal block (NUTS)… A=3.0151, f0=1.5000, phi=0.6021
+  Noise block (Whittle)… S range: [0.032, 8.903]
 
 Gibbs sampler complete.
 Pooled 2600 NUTS samples from Gibbs iterations 13–25
 PSD-implied variance: 0.0029  |  empirical var(data): 6.0121
 Stationary FFT Whittle NUTS complete.
-  A: median=3.0563  90% CI=[3.0370, 3.0749]  (true=3.0)
+  A: median=3.0566  90% CI=[3.0409, 3.0726]  (true=3.0)
   f0: median=1.5001  90% CI=[1.5000, 1.5001]  (true=1.5)
-  phi: median=0.5378  90% CI=[0.5295, 0.5457]  (true=0.6)
+  phi: median=0.5374  90% CI=[0.5301, 0.5459]  (true=0.6)
 ```
 <!-- END GENERATED RUN LOG -->

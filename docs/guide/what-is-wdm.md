@@ -76,4 +76,4 @@ This view is useful when you want:
 
 For a full worked example, see the study notebook:
 
-- [Sinusoid In Colored Noise](../studies/wdm_sinusoid_in_colored_noise.py)
+- [Sinusoid In Colored Noise](../studies/toymodels/monochrome_stationary_psd.md)

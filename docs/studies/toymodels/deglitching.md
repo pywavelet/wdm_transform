@@ -30,7 +30,7 @@ In the time domain the glitches appear as obvious short bursts. In the WDM
 grid they show up as localized time bins with unusually large activity across
 many channels. That is the key structural clue we use for cleanup.
 
-![Observed contamination overview](../outdir_deglitching/contamination_overview.png)
+![Observed contamination overview](outdir_deglitching/contamination_overview.png)
 
 ## Build a simple glitch score
 
@@ -52,7 +52,7 @@ The panels below show the intermediate representation:
 - the blurred score used for detection
 - the final 1D soft mask over WDM time bins
 
-![Glitch score breakdown](../outdir_deglitching/glitch_score_breakdown.png)
+![Glitch score breakdown](outdir_deglitching/glitch_score_breakdown.png)
 
 ## Reconstruct the cleaned series
 
@@ -82,13 +82,13 @@ Later passes still refine the score, but they also start to attenuate some
 non-glitch structure. That is why iterative schemes usually need an explicit
 stopping rule instead of a fixed number of passes.
 
-![Iterative score and reconstruction](../outdir_deglitching/iterative_score_and_reconstruction.png)
+![Iterative score and reconstruction](outdir_deglitching/iterative_score_and_reconstruction.png)
 
 The next figure compares the full time series and then zooms into the glitch
 neighborhoods. This makes it easier to see both the suppression and the price
 paid by such a simple mask.
 
-![Deglitching time-domain result and zooms](../outdir_deglitching/deglitching_time_domain_zoom.png)
+![Deglitching time-domain result and zooms](outdir_deglitching/deglitching_time_domain_zoom.png)
 
 ## PSD estimate before and after cleanup
 
@@ -97,7 +97,7 @@ often less biased by rare, loud artifacts. We compare Welch PSD estimates for
 the observed data, the one-pass and iterative cleaned reconstructions, and
 the reference data without glitches.
 
-![Welch PSD estimate before and after cleanup](../outdir_deglitching/welch_psd_cleanup_comparison.png)
+![Welch PSD estimate before and after cleanup](outdir_deglitching/welch_psd_cleanup_comparison.png)
 
 ## Downstream signal inference with `numpyro`
 
@@ -119,7 +119,7 @@ The comparison below is the main point: after selective WDM deglitching, the
 posterior for the dominant sinusoid moves closer to the no-glitch reference
 and the fitted residual scatter `sigma` drops substantially.
 
-![Posterior comparison](../outdir_deglitching/posterior_comparison.png)
+![Posterior comparison](outdir_deglitching/posterior_comparison.png)
 
 ## Remarks
 

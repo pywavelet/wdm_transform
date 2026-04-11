@@ -130,7 +130,7 @@ The two heatmaps below show:
 The correlation view is usually easier to interpret, because the marginal
 variances vary across the WDM plane.
 
-![Covariance and correlation of vec(w)](../outdir_tv_psd/vectorized_wdm_covariance.png)
+![Covariance and correlation of vec(w)](outdir_tv_psd/vectorized_wdm_covariance.png)
 
 This version uses the Bayesian WDM Whittle likelihood directly on the trimmed
 coefficients. The posterior is still regularized by the spline prior, but the
@@ -231,14 +231,14 @@ not as:
 
 - "the exact analytical Fourier PSD recovered without approximation."
 
-![Posterior surface overview](../outdir_tv_psd/whittle_overview_surface.png)
+![Posterior surface overview](outdir_tv_psd/whittle_overview_surface.png)
 
 The posterior surface above is shown on the native WDM grid. Since the latent
 model is a smooth tensor-product spline, we can also evaluate its posterior
 mean on a much denser plotting grid to visualize the fitted trend without the
 coarse WDM pixelation.
 
-![Posterior mean on the WDM grid and on a dense spline grid](../outdir_tv_psd/posterior_mean_dense_grid.png)
+![Posterior mean on the WDM grid and on a dense spline grid](outdir_tv_psd/posterior_mean_dense_grid.png)
 
 ## Whitening Check
 
@@ -252,7 +252,7 @@ If the fitted surface is a reasonable WDM noise model, then these whitened
 coefficients should look approximately standard normal: centered near zero and
 with variance close to one.
 
-![Whitening check](../outdir_tv_psd/whitening_check.png)
+![Whitening check](outdir_tv_psd/whitening_check.png)
 
 ## Posterior Predictive Check
 
@@ -272,7 +272,7 @@ $$
 transform them to local power, and compare the observed `w[n,m]^2` to the
 resulting posterior predictive intervals.
 
-![Posterior predictive check](../outdir_tv_psd/posterior_predictive_check.png)
+![Posterior predictive check](outdir_tv_psd/posterior_predictive_check.png)
 
 ## Pointwise True PSD Reference
 
@@ -295,7 +295,7 @@ Two plots are useful here:
 If the sampled version looks blocky, that is mostly a grid-resolution effect,
 not a statement that the underlying analytical PSD itself is rough.
 
-![Analytical PSD on dense and WDM grids](../outdir_tv_psd/true_psd_dense_and_sampled.png)
+![Analytical PSD on dense and WDM grids](outdir_tv_psd/true_psd_dense_and_sampled.png)
 
 ## One channel slice
 
@@ -309,7 +309,7 @@ This is often the easiest place to spot the qualitative failure mode:
 - large errors near the ends suggest boundary effects
 - very jagged posterior means suggest under-regularization
 
-![Single-channel comparison](../outdir_tv_psd/channel_slice_whittle.png)
+![Single-channel comparison](outdir_tv_psd/channel_slice_whittle.png)
 
 ## Takeaway
 
