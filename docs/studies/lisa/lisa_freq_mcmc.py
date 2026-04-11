@@ -226,34 +226,40 @@ def sample_source(band: BandData, *, seed: int = 0) -> MCMC:
     df_j = jnp.asarray(df, dtype=jnp.float64)
 
     def model():
-        logf0 = numpyro.sample(
-            "logf0",
-            dist.TruncatedNormal(
-                loc=band.prior_center[0],
-                scale=band.prior_scale[0],
-                low=band.logf0_bounds[0],
-                high=band.logf0_bounds[1],
-            ),
-        )
-        logfdot = numpyro.sample(
-            "logfdot",
-            dist.TruncatedNormal(
-                loc=band.prior_center[1],
-                scale=band.prior_scale[1],
-                low=band.logfdot_bounds[0],
-                high=band.logfdot_bounds[1],
-            ),
-        )
-        logA = numpyro.sample(
-            "logA",
-            dist.TruncatedNormal(
-                loc=band.prior_center[2],
-                scale=band.prior_scale[2],
-                low=band.logA_bounds[0],
-                high=band.logA_bounds[1],
-            ),
-        )
-        delta_phi_c = numpyro.sample("delta_phi_c", dist.Normal(0.0, 1.0))
+        # Scale parameters to have O(1) posterior variance. This prevents NUTS mass-matrix 
+        # adaptation from hitting regularization floors which causes max_tree_depth stalls.
+        snr_guess = 300.0
+        
+        # logf0: analytical Fisher std on f0 is ~2e-10 Hz. For f0=1e-3, d(logf0) ~ 2e-7
+        scale_logf0 = 2e-7
+        # logA: fractional amplitude error is ~ 1/SNR
+        scale_logA = 1.0 / snr_guess
+        # phase: error is ~ 1/SNR
+        scale_phi_c = 1.0 / snr_guess
+        # logfdot: prior dominated, bounds span O(1).
+        scale_logfdot = band.prior_scale[1]
+
+        # Use unconstrained variables with unit Normal priors
+        del_logf0 = numpyro.sample("del_logf0", dist.Normal(0.0, 1.0))
+        del_logfdot = numpyro.sample("del_logfdot", dist.Normal(0.0, 1.0))
+        del_logA = numpyro.sample("del_logA", dist.Normal(0.0, 1.0))
+        del_phi_c = numpyro.sample("del_phi_c", dist.Normal(0.0, 1.0))
+
+        logf0 = band.prior_center[0] + scale_logf0 * del_logf0
+        logfdot = band.prior_center[1] + scale_logfdot * del_logfdot
+        logA = band.prior_center[2] + scale_logA * del_logA
+        delta_phi_c = scale_phi_c * del_phi_c
+
+        # Add physical prior log-probabilities 
+        numpyro.factor("prior_logf0", dist.TruncatedNormal(
+            loc=band.prior_center[0], scale=band.prior_scale[0],
+            low=band.logf0_bounds[0], high=band.logf0_bounds[1]).log_prob(logf0))
+        numpyro.factor("prior_logfdot", dist.TruncatedNormal(
+            loc=band.prior_center[1], scale=band.prior_scale[1],
+            low=band.logfdot_bounds[0], high=band.logfdot_bounds[1]).log_prob(logfdot))
+        numpyro.factor("prior_logA", dist.TruncatedNormal(
+            loc=band.prior_center[2], scale=band.prior_scale[2],
+            low=band.logA_bounds[0], high=band.logA_bounds[1]).log_prob(logA))
 
         f0 = numpyro.deterministic("f0", jnp.exp(logf0))
         fdot = numpyro.deterministic("fdot", jnp.exp(logfdot))
@@ -284,16 +290,16 @@ def sample_source(band: BandData, *, seed: int = 0) -> MCMC:
         residual_phys = dt_j * residual
         numpyro.factor(
             "whittle",
-            -jnp.sum(jnp.log(psd_j) + 4.0 * df_j * jnp.abs(residual_phys) ** 2 / psd_j),
+            -jnp.sum(jnp.log(psd_j) + 2.0 * df_j * jnp.abs(residual_phys) ** 2 / psd_j),
         )
 
     kernel = NUTS(
         model,
         init_strategy=init_to_value(values={
-            "logf0": float(band.prior_center[0]),
-            "logfdot": float(band.prior_center[1]),
-            "delta_phi_c": 0.0,
-            "logA": float(band.prior_center[2]),
+            "del_logf0": 0.0,
+            "del_logfdot": 0.0,
+            "del_logA": 0.0,
+            "del_phi_c": 0.0,
         }),
         dense_mass=True,
         target_accept_prob=0.9,

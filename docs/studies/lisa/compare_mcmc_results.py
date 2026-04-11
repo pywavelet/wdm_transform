@@ -239,7 +239,9 @@ def plot_marginals(
 	output_dir: Path,
 ) -> None:
 	n_params = len(labels)
-	fig, axes = plt.subplots(2, 3, figsize=(14, 7), constrained_layout=True)
+	n_cols = 4
+	n_rows = (n_params + n_cols - 1) // n_cols
+	fig, axes = plt.subplots(n_rows, n_cols, figsize=(16, 3 * n_rows), constrained_layout=True)
 	axes = np.asarray(axes).reshape(-1)
 
 	for idx, label in enumerate(labels):
@@ -286,7 +288,8 @@ def plot_intervals(
 	hi_b = np.percentile(run_b.samples, 95, axis=0)
 
 	x = np.arange(len(labels))
-	fig, ax = plt.subplots(figsize=(12, 5), constrained_layout=True)
+	fig_width = max(12, len(labels) * 1.2)
+	fig, ax = plt.subplots(figsize=(fig_width, 5), constrained_layout=True)
 	ax.errorbar(
 		x - 0.12,
 		med_a,
@@ -314,7 +317,8 @@ def plot_intervals(
 		ax.scatter(x, truth_arr, color="tab:red", s=35, marker="x", label="truth")
 
 	ax.set_xticks(x)
-	ax.set_xticklabels(["f1", "A1", "phi1", "f2", "A2", "phi2"], rotation=25, ha="right")
+	short_labels = [label.replace(" [Hz]", "").replace(" [1/s]", "").replace(" [rad]", "").replace("source ", "S").replace(" ", "\n") for label in labels]
+	ax.set_xticklabels(short_labels, rotation=45, ha="right", fontsize=9)
 	ax.set_title("Posterior medians and 90% intervals")
 	ax.legend()
 	_ = save_figure(fig, output_dir, "posterior_interval_compare")
