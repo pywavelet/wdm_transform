@@ -248,12 +248,23 @@ def wdm_noise_variance(
     freq_grid: np.ndarray,
     nt: int,
 ) -> np.ndarray:
-    """WDM pixel variance S(f_m) × Δf broadcast over *nt* time bins.
+    """WDM pixel variance S_n(f_m) / (2·dt) broadcast over *nt* time bins.
+
+    From the WDM Parseval identity, the per-pixel noise variance for a
+    stationary process with one-sided physical PSD S_n(f) is:
+
+        E[w[n,m]²] = S_n(f_m) / (2·dt) = S_n(f_m) · f_Nyquist
+
+    where f_Nyquist = freq_grid[-1] = 1/(2·dt).  This is independent of
+    the WDM frequency-bin spacing Δf_wdm.  Using Δf_wdm instead (as a
+    naive "PSD × bandwidth" estimate) underestimates the variance by nf,
+    causing the likelihood curvature to be nf× too large and driving NUTS
+    step sizes to zero.
 
     ``noise_psd`` must already be sampled on ``freq_grid``.
     """
-    delta_f = float(freq_grid[1] - freq_grid[0])
-    var_row = np.maximum(np.asarray(noise_psd, dtype=float) * delta_f, 1e-60)
+    f_nyquist = float(freq_grid[-1])  # = 1 / (2 * dt)
+    var_row = np.maximum(np.asarray(noise_psd, dtype=float) * f_nyquist, 1e-60)
     return np.broadcast_to(var_row[None, :], (nt, len(var_row))).copy()
 
 

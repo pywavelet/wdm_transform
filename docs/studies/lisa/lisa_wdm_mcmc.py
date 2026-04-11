@@ -112,7 +112,7 @@ noise_psd = np.maximum(
                left=noise_psd_saved[0], right=noise_psd_saved[-1]),
     1e-60,
 )
-# Diagonal noise variance: S[n, m] = S(f_m) * Δf, tiled over NT time bins
+# Diagonal noise variance: S[n, m] = S_n(f_m) / (2·dt), tiled over NT time bins
 noise_var = wdm_noise_variance(noise_psd, freq_grid, NT)
 
 # WDM analysis band spanning both sources

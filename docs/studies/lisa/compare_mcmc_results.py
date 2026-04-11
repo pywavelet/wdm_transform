@@ -20,13 +20,18 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 
+try:
+	import corner
+except ImportError:
+	corner = None
+
 from lisa_common import save_figure
 
 
 STUDY_DIR = Path(__file__).resolve().parent
 DEFAULT_OUTPUT_DIR = STUDY_DIR / "compare_mcmc_results_assets"
-DEFAULT_WDM_PATH = STUDY_DIR / "lisa_wdm_mcmc_assets" / "wdm_posterior_samples.npz"
-DEFAULT_FREQ_PATH = STUDY_DIR / "lisa_freq_mcmc_assets" / "freq_posterior_samples.npz"
+DEFAULT_WDM_PATH = STUDY_DIR / "lisa_wdm_mcmc_assets" / "posteriors.npz"
+DEFAULT_FREQ_PATH = STUDY_DIR / "lisa_freq_mcmc_assets" / "posteriors.npz"
 
 
 @dataclass(frozen=True)
@@ -104,6 +109,9 @@ def _load_freq_style_samples(data: np.lib.npyio.NpzFile) -> tuple[np.ndarray, li
 	if "gb1_samples" in data and "gb2_samples" in data:
 		gb1 = _to_float_array(data["gb1_samples"])
 		gb2 = _to_float_array(data["gb2_samples"])
+	elif "samples_gb1" in data and "samples_gb2" in data:
+		gb1 = _to_float_array(data["samples_gb1"])
+		gb2 = _to_float_array(data["samples_gb2"])
 	elif "independent_samples" in data:
 		indep = _to_float_array(data["independent_samples"])
 		if indep.ndim != 3 or indep.shape[0] < 2 or indep.shape[2] < 4:
@@ -118,18 +126,22 @@ def _load_freq_style_samples(data: np.lib.npyio.NpzFile) -> tuple[np.ndarray, li
 	merged = np.column_stack(
 		[
 			gb1[:ns, 0],
+			gb1[:ns, 1],
 			gb1[:ns, 2],
 			gb1[:ns, 3],
 			gb2[:ns, 0],
+			gb2[:ns, 1],
 			gb2[:ns, 2],
 			gb2[:ns, 3],
 		]
 	)
 	labels = [
 		"source 1 frequency [Hz]",
+		"source 1 chirp fdot [1/s]",
 		"source 1 amplitude",
 		"source 1 phase [rad]",
 		"source 2 frequency [Hz]",
+		"source 2 chirp fdot [1/s]",
 		"source 2 amplitude",
 		"source 2 phase [rad]",
 	]
@@ -140,11 +152,13 @@ def _load_freq_style_samples(data: np.lib.npyio.NpzFile) -> tuple[np.ndarray, li
 		if src.shape == (2, 8):
 			truth_map = {
 				labels[0]: float(src[0, 0]),
-				labels[1]: float(src[0, 2]),
-				labels[2]: float((src[0, 7] + np.pi) % (2.0 * np.pi) - np.pi),
-				labels[3]: float(src[1, 0]),
-				labels[4]: float(src[1, 2]),
-				labels[5]: float((src[1, 7] + np.pi) % (2.0 * np.pi) - np.pi),
+				labels[1]: float(src[0, 1]),
+				labels[2]: float(src[0, 2]),
+				labels[3]: float((src[0, 7] + np.pi) % (2.0 * np.pi) - np.pi),
+				labels[4]: float(src[1, 0]),
+				labels[5]: float(src[1, 1]),
+				labels[6]: float(src[1, 2]),
+				labels[7]: float((src[1, 7] + np.pi) % (2.0 * np.pi) - np.pi),
 			}
 
 	return merged, labels, truth_map
@@ -332,6 +346,70 @@ def plot_snr(run_a: RunPosterior, run_b: RunPosterior, output_dir: Path) -> None
 	_ = save_figure(fig, output_dir, "snr_compare")
 
 
+def plot_corner_per_source(
+	run_a: RunPosterior,
+	run_b: RunPosterior,
+	labels: list[str],
+	output_dir: Path,
+) -> None:
+	if corner is None:
+		print("corner package not installed; skipping corner plots.")
+		return
+
+	# For each source (4 params per source): [f, fdot, A, phi]
+	for source_idx, source_name in enumerate(["source_1", "source_2"]):
+		param_indices = [4 * source_idx, 4 * source_idx + 1, 4 * source_idx + 2, 4 * source_idx + 3]
+		source_labels = [labels[i].replace(f"source {source_idx + 1} ", "") for i in param_indices]
+
+		samples_a = run_a.samples[:, param_indices]
+		samples_b = run_b.samples[:, param_indices]
+
+		# Compute truth vector for this source
+		truth = []
+		for idx in param_indices:
+			label = labels[idx]
+			truth.append(run_a.truth_map.get(label, run_b.truth_map.get(label, np.nan)))
+		truth_arr = np.asarray(truth)
+
+		# Create corner plot with run_a
+		fig = corner.corner(
+			samples_a,
+			labels=source_labels,
+			truths=truth_arr if np.any(np.isfinite(truth_arr)) else None,
+			color="tab:blue",
+			alpha=0.5,
+			plot_datapoints=False,
+			smooth=1.0,
+		)
+
+		# Overlay run_b on the same figure
+		corner.corner(
+			samples_b,
+			fig=fig,
+			labels=source_labels,
+			truths=None,
+			color="tab:orange",
+			alpha=0.5,
+			plot_datapoints=False,
+			smooth=1.0,
+		)
+
+		# Add legend
+		axes = np.asarray(fig.axes).reshape((len(source_labels), len(source_labels)))
+		ax_legend = axes[0, -1]
+		from matplotlib.patches import Patch
+
+		legend_elements = [
+			Patch(facecolor="tab:blue", alpha=0.5, label=run_a.name),
+			Patch(facecolor="tab:orange", alpha=0.5, label=run_b.name),
+		]
+		if np.any(np.isfinite(truth_arr)):
+			legend_elements.append(plt.Line2D([0], [0], color="tab:red", ls="--", label="truth"))
+		ax_legend.legend(handles=legend_elements, loc="upper left", fontsize=8)
+
+		_ = save_figure(fig, output_dir, f"corner_{source_name}")
+
+
 def align_common_labels(run_a: RunPosterior, run_b: RunPosterior) -> tuple[RunPosterior, RunPosterior, list[str]]:
 	common = [label for label in run_a.labels if label in run_b.labels]
 	if not common:
@@ -394,12 +472,17 @@ def main() -> None:
 	plot_marginals(run_a, run_b, labels, args.output_dir)
 	plot_intervals(run_a, run_b, labels, args.output_dir)
 	plot_snr(run_a, run_b, args.output_dir)
+	plot_corner_per_source(run_a, run_b, labels, args.output_dir)
 
 	print("\nSaved comparison figures:")
 	print(f"  {args.output_dir / 'posterior_marginals_compare.png'}")
 	print(f"  {args.output_dir / 'posterior_interval_compare.png'}")
 	if (args.output_dir / "snr_compare.png").exists():
 		print(f"  {args.output_dir / 'snr_compare.png'}")
+	if (args.output_dir / "corner_source_1.png").exists():
+		print(f"  {args.output_dir / 'corner_source_1.png'}")
+	if (args.output_dir / "corner_source_2.png").exists():
+		print(f"  {args.output_dir / 'corner_source_2.png'}")
 
 
 if __name__ == "__main__":
