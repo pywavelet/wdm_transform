@@ -43,7 +43,6 @@ from lisa_common import (
     INJECTION_PATH,
     WDM_ASSET_DIR,
     check_posterior_coverage,
-    floor_pow2,
     matched_filter_snr_wdm,
     print_posterior_summary,
     require_positive_fdot,
@@ -86,9 +85,12 @@ SOURCE_PARAMS = require_positive_fdot(
 )
 _inj.close()
 
-# Largest power-of-2 length that is also divisible by 2*NT
-n_pow2 = floor_pow2(len(data_At_full))
-n_keep = (n_pow2 // (2 * NT)) * (2 * NT)
+# Keep the longest segment compatible with the WDM tiling.
+#
+# Using the largest power of 2 discards a large fraction of the observation
+# and artificially broadens the posterior relative to the frequency-domain
+# study, which uses the full year of data.
+n_keep = (len(data_At_full) // (2 * NT)) * (2 * NT)
 data_At = data_At_full[:n_keep]
 t_obs = n_keep * dt
 NF = n_keep // NT
