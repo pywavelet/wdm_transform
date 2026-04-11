@@ -6,19 +6,27 @@ Bayesian inference for two Galactic binaries with a diagonal Whittle likelihood.
 
 Workflow:
 1. Load ``injection.npz``.
-2. Build the WDM representation and calibrate a diagonal noise-variance surface.
-3. Print per-source SNR in the A channel.
+2. Build the WDM data representation and analytic noise variance S[n,m] = S(f_m)·Δf.
+3. Print per-source SNR (WDM band, A channel).
 4. Run joint NumPyro NUTS over both sources on a shared WDM band.
-5. Save posterior summaries and diagnostic figures.
+5. Print NUTS diagnostics and 90 % CI coverage; save corner plots and posteriors.
 
 Sky position, polarisation, and inclination are held fixed at injected values.
-Both sources are fit jointly because their signals overlap in the shared WDM band.
+Both sources are fit jointly on a shared WDM band.
+
+Performance notes
+-----------------
+The forward model calls ``jgb.sum_tdi`` with static (Python-int) kmin/kmax covering
+the rfft bins needed by the WDM analysis band.  This lets JAX use static slice
+operations (no dynamic_update_slice) and avoids the full irfft + full WDM transform
+at every NUTS step.  Only the ``band_width`` WDM channel IFFTs are computed.
 """
 
 from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from functools import partial
 
 os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
 
@@ -38,25 +46,27 @@ from lisa_common import (
     floor_pow2,
     matched_filter_snr_wdm,
     print_posterior_summary,
+    require_positive_fdot,
     save_figure,
     trim_frequency_band,
+    wdm_noise_variance,
     wrap_phase,
 )
 from numpyro.infer import MCMC, NUTS, init_to_value
 from wdm_transform import TimeSeries
-from wdm_transform.transforms import from_time_to_wdm
+from wdm_transform.backends import get_backend
+from wdm_transform.windows import phi_window
 
 jax.config.update("jax_enable_x64", True)
 
 FIGURE_OUTPUT_DIR = WDM_ASSET_DIR
 FIGURE_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-N_WARMUP = 800
-N_DRAWS = 1000
+N_WARMUP = int(os.getenv("LISA_N_WARMUP", "800"))
+N_DRAWS = int(os.getenv("LISA_N_DRAWS", "1000"))
 NT = 128
 A_WDM = 1.0 / 3.0
 D_WDM = 1.0
-N_NOISE_CAL = 64
 
 # ── Load and truncate data ────────────────────────────────────────────────────
 if not INJECTION_PATH.exists():
@@ -70,7 +80,10 @@ dt = float(_inj["dt"])
 data_At_full = np.asarray(_inj["data_At"], dtype=float)
 noise_psd_saved = np.asarray(_inj["noise_psd_A"], dtype=float)
 freqs_saved = np.asarray(_inj["freqs"], dtype=float)
-SOURCE_PARAMS = np.asarray(_inj["source_params"], dtype=float)
+SOURCE_PARAMS = require_positive_fdot(
+    np.asarray(_inj["source_params"], dtype=float),
+    context=str(INJECTION_PATH),
+)
 _inj.close()
 
 # Largest power-of-2 length that is also divisible by 2*NT
@@ -79,96 +92,30 @@ n_keep = (n_pow2 // (2 * NT)) * (2 * NT)
 data_At = data_At_full[:n_keep]
 t_obs = n_keep * dt
 NF = n_keep // NT
+n_freqs = n_keep // 2 + 1  # rfft half-spectrum size
 
 print(f"Loaded injection from {INJECTION_PATH.name}")
-print(f"T_obs = {t_obs / 86400:.1f} days  dt = {dt:.2f} s  N = {n_keep}  nt = {NT}  nf = {NF}")
+print(
+    f"T_obs = {t_obs / 86400:.1f} days  dt = {dt:.2f} s  "
+    f"N = {n_keep}  nt = {NT}  nf = {NF}"
+)
 
-# ── WDM transform and noise surface ──────────────────────────────────────────
+# ── WDM data and analytic noise variance ──────────────────────────────────────
 probe = TimeSeries(data_At, dt=dt).to_wdm(nt=NT)
 data_wdm = np.asarray(probe.coeffs)
 freq_grid = np.asarray(probe.freq_grid)
 time_grid = np.asarray(probe.time_grid)
-freqs_full = np.fft.rfftfreq(n_keep, dt)
-noise_psd_full = np.maximum(
-    np.interp(freqs_full, freqs_saved, noise_psd_saved, left=noise_psd_saved[0], right=noise_psd_saved[-1]),
+
+# Interpolate saved PSD onto the WDM frequency grid
+noise_psd = np.maximum(
+    np.interp(freq_grid, freqs_saved, noise_psd_saved,
+               left=noise_psd_saved[0], right=noise_psd_saved[-1]),
     1e-60,
 )
+# Diagonal noise variance: S[n, m] = S(f_m) * Δf, tiled over NT time bins
+noise_var = wdm_noise_variance(noise_psd, freq_grid, NT)
 
-
-def _draw_noise_time_series(noise_psd_rfft: np.ndarray, dt: float, rng: np.random.Generator) -> np.ndarray:
-    """Draw one real stationary Gaussian noise series with target one-sided PSD."""
-    n_freq = len(noise_psd_rfft)
-    n_time = 2 * (n_freq - 1)
-    df = 1.0 / (n_time * dt)
-    coeffs = np.zeros(n_freq, dtype=np.complex128)
-    if n_freq > 2:
-        amp = np.sqrt(np.maximum(noise_psd_rfft[1:-1], 0.0) / (4.0 * df)) / dt
-        coeffs[1:-1] = amp * (
-            rng.standard_normal(n_freq - 2) + 1j * rng.standard_normal(n_freq - 2)
-        ) / np.sqrt(2.0)
-    return np.fft.irfft(coeffs, n=n_time)
-
-
-def _calibrated_wdm_noise_variance(
-    noise_psd_rfft: np.ndarray,
-    *,
-    nt: int,
-    nf: int,
-    dt: float,
-    a: float,
-    d: float,
-    n_realizations: int,
-    cache_path,
-) -> np.ndarray:
-    """Estimate diagonal WDM noise variance from synthetic stationary noise draws."""
-    if cache_path.exists():
-        cached = np.load(cache_path)
-        try:
-            if (
-                int(cached["nt"]) == nt
-                and int(cached["nf"]) == nf
-                and float(cached["dt"]) == dt
-                and int(cached["n_realizations"]) == n_realizations
-            ):
-                return np.asarray(cached["noise_var"], dtype=float)
-        finally:
-            cached.close()
-
-    print(f"Calibrating WDM noise variance from {n_realizations} synthetic draws...")
-    rng = np.random.default_rng(0)
-    var_accum = np.zeros(nf + 1, dtype=float)
-    for _ in range(n_realizations):
-        noise_t = _draw_noise_time_series(noise_psd_rfft, dt, rng)
-        coeffs = np.asarray(
-            from_time_to_wdm(noise_t, nt=nt, nf=nf, a=a, d=d, dt=dt, backend="numpy"),
-            dtype=float,
-        )
-        var_accum += np.mean(coeffs**2, axis=0)
-    var_row = np.maximum(var_accum / n_realizations, 1e-60)
-    noise_var = np.broadcast_to(var_row[None, :], (nt, nf + 1)).copy()
-    np.savez(
-        cache_path,
-        noise_var=noise_var,
-        nt=nt,
-        nf=nf,
-        dt=dt,
-        n_realizations=n_realizations,
-    )
-    return noise_var
-
-
-noise_var = _calibrated_wdm_noise_variance(
-    noise_psd_full,
-    nt=NT,
-    nf=NF,
-    dt=dt,
-    a=A_WDM,
-    d=D_WDM,
-    n_realizations=N_NOISE_CAL,
-    cache_path=FIGURE_OUTPUT_DIR / f"noise_var_calibration_nt{NT}_nf{NF}.npz",
-)
-
-# Band spanning both sources with padding
+# WDM analysis band spanning both sources
 band = trim_frequency_band(
     freq_grid,
     SOURCE_PARAMS[:, 0].min() - 1.5e-4,
@@ -180,70 +127,156 @@ print(
     f"({band.stop - band.start} bins)"
 )
 
-# ── JaxGB generator ───────────────────────────────────────────────────────────
+# ── Band-limited WDM forward model ────────────────────────────────────────────
+#
+# Instead of irfft(full spectrum) → full WDM transform → slice band, we:
+#   1. Call jgb.sum_tdi with static Python-int kmin/kmax for each source's
+#      natural ±n-bin window.  Static indices → no dynamic_update_slice.
+#   2. Place the result into a small local rfft array covering only the rfft
+#      bins that the WDM band channels actually access.
+#   3. Run a JIT-compiled kernel that does only band_width IFFTs of size NT
+#      instead of the full nf-1 IFFTs.
+#
+# This eliminates the irfft(N) + fft(N) pair and reduces the per-step IFFT
+# count from (nf-1) ≈ 1023 to (band.stop - band.start) ≈ 124.
+
 orbit_model = lisaorbits.EqualArmlengthOrbits()
 jgb = JaxGB(orbit_model, t_obs=t_obs, t0=0.0, n=256)
-n_freqs = n_keep // 2 + 1
+
+half = NT // 2  # = 64
+
+# rfft bin range that covers all WDM channels in the analysis band:
+#   channel m accesses rfft bins [(m-1)*half, (m+1)*half)
+kmin_rfft: int = max((band.start - 1) * half, 0)
+kmax_rfft: int = min(band.stop * half, n_freqs)
+band_rfft_size: int = kmax_rfft - kmin_rfft
+
+# Source-centered rfft windows — Python ints, static during NUTS
+SRC_KMIN: list[int] = [
+    max(int(np.rint(src[0] * t_obs)) - jgb.n, 0) for src in SOURCE_PARAMS
+]
+SRC_KMAX: list[int] = [min(k + 2 * jgb.n, n_freqs) for k in SRC_KMIN]
+
+# WDM phi window (size NT, precomputed once on host)
+_jax_backend = get_backend("jax")
+_window_j = jnp.asarray(
+    phi_window(_jax_backend, NT, NF, dt, A_WDM, D_WDM), dtype=jnp.complex128
+)
 
 
-def place_local_tdi_jax(segment: jnp.ndarray, kmin, n_freqs: int) -> jnp.ndarray:
-    """Place a band-limited TDI segment into a JAX zero-padded frequency array."""
-    segment = jnp.asarray(segment, dtype=jnp.complex128).reshape(-1)
-    full = jnp.zeros((n_freqs,), dtype=jnp.complex128)
-    start = jnp.clip(
-        jnp.asarray(kmin, dtype=jnp.int32),
-        0,
-        max(n_freqs - segment.shape[0], 0),
+@partial(jax.jit, static_argnames=("nt", "nf", "kmin_rfft", "band_start", "band_stop"))
+def _wdm_band_from_local_rfft(
+    x_local: jnp.ndarray,
+    window: jnp.ndarray,
+    nt: int,
+    nf: int,
+    kmin_rfft: int,
+    band_start: int,
+    band_stop: int,
+) -> jnp.ndarray:
+    """WDM interior channels [band_start, band_stop) from a local rfft segment.
+
+    ``x_local[i]`` corresponds to global rfft bin ``kmin_rfft + i``.
+    Only interior channels lying entirely in the positive-frequency half are
+    supported (band channels far from Nyquist), which holds for our sources.
+
+    Returns shape ``(nt, band_stop - band_start)`` of real coefficients.
+    """
+    _half = nt // 2
+    narr = jnp.arange(nt)
+    band_m = jnp.arange(band_start, band_stop)              # (band_width,)
+
+    # rfft indices for each band channel, shifted to local coords
+    upper = band_m[:, None] * _half + jnp.arange(_half)[None, :]  # (bw, half)
+    lower = (band_m[:, None] - 1) * _half + jnp.arange(_half)[None, :]
+    mid_local = jnp.concatenate([upper, lower], axis=1) - kmin_rfft  # (bw, nt)
+
+    mid_blocks = x_local[mid_local] * window[None, :]       # (bw, nt) complex
+    mid_times = jnp.fft.ifft(mid_blocks, axis=1).T          # (nt, bw) complex
+
+    # C_{n,m}^* phase factor
+    parity = jnp.where((narr[:, None] + band_m[None, :]) % 2 == 0, 1.0, -1.0)
+    mid_phase = jnp.conj(jnp.exp((1j * jnp.pi / 4.0) * (1.0 - parity)))
+
+    return (jnp.sqrt(2.0) / nf) * jnp.real(mid_phase * mid_times)  # (nt, bw)
+
+
+def generate_a_wdm_band(params: jnp.ndarray, src_idx: int) -> jnp.ndarray:
+    """A-channel WDM coefficients in the analysis band for one source.
+
+    Uses ``jgb.sum_tdi`` with static Python-int kmin/kmax — no dynamic
+    indexing.  The small local rfft array has size ``band_rfft_size`` rather
+    than the full ``n_freqs``.
+    """
+    kmin_i = SRC_KMIN[src_idx]
+    kmax_i = SRC_KMAX[src_idx]
+    a_loc, _, _ = jgb.sum_tdi(
+        jnp.asarray(params, dtype=jnp.float64).reshape(1, -1),
+        kmin=kmin_i, kmax=kmax_i, tdi_combination="AET",
     )
-    return jax.lax.dynamic_update_slice(full, segment, (start,))
-
-
-def generate_a_time(params: jnp.ndarray) -> jnp.ndarray:
-    """Return A-channel time series for a single GB source."""
-    params = jnp.asarray(params, dtype=jnp.float64)
-    a_loc, _, _ = jgb.get_tdi(params, tdi_generation=1.5, tdi_combination="AET")
-    kmin = jnp.asarray(jgb.get_kmin(params[None, 0:1])).reshape(-1)[0]
-    a_full = place_local_tdi_jax(a_loc, kmin, n_freqs)
-    return jnp.fft.irfft(a_full, n=n_keep)
+    # Static slice indices (Python ints → no dynamic_update_slice)
+    local_start = kmin_i - kmin_rfft
+    local_end = kmax_i - kmin_rfft
+    x_local = (
+        jnp.zeros(band_rfft_size, dtype=jnp.complex128)
+        .at[local_start:local_end]
+        .set(jnp.asarray(a_loc, dtype=jnp.complex128))
+    )
+    return _wdm_band_from_local_rfft(
+        x_local, _window_j, NT, NF, kmin_rfft, band.start, band.stop
+    )
 
 
 # ── Per-source SNR ────────────────────────────────────────────────────────────
-print("\nPer-source matched-filter SNR (A channel, WDM domain):")
+noise_var_band = noise_var[:, band]
+
+print("\nPer-source matched-filter SNR (A channel, WDM band):")
 for i, src in enumerate(SOURCE_PARAMS):
-    h_t = np.asarray(generate_a_time(jnp.asarray(src, dtype=jnp.float64)))
-    h_wdm = np.asarray(
-        from_time_to_wdm(h_t, nt=NT, nf=NF, a=A_WDM, d=D_WDM, dt=dt, backend="jax"),
-        dtype=float,
-    )
-    snr_full = matched_filter_snr_wdm(h_wdm, noise_var)
-    snr_band = matched_filter_snr_wdm(h_wdm[:, band], noise_var[:, band])
-    print(f"  GB {i + 1}: full-grid SNR = {snr_full:.3e}  band SNR = {snr_band:.3e}")
+    h_band = np.asarray(generate_a_wdm_band(jnp.asarray(src, dtype=jnp.float64), i))
+    snr = matched_filter_snr_wdm(h_band, noise_var_band)
+    print(f"  GB {i + 1}: SNR = {snr:.1f}")
 
 # ── Inference setup ───────────────────────────────────────────────────────────
 
 
 @dataclass(frozen=True)
 class InferenceSetup:
-    fixed_params: np.ndarray        # (n_sources, 8) — full injected param vectors
-    data_band_jax: jax.Array        # data_wdm[:, band] pre-converted to JAX
-    noise_var_band_jax: jax.Array   # noise_var[:, band] pre-converted to JAX
+    fixed_params: np.ndarray       # (n_sources, 8) — full injected param vectors
+    data_band_jax: jax.Array       # data_wdm[:, band] pre-converted to JAX
+    noise_var_band_jax: jax.Array  # noise_var[:, band] pre-converted to JAX
     nt: int
     nf: int
     dt: float
     t_obs: float
     band: slice
-    prior_center: np.ndarray        # (n_sources, 4): [f0, fdot, logA, phi0]
-    prior_scale: np.ndarray         # (n_sources, 4): Normal half-widths
-    logA_bounds: np.ndarray         # (n_sources, 2): [lo, hi]
-    f0_bounds: np.ndarray           # (n_sources, 2): [lo, hi]
-    fdot_bounds: np.ndarray         # (n_sources, 2): [lo, hi]
+    prior_center: np.ndarray       # (n_sources, 3): [logf0, logfdot, logA]
+    prior_scale: np.ndarray        # (n_sources, 4): [logf0, logfdot, logA, delta_phi_c]
+    phase_ref: np.ndarray          # (n_sources, 2): [phi0_ref, phi_c_ref]
+    logA_bounds: np.ndarray        # (n_sources, 2): [lo, hi]
+    logf0_bounds: np.ndarray       # (n_sources, 2): [lo, hi]
+    logfdot_bounds: np.ndarray     # (n_sources, 2): [lo, hi]
 
+
+t_c = t_obs / 2.0
+phase_ref = []
+logf0_bounds = []
+logfdot_bounds = []
+for src in SOURCE_PARAMS:
+    phi0_ref = float(wrap_phase(src[7]))
+    phi_c_ref = float(
+        wrap_phase(phi0_ref + 2 * np.pi * src[0] * t_c + np.pi * src[1] * t_c**2)
+    )
+    phase_ref.append([phi0_ref, phi_c_ref])
+    f0_lo, f0_hi = src[0] - 8.0e-6, src[0] + 8.0e-6
+    fdot_lo, fdot_hi = 0.25 * src[1], 4.0 * src[1]
+    logf0_bounds.append([float(np.log(f0_lo)), float(np.log(f0_hi))])
+    logfdot_bounds.append([float(np.log(fdot_lo)), float(np.log(fdot_hi))])
 
 setup = InferenceSetup(
     fixed_params=SOURCE_PARAMS,
     data_band_jax=jnp.asarray(data_wdm[:, band], dtype=jnp.float64),
     noise_var_band_jax=jnp.maximum(
-        jnp.asarray(noise_var[:, band], dtype=jnp.float64), 1e-60
+        jnp.asarray(noise_var_band, dtype=jnp.float64), 1e-30
     ),
     nt=NT,
     nf=NF,
@@ -251,101 +284,107 @@ setup = InferenceSetup(
     t_obs=t_obs,
     band=band,
     prior_center=np.array(
-        [[src[0], src[1], np.log(src[2]), wrap_phase(src[7])] for src in SOURCE_PARAMS],
+        [[np.log(src[0]), np.log(src[1]), np.log(src[2])] for src in SOURCE_PARAMS],
         dtype=float,
     ),
     prior_scale=np.array(
-        [[2.0e-6, 2.0e-18, 0.35, np.pi / 2.0] for _ in SOURCE_PARAMS],
+        [
+            [
+                0.25 * (hi_f0 - lo_f0),
+                0.25 * (hi_fdot - lo_fdot),
+                0.25 * (np.log(3.0 / 0.3)),
+                np.pi / 4.0,
+            ]
+            for (lo_f0, hi_f0), (lo_fdot, hi_fdot) in zip(
+                logf0_bounds, logfdot_bounds, strict=True
+            )
+        ],
         dtype=float,
     ),
+    phase_ref=np.array(phase_ref, dtype=float),
     logA_bounds=np.array(
         [[np.log(0.3 * src[2]), np.log(3.0 * src[2])] for src in SOURCE_PARAMS],
         dtype=float,
     ),
-    f0_bounds=np.array(
-        [[src[0] - 8.0e-6, src[0] + 8.0e-6] for src in SOURCE_PARAMS],
-        dtype=float,
-    ),
-    fdot_bounds=np.array(
-        [[src[1] - 8.0e-18, src[1] + 8.0e-18] for src in SOURCE_PARAMS],
-        dtype=float,
-    ),
+    logf0_bounds=np.array(logf0_bounds, dtype=float),
+    logfdot_bounds=np.array(logfdot_bounds, dtype=float),
 )
 
 # ── Template and model ────────────────────────────────────────────────────────
 
 
 def template_wdm_band(theta: jnp.ndarray, setup: InferenceSetup) -> jnp.ndarray:
-    """Build WDM template in band by summing all sources.
+    """Sum band-limited WDM templates for all sources.
 
     Args:
-        theta: flat array [f0_0, fdot_0, A_0, phi0_0, f0_1, fdot_1, A_1, phi0_1, ...]
+        theta: flat array [f0_0, fdot_0, A_0, phi0_0, f0_1, ...] length 4*n_sources
         setup: frozen InferenceSetup
 
     Returns:
         WDM coefficients in band, shape (nt, band_width).
     """
     n_sources = setup.fixed_params.shape[0]
-    signal = jnp.zeros(setup.nt * setup.nf, dtype=jnp.float64)
+    h = jnp.zeros((setup.nt, setup.band.stop - setup.band.start), dtype=jnp.float64)
     for i in range(n_sources):
         params_i = (
             jnp.asarray(setup.fixed_params[i], dtype=jnp.float64)
             .at[0].set(theta[4 * i])
             .at[1].set(theta[4 * i + 1])
             .at[2].set(theta[4 * i + 2])
-            .at[7].set(jnp.mod(wrap_phase(theta[4 * i + 3]), 2 * jnp.pi))
+            .at[7].set(theta[4 * i + 3])
         )
-        signal = signal + generate_a_time(params_i)
-    coeffs = from_time_to_wdm(
-        signal, nt=setup.nt, nf=setup.nf, a=A_WDM, d=D_WDM, dt=setup.dt, backend="jax"
-    )
-    return coeffs[:, setup.band]
+        h = h + generate_a_wdm_band(params_i, i)
+    return h
 
 
 def numpyro_wdm_model(setup: InferenceSetup) -> None:
     n_sources = setup.fixed_params.shape[0]
     theta_parts = []
+    t_c = setup.t_obs / 2.0
     for i in range(n_sources):
-        delta_f = numpyro.sample(f"delta_f{i}", dist.Normal(0.0, 1.0))
-        delta_fdot = numpyro.sample(f"delta_fdot{i}", dist.Normal(0.0, 1.0))
-        delta_logA = numpyro.sample(f"delta_logA{i}", dist.Normal(0.0, 1.0))
-        delta_phi = numpyro.sample(f"delta_phi{i}", dist.Normal(0.0, 1.0))
+        logf0_i = numpyro.sample(
+            f"logf0_{i}",
+            dist.TruncatedNormal(
+                loc=setup.prior_center[i, 0],
+                scale=setup.prior_scale[i, 0],
+                low=setup.logf0_bounds[i, 0],
+                high=setup.logf0_bounds[i, 1],
+            ),
+        )
+        logfdot_i = numpyro.sample(
+            f"logfdot_{i}",
+            dist.TruncatedNormal(
+                loc=setup.prior_center[i, 1],
+                scale=setup.prior_scale[i, 1],
+                low=setup.logfdot_bounds[i, 0],
+                high=setup.logfdot_bounds[i, 1],
+            ),
+        )
+        logA_i = numpyro.sample(
+            f"logA_{i}",
+            dist.TruncatedNormal(
+                loc=setup.prior_center[i, 2],
+                scale=setup.prior_scale[i, 2],
+                low=setup.logA_bounds[i, 0],
+                high=setup.logA_bounds[i, 1],
+            ),
+        )
+        delta_phi_c_i = numpyro.sample(f"delta_phi_c_{i}", dist.Normal(0.0, 1.0))
 
-        f0_i = numpyro.deterministic(
-            f"f0_{i}", setup.prior_center[i, 0] + setup.prior_scale[i, 0] * delta_f
-        )
-        fdot_i = numpyro.deterministic(
-            f"fdot_{i}", setup.prior_center[i, 1] + setup.prior_scale[i, 1] * delta_fdot
-        )
-        logA_i = numpyro.deterministic(
-            f"logA_{i}", setup.prior_center[i, 2] + setup.prior_scale[i, 2] * delta_logA
+        f0_i = numpyro.deterministic(f"f0_{i}", jnp.exp(logf0_i))
+        fdot_i = numpyro.deterministic(f"fdot_{i}", jnp.exp(logfdot_i))
+        numpyro.deterministic(
+            f"phi_c_{i}",
+            setup.phase_ref[i, 1] + setup.prior_scale[i, 3] * delta_phi_c_i,
         )
         phi0_i = numpyro.deterministic(
-            f"phi0_{i}", setup.prior_center[i, 3] + setup.prior_scale[i, 3] * delta_phi
+            f"phi0_{i}",
+            setup.phase_ref[i, 0]
+            + setup.prior_scale[i, 3] * delta_phi_c_i
+            - 2 * jnp.pi * (f0_i - jnp.exp(setup.prior_center[i, 0])) * t_c
+            - jnp.pi * (fdot_i - jnp.exp(setup.prior_center[i, 1])) * t_c**2,
         )
         A_i = numpyro.deterministic(f"A_{i}", jnp.exp(logA_i))
-
-        numpyro.factor(
-            f"f0_{i}_support",
-            jnp.where(
-                (f0_i >= setup.f0_bounds[i, 0]) & (f0_i <= setup.f0_bounds[i, 1]),
-                0.0, -jnp.inf,
-            ),
-        )
-        numpyro.factor(
-            f"fdot_{i}_support",
-            jnp.where(
-                (fdot_i >= setup.fdot_bounds[i, 0]) & (fdot_i <= setup.fdot_bounds[i, 1]),
-                0.0, -jnp.inf,
-            ),
-        )
-        numpyro.factor(
-            f"logA_{i}_support",
-            jnp.where(
-                (logA_i >= setup.logA_bounds[i, 0]) & (logA_i <= setup.logA_bounds[i, 1]),
-                0.0, -jnp.inf,
-            ),
-        )
         theta_parts.extend([f0_i, fdot_i, A_i, phi0_i])
 
     h = template_wdm_band(jnp.stack(theta_parts), setup)
@@ -353,7 +392,8 @@ def numpyro_wdm_model(setup: InferenceSetup) -> None:
     numpyro.factor(
         "wdm_whittle",
         -0.5 * jnp.sum(
-            diff ** 2 / setup.noise_var_band_jax + jnp.log(2.0 * jnp.pi * setup.noise_var_band_jax)
+            diff ** 2 / setup.noise_var_band_jax
+            + jnp.log(2.0 * jnp.pi * setup.noise_var_band_jax)
         ),
     )
 
@@ -361,18 +401,30 @@ def numpyro_wdm_model(setup: InferenceSetup) -> None:
 # ── Run NUTS ──────────────────────────────────────────────────────────────────
 n_sources = SOURCE_PARAMS.shape[0]
 init_values = {
-    f"delta_{v}{i}": 0.0
+    name: value
     for i in range(n_sources)
-    for v in ("f", "fdot", "logA", "phi")
+    for name, value in (
+        (f"logf0_{i}", float(setup.prior_center[i, 0])),
+        (f"logfdot_{i}", float(setup.prior_center[i, 1])),
+        (f"logA_{i}", float(setup.prior_center[i, 2])),
+        (f"delta_phi_c_{i}", 0.0),
+    )
 }
 
 print("\nRunning joint NUTS over all sources…")
 kernel = NUTS(
     lambda: numpyro_wdm_model(setup),
     init_strategy=init_to_value(values=init_values),
-    target_accept_prob=0.95,
+    dense_mass=True,
+    target_accept_prob=0.9,
 )
-mcmc = MCMC(kernel, num_warmup=N_WARMUP, num_samples=N_DRAWS, num_chains=1, progress_bar=True)
+mcmc = MCMC(
+    kernel,
+    num_warmup=N_WARMUP,
+    num_samples=N_DRAWS,
+    num_chains=1,
+    progress_bar=True,
+)
 mcmc.run(jax.random.PRNGKey(42), extra_fields=("diverging",))
 
 n_div = int(mcmc.get_extra_fields()["diverging"].sum())
@@ -415,11 +467,8 @@ print(f"\nSaved posteriors to {_out_path}")
 # ── Plots ─────────────────────────────────────────────────────────────────────
 fig, ax = plt.subplots(figsize=(12, 4), constrained_layout=True)
 mesh = ax.pcolormesh(
-    time_grid,
-    freq_grid,
-    np.log(data_wdm ** 2 + 1e-30).T,
-    shading="nearest",
-    cmap="viridis",
+    time_grid, freq_grid, np.log(data_wdm ** 2 + 1e-30).T,
+    shading="nearest", cmap="viridis",
 )
 ax.axhspan(freq_grid[band.start], freq_grid[band.stop - 1], color="white", alpha=0.08)
 ax.set_title("Injected WDM data (A channel)")
@@ -428,6 +477,10 @@ ax.set_ylabel("Frequency [Hz]")
 fig.colorbar(mesh, ax=ax, label="log local power")
 save_figure(fig, FIGURE_OUTPUT_DIR, "wdm_overview")
 
+# %% [markdown]
+# ![WDM overview](../lisa_wdm_mcmc_assets/wdm_overview.png)
+
+# %%
 theta_med_parts = []
 for i in range(n_sources):
     theta_med_parts.extend([
@@ -436,7 +489,9 @@ for i in range(n_sources):
         float(np.median(posterior[f"A_{i}"])),
         float(np.median(posterior[f"phi0_{i}"])),
     ])
-map_wdm = np.asarray(template_wdm_band(jnp.array(theta_med_parts, dtype=jnp.float64), setup))
+map_wdm = np.asarray(
+    template_wdm_band(jnp.array(theta_med_parts, dtype=jnp.float64), setup)
+)
 
 fig, axes = plt.subplots(1, 2, figsize=(12, 4), constrained_layout=True, sharey=True)
 for ax, coeffs, title in [
@@ -444,11 +499,8 @@ for ax, coeffs, title in [
     (axes[1], map_wdm, "Posterior median template"),
 ]:
     mesh = ax.pcolormesh(
-        time_grid,
-        freq_grid[band],
-        np.log(coeffs ** 2 + 1e-30).T,
-        shading="nearest",
-        cmap="magma",
+        time_grid, freq_grid[band], np.log(coeffs ** 2 + 1e-30).T,
+        shading="nearest", cmap="magma",
     )
     ax.set_title(title)
     ax.set_xlabel("Time [s]")
@@ -456,15 +508,22 @@ for ax, coeffs, title in [
 axes[0].set_ylabel("Frequency [Hz]")
 save_figure(fig, FIGURE_OUTPUT_DIR, "wdm_band_fit")
 
+# %% [markdown]
+# ![Band-limited WDM fit](../lisa_wdm_mcmc_assets/wdm_band_fit.png)
+
+# %%
 corner_labels = [r"$f_0$", r"$\dot{f}$", r"$A$", r"$\phi_0$"]
-for i, (samples_i, stem) in enumerate(zip(all_samples, ["gb1_corner", "gb2_corner"])):
-    truth_i = [SOURCE_PARAMS[i, 0], SOURCE_PARAMS[i, 1], SOURCE_PARAMS[i, 2], wrap_phase(SOURCE_PARAMS[i, 7])]
+for i, (samples_i, stem) in enumerate(
+    zip(all_samples, ["gb1_corner", "gb2_corner"], strict=True)
+):
+    truth_i = [SOURCE_PARAMS[i, 0], SOURCE_PARAMS[i, 1],
+                SOURCE_PARAMS[i, 2], wrap_phase(SOURCE_PARAMS[i, 7])]
     fig = corner.corner(
-        samples_i,
-        labels=corner_labels,
-        truths=truth_i,
-        truth_color="tab:red",
-        quantiles=[0.05, 0.5, 0.95],
-        show_titles=True,
+        samples_i, labels=corner_labels, truths=truth_i, truth_color="tab:red",
+        quantiles=[0.05, 0.5, 0.95], show_titles=True,
     )
     save_figure(fig, FIGURE_OUTPUT_DIR, stem)
+
+# %% [markdown]
+# ![GB 1 corner](../lisa_wdm_mcmc_assets/gb1_corner.png)
+# ![GB 2 corner](../lisa_wdm_mcmc_assets/gb2_corner.png)

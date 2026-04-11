@@ -32,6 +32,9 @@ theme:
 extra_css:
   - stylesheets/extra.css
 
+extra_javascript:
+  - https://cdnjs.cloudflare.com/ajax/libs/mathjax/3.2.2/es5/tex-mml-chtml.min.js
+
 plugins:
   - search
   - mkdocstrings:
@@ -64,7 +67,6 @@ plugins:
       execute: true
       include_source: true
       show_input: true
-      custom_mathjax_url: https://cdnjs.cloudflare.com/ajax/libs/mathjax/2.7.7/latest.js?config=TeX-AMS_CHTML-full,Safe
 
 markdown_extensions:
   - admonition
@@ -85,20 +87,21 @@ markdown_extensions:
 
 nav:
   - Home: index.md
-  - Learn:
+  - Fundamentals:
       - What Is WDM?: guide/what-is-wdm.md
       - Windows And Atoms: guide/windows-and-atoms.md
       - Reconstruction And Inference: guide/reconstruction-and-inference.md
-  - Tutorial:
-      - WDM Walkthrough: examples/wdm_walkthrough.py
-  - Case Studies:
-      - LISA GB Inference: studies/lisa/lisa_demo.md
-      - Sinusoid In Colored Noise: studies/toymodels/monochrome_stationary_psd.md
-      - Time-Varying WDM PSD: studies/toymodels/tv_psd.md
-      - Monochromatic Signal in Time-Varying Noise: studies/toymodels/monochrome_tv_psd.md
-      - Deglitching: studies/toymodels/deglitching.md
-      - Signal With A Gap: studies/toymodels/monochrome_gaps.md
-  - Reference:
+  - Tutorial & Walkthrough: examples/wdm_walkthrough.py
+  - Examples:
+      - Basic Signal Processing:
+          - Sinusoid In Colored Noise: studies/toymodels/monochrome_stationary_psd.md
+          - Signal With A Gap: studies/toymodels/monochrome_gaps.md
+          - Deglitching: studies/toymodels/deglitching.md
+      - Advanced Applications:
+          - LISA GB Inference: studies/lisa/lisa_demo.md
+          - Monochromatic Signal in Time-Varying Noise: studies/toymodels/monochrome_tv_psd.md
+          - Time-Varying WDM PSD: studies/toymodels/tv_psd.md
+  - API Reference:
       - API Overview: guide/api-overview.md
       - Package Layout: guide/package-layout.md
       - Benchmarks: benchmarks.md

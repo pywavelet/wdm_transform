@@ -20,7 +20,7 @@ L_LISA = 2.5e9
 SOURCE_PARAMS = np.array(
     [
         [1.35962e-3, 8.94581279e-19, 1.07345e-22, 2.40, 0.31, 3.56, 0.52, 3.06],
-        [1.41220e-3, -2.30000000e-18, 8.20000000e-23, 2.15, 0.18, 1.20, 0.93, 1.40],
+        [1.41220e-3, 2.30000000e-18, 8.20000000e-23, 2.15, 0.18, 1.20, 0.93, 1.40],
     ],
     dtype=float,
 )
@@ -53,6 +53,18 @@ def save_figure(fig, output_dir: Path, stem: str, *, dpi: int = 160) -> Path:
 def wrap_phase(phi):
     """Wrap angle to (-π, π].  Works on scalars, NumPy, and JAX arrays."""
     return (phi + np.pi) % (2.0 * np.pi) - np.pi
+
+
+def require_positive_fdot(source_params: np.ndarray, *, context: str) -> np.ndarray:
+    """Return *source_params* after validating strictly positive chirps."""
+    params = np.asarray(source_params, dtype=float)
+    if np.any(params[:, 1] <= 0.0):
+        raise ValueError(
+            f"{context} contains non-positive fdot values. "
+            "Regenerate docs/studies/lisa/outdir_gb_background/injection.npz "
+            "after updating the injection configuration."
+        )
+    return params
 
 
 def floor_pow2(n: int) -> int:
@@ -236,13 +248,12 @@ def wdm_noise_variance(
     freq_grid: np.ndarray,
     nt: int,
 ) -> np.ndarray:
-    """WDM pixel variance S(f_m) × Δf broadcast over *nt* time bins."""
+    """WDM pixel variance S(f_m) × Δf broadcast over *nt* time bins.
+
+    ``noise_psd`` must already be sampled on ``freq_grid``.
+    """
     delta_f = float(freq_grid[1] - freq_grid[0])
-    var_row = np.maximum(
-        np.interp(freq_grid, freq_grid, noise_psd) * delta_f,
-        1e-60,
-    )
-    # broadcast_to avoids allocating nt identical rows until .copy() is called
+    var_row = np.maximum(np.asarray(noise_psd, dtype=float) * delta_f, 1e-60)
     return np.broadcast_to(var_row[None, :], (nt, len(var_row))).copy()
 
 
