@@ -33,6 +33,7 @@ extra_css:
   - stylesheets/extra.css
 
 extra_javascript:
+  - javascripts/mathjax.js
   - https://cdnjs.cloudflare.com/ajax/libs/mathjax/3.2.2/es5/tex-mml-chtml.min.js
 
 plugins:
