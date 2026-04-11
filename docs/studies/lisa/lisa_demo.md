@@ -65,21 +65,21 @@ to mix the anisotropic sky model into the detector channels.
 
 **Galactic morphology and noise properties:**
 
-![Galactic morphology](outdir_gb_background/galaxy_mollview.png)
+![Galactic morphology](../../_static/lisa_background/galaxy_mollview.png)
 
-![Galactic PSD](outdir_gb_background/galaxy_frequency_psd.png)
+![Galactic PSD](../../_static/lisa_background/galaxy_frequency_psd.png)
 
-![LISA noise PSD](outdir_gb_background/lisa_noise_psd.png)
+![LISA noise PSD](../../_static/lisa_background/lisa_noise_psd.png)
 
 **Channel A: time-dependent components and injections:**
 
-![Channel A total PSD](outdir_gb_background/channel_a_total_psd.png)
+![Channel A total PSD](../../_static/lisa_background/channel_a_total_psd.png)
 
-![Channel A noise versus galaxy](outdir_gb_background/channel_a_noise_vs_galaxy.png)
+![Channel A noise versus galaxy](../../_static/lisa_background/channel_a_noise_vs_galaxy.png)
 
 **Resolved binary injections relative to characteristic noise strain:**
 
-![Resolved GB injections versus noise](outdir_gb_background/resolved_gb_vs_noise_characteristic_strain.png)
+![Resolved GB injections versus noise](../../_static/lisa_background/resolved_gb_vs_noise_characteristic_strain.png)
 
 ### Source Code: `data_generation.py`
 
@@ -114,13 +114,13 @@ perform a full eight-parameter search.
 The local-band view checks that the posterior median template lands on top of the observed power in
 each source neighborhood.
 
-![Local frequency bands](lisa_freq_mcmc_assets/local_frequency_bands.png)
+![Local frequency bands](../../_static/lisa_freq_mcmc_assets/local_frequency_bands.png)
 
 The posterior corner plots summarize the recovered local parameters for each binary.
 
-![Frequency-domain GB 1 corner](lisa_freq_mcmc_assets/gb1_corner.png)
+![Frequency-domain GB 1 corner](../../_static/lisa_freq_mcmc_assets/gb1_corner.png)
 
-![Frequency-domain GB 2 corner](lisa_freq_mcmc_assets/gb2_corner.png)
+![Frequency-domain GB 2 corner](../../_static/lisa_freq_mcmc_assets/gb2_corner.png)
 
 ### Source Code: `lisa_freq_mcmc.py`
 
@@ -161,17 +161,17 @@ the same localized time-frequency patch once projected into the WDM grid.
 
 The first plot shows the injected data on the WDM grid and the selected analysis band.
 
-![WDM overview](lisa_wdm_mcmc_assets/wdm_overview.png)
+![WDM overview](../../_static/lisa_wdm_mcmc_assets/wdm_overview.png)
 
 The band-limited comparison shows the observed WDM coefficients next to the posterior median model.
 
-![Band-limited WDM fit](lisa_wdm_mcmc_assets/wdm_band_fit.png)
+![Band-limited WDM fit](../../_static/lisa_wdm_mcmc_assets/wdm_band_fit.png)
 
 The joint fit still produces source-level posteriors, shown here as one corner plot per binary.
 
-![WDM-domain GB 1 corner](lisa_wdm_mcmc_assets/gb1_corner.png)
+![WDM-domain GB 1 corner](../../_static/lisa_wdm_mcmc_assets/gb1_corner.png)
 
-![WDM-domain GB 2 corner](lisa_wdm_mcmc_assets/gb2_corner.png)
+![WDM-domain GB 2 corner](../../_static/lisa_wdm_mcmc_assets/gb2_corner.png)
 
 ### Source Code: `lisa_wdm_mcmc.py`
 
@@ -189,17 +189,17 @@ side-by-side visualizations.
 
 **Marginal posterior histograms:**
 
-![Posterior marginals comparison](./compare_mcmc_results_assets/posterior_marginals_compare.png)
+![Posterior marginals comparison](../../_static/lisa/posterior_marginals_compare.png)
 
 **Credible intervals (5th, median, 95th percentiles):**
 
-![Posterior intervals comparison](./compare_mcmc_results_assets/posterior_interval_compare.png)
+![Posterior intervals comparison](../../_static/lisa/posterior_interval_compare.png)
 
 **Joint corner plots per source (overlaid runs):**
 
-![Comparison corner GB 1](./compare_mcmc_results_assets/corner_source_1.png)
+![Comparison corner GB 1](../../_static/lisa/corner_source_1.png)
 
-![Comparison corner GB 2](./compare_mcmc_results_assets/corner_source_2.png)
+![Comparison corner GB 2](../../_static/lisa/corner_source_2.png)
 
 To generate these figures, run:
 
