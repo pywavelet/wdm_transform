@@ -189,21 +189,17 @@ side-by-side visualizations.
 
 **Marginal posterior histograms:**
 
-![Posterior marginals comparison](compare_mcmc_results_assets/posterior_marginals_compare.png)
+![Posterior marginals comparison](./compare_mcmc_results_assets/posterior_marginals_compare.png)
 
 **Credible intervals (5th, median, 95th percentiles):**
 
-![Posterior intervals comparison](compare_mcmc_results_assets/posterior_interval_compare.png)
+![Posterior intervals comparison](./compare_mcmc_results_assets/posterior_interval_compare.png)
 
 **Joint corner plots per source (overlaid runs):**
 
-![Comparison corner GB 1](compare_mcmc_results_assets/corner_source_1.png)
+![Comparison corner GB 1](./compare_mcmc_results_assets/corner_source_1.png)
 
-![Comparison corner GB 2](compare_mcmc_results_assets/corner_source_2.png)
-
-**Source-wise SNR comparison (if available):**
-
-![SNR comparison](compare_mcmc_results_assets/snr_compare.png)
+![Comparison corner GB 2](./compare_mcmc_results_assets/corner_source_2.png)
 
 To generate these figures, run:
 
