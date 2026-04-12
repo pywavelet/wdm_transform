@@ -1,8 +1,8 @@
 """Frequency-domain LISA GB inference with NumPyro.
 
-Loads the cached ``injection.npz`` from ``data_generation.py``, truncates the
-time series to a power-of-2 length, and performs frequency-domain Bayesian
-inference for two Galactic binaries with a local Whittle likelihood.
+Loads the cached ``injection.npz`` from ``data_generation.py`` and performs
+frequency-domain Bayesian inference for two Galactic binaries with a local
+Whittle likelihood.
 
 Workflow:
 1. Load ``injection.npz``.
@@ -21,7 +21,6 @@ from dataclasses import dataclass
 
 os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
 
-import corner
 import jax
 import jax.numpy as jnp
 import lisaorbits
@@ -33,11 +32,17 @@ from jaxgb.jaxgb import JaxGB
 from lisa_common import (
     FREQ_ASSET_DIR,
     INJECTION_PATH,
+    build_local_prior_info,
+    build_sampled_source_params,
     check_posterior_coverage,
+    default_local_priors,
     matched_filter_snr_rfft,
     print_posterior_summary,
     require_positive_fdot,
     save_figure,
+    save_corner_plot,
+    save_posterior_archive,
+    source_truth_vector,
     wrap_phase,
 )
 from numpy.fft import rfft, rfftfreq
@@ -155,14 +160,13 @@ def build_band(
     band_freqs = freqs[kmin:kmax]
     noise_band = np.maximum(np.interp(band_freqs, freqs, noise_psd_full), 1e-60)
 
-    phi0_ref = float(wrap_phase(params[7]))
-    t_c = t_obs / 2.0
-    phi_c_ref = float(
-        wrap_phase(phi0_ref + 2 * np.pi * params[0] * t_c + np.pi * params[1] * t_c**2)
+    prior_info = build_local_prior_info(
+        params,
+        t_obs=t_obs,
+        prior_f0=prior_f0,
+        prior_fdot=prior_fdot,
+        prior_A=prior_A,
     )
-    logf0_bounds = (float(np.log(prior_f0[0])), float(np.log(prior_f0[1])))
-    logfdot_bounds = (float(np.log(prior_fdot[0])), float(np.log(prior_fdot[1])))
-    logA_bounds = (float(np.log(prior_A[0])), float(np.log(prior_A[1])))
 
     return BandData(
         label=label,
@@ -173,35 +177,18 @@ def build_band(
         t_obs=t_obs,
         band_kmin=kmin,
         band_kmax=kmax,
-        prior_center=np.array([np.log(params[0]), np.log(params[1]), np.log(params[2])]),
-        prior_scale=np.array([
-            0.25 * (logf0_bounds[1] - logf0_bounds[0]),
-            0.25 * (logfdot_bounds[1] - logfdot_bounds[0]),
-            0.25 * (logA_bounds[1] - logA_bounds[0]),
-            np.pi / 4.0,
-        ]),
-        phase_ref=np.array([phi0_ref, phi_c_ref]),
-        logf0_bounds=logf0_bounds,
-        logfdot_bounds=logfdot_bounds,
-        logA_bounds=logA_bounds,
+        prior_center=prior_info.prior_center,
+        prior_scale=prior_info.prior_scale,
+        phase_ref=prior_info.phase_ref,
+        logf0_bounds=prior_info.logf0_bounds,
+        logfdot_bounds=prior_info.logfdot_bounds,
+        logA_bounds=prior_info.logA_bounds,
     )
 
 
 BANDS = [
-    build_band(
-        SOURCE_PARAMS[0],
-        label="GB 1",
-        prior_f0=(SOURCE_PARAMS[0, 0] - 8e-6, SOURCE_PARAMS[0, 0] + 8e-6),
-        prior_fdot=(0.25 * SOURCE_PARAMS[0, 1], 4.0 * SOURCE_PARAMS[0, 1]),
-        prior_A=(0.3 * SOURCE_PARAMS[0, 2], 3.0 * SOURCE_PARAMS[0, 2]),
-    ),
-    build_band(
-        SOURCE_PARAMS[1],
-        label="GB 2",
-        prior_f0=(SOURCE_PARAMS[1, 0] - 8e-6, SOURCE_PARAMS[1, 0] + 8e-6),
-        prior_fdot=(0.25 * SOURCE_PARAMS[1, 1], 4.0 * SOURCE_PARAMS[1, 1]),
-        prior_A=(0.3 * SOURCE_PARAMS[1, 2], 3.0 * SOURCE_PARAMS[1, 2]),
-    ),
+    build_band(src, f"GB {i + 1}", *default_local_priors(src))
+    for i, src in enumerate(SOURCE_PARAMS)
 ]
 
 # ── Per-source SNR ────────────────────────────────────────────────────────────
@@ -327,11 +314,7 @@ for i, band in enumerate(BANDS):
         np.asarray(s["phi0"]),
     ])
 
-    samples_i_full = np.tile(SOURCE_PARAMS[i], (samples_i.shape[0], 1))
-    samples_i_full[:, 0] = samples_i[:, 0]
-    samples_i_full[:, 1] = samples_i[:, 1]
-    samples_i_full[:, 2] = samples_i[:, 2]
-    samples_i_full[:, 7] = samples_i[:, 3]
+    samples_i_full = build_sampled_source_params(SOURCE_PARAMS[i], samples_i)
 
     psd_j = jnp.asarray(band.noise_psd, dtype=jnp.float64)
     df_j = jnp.asarray(df, dtype=jnp.float64)
@@ -354,13 +337,7 @@ for i, band in enumerate(BANDS):
 PARAM_NAMES = ["f0 [Hz]", "fdot [Hz/s]", "A", "phi0 [rad]", "SNR"]
 
 for i, (band, samples_i) in enumerate(zip(BANDS, all_samples, strict=True)):
-    truth_i = np.array([
-        band.fixed_params[0],
-        band.fixed_params[1],
-        band.fixed_params[2],
-        band.fixed_params[7],
-        snrs_optimal[i],
-    ])
+    truth_i = source_truth_vector(band.fixed_params, snr=snrs_optimal[i])
     print(f"\n{'═' * 56}  GB {i + 1}")
     print_posterior_summary(samples_i, truth_i, PARAM_NAMES)
     check_posterior_coverage(samples_i, truth_i, PARAM_NAMES)
@@ -387,20 +364,18 @@ corner_labels = [r"$f_0$", r"$\dot{f}$", r"$A$", r"$\phi_0$", "SNR"]
 for i, (samples_i, stem) in enumerate(
     zip(all_samples, ["gb1_corner", "gb2_corner"], strict=True)
 ):
-    truth_i = [SOURCE_PARAMS[i, 0], SOURCE_PARAMS[i, 1],
-               SOURCE_PARAMS[i, 2], wrap_phase(SOURCE_PARAMS[i, 7]), snrs_optimal[i]]
-    fig = corner.corner(
-        samples_i, labels=corner_labels, truths=truth_i, truth_color="tab:red",
-        quantiles=[0.05, 0.5, 0.95], show_titles=True, title_kwargs={"fontsize": 10}
+    save_corner_plot(
+        samples_i,
+        truth=source_truth_vector(SOURCE_PARAMS[i], snr=snrs_optimal[i]),
+        output_dir=FIGURE_OUTPUT_DIR,
+        stem=stem,
+        labels=corner_labels,
     )
-    save_figure(fig, FIGURE_OUTPUT_DIR, stem)
 
-_out_path = FIGURE_OUTPUT_DIR / "posteriors.npz"
-np.savez(
-    _out_path,
+_out_path = save_posterior_archive(
+    FIGURE_OUTPUT_DIR,
     source_params=SOURCE_PARAMS,
-    samples_gb1=all_samples[0],
-    samples_gb2=all_samples[1],
+    all_samples=all_samples,
     snr_optimal=snrs_optimal,
 )
 print(f"\nSaved posteriors to {_out_path}")

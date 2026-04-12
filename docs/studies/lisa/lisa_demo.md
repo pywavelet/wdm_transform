@@ -19,7 +19,7 @@ here.
    with a narrow-band Whittle likelihood.
 3. `lisa_wdm_mcmc.py` loads the same cache, transforms the injected data to WDM coefficients, and
    performs two independent per-source fits on narrow WDM bands (mirroring the frequency-domain
-   approach). Uses $n_t = 4$ by default for fine frequency resolution ($\Delta f \approx 63$ nHz).
+   approach). Uses $n_t = 32$ by default for inference and $n_t = 128$ for the overview plot.
 
 ## How To Run
 
@@ -29,6 +29,13 @@ Run the scripts from the repository root:
 python docs/studies/lisa/data_generation.py
 python docs/studies/lisa/lisa_freq_mcmc.py
 python docs/studies/lisa/lisa_wdm_mcmc.py
+```
+
+Useful overrides:
+
+```bash
+LISA_N_WARMUP=400 LISA_N_DRAWS=600 python docs/studies/lisa/lisa_freq_mcmc.py
+LISA_N_WARMUP=400 LISA_N_DRAWS=600 LISA_NT=32 LISA_NT_PLOT=128 python docs/studies/lisa/lisa_wdm_mcmc.py
 ```
 
 `data_generation.py` is the prerequisite step. Both inference scripts read:
@@ -110,6 +117,17 @@ The fitted parameters are $(f_0, \dot{f}, A, \phi_0)$ for each source. Sky posit
 and inclination stay fixed at their injected values to isolate the likelihood machinery rather than
 perform a full eight-parameter search.
 
+To improve the sampler geometry, the scripts actually sample
+$(\log f_0, \log \dot{f}, \log A, \phi_c)$ where
+
+$$
+\phi_c \equiv \phi_0 + 2 \pi f_0 t_c + \pi \dot{f} t_c^2,
+\qquad t_c = T_{\rm obs}/2,
+$$
+
+and then reconstruct $\phi_0$ as a deterministic parameter. This largely removes the strongest
+local $f_0$-$\phi_0$ degeneracy from the HMC coordinates while preserving the same physical model.
+
 ### Results
 
 The local-band view checks that the posterior median template lands on top of the observed power in
@@ -156,28 +174,72 @@ $$
 Like the frequency-domain run, each binary is fit independently on a narrow per-source band (the
 two GBs are separated by 52.6 µHz, much wider than either source's bandwidth).
 
-### Tiling choice and expected posterior widths
+### Fast WDM forward model
+
+The naive WDM template path would:
+
+1. build the full rFFT template,
+2. inverse FFT back to the time domain,
+3. apply the full WDM transform,
+4. then crop to the local band used for inference.
+
+That is much more work than we need inside NUTS. The current script instead:
+
+1. asks `JaxGB` only for the local FFT bins that contain the source,
+2. embeds those bins into a small local FFT buffer,
+3. applies only the WDM channels that intersect the local inference band.
+
+In operator form, if $P_{\mathcal B}$ is the local FFT crop and $W_{\mathcal B}$ is the band-limited
+WDM transform, the template path used by the script is
+
+$$
+h^{\rm WDM}_{n,m}(\theta) = W_{\mathcal B} \, P_{\mathcal B} \, \tilde h(\theta),
+$$
+
+which is algebraically equivalent to the full transform restricted to the same band, but much
+cheaper to evaluate.
+
+### Tiling choice
 
 The WDM tiling parameter $n_t$ sets the frequency channel spacing
-$\Delta f_{\rm wdm} = n_t / (2 T_{\rm obs})$.
+$\Delta f_{\rm wdm} = n_t / (2 T_{\rm obs})$ and the number of time bins.
 
-| $n_t$ | $\Delta f_{\rm wdm}$ | WDM channels in $\pm$8 µHz band | expected $\sigma_{f_0}$ vs freq-domain |
-|--------|----------------------|----------------------------------|----------------------------------------|
-| 128    | 2.0 µHz              | ~4                               | ~$\sqrt{128/2} \approx 8\times$ wider |
-| 16     | 0.25 µHz             | ~64                              | ~$2\times$ wider                       |
-| 4      | 63 nHz               | ~256                             | ~$\sqrt{2} \approx 1.4\times$ wider   |
-| 2      | 32 nHz ≈ rfft bin    | ~512                             | $\approx \sqrt{2}\times$ wider (minimum achievable) |
+For the current study, the default choice is $n_t = 32$, which gives
 
-The irreducible $\sqrt{2}$ factor arises because each WDM pixel retains only the **real part** of
-its analytic coefficient ($\chi^2_1$ noise) whereas the frequency-domain Whittle likelihood uses
-the full **complex** residual ($\chi^2_2$ noise). The per-pixel information loss is exactly a
-factor of 2 in Fisher, giving $\sqrt{2}$ wider marginal posteriors for phase-sensitive parameters
-($f_0$, $\phi_0$) at matched SNR. Amplitude ($A$) posteriors are unaffected since they are
-determined by total power, not phase.
+$$
+\Delta f_{\rm wdm} \approx 5.1 \times 10^{-7}\ {\rm Hz}
+$$
 
-The scripts use $n_t = 4$ by default, giving ~256 WDM channels over the waveform bandwidth —
-nearly matching the 512 complex rfft bins of the frequency-domain inference — with posteriors
-expected to be ~$\sqrt{2} \approx 1.4\times$ wider in $f_0$ and $\phi_0$.
+for a one-year observation. That is coarse compared to the FFT bin width, but still fine enough
+for these narrow local fits once the likelihood normalization and sampler parameterization are set
+up correctly.
+
+`lisa_wdm_mcmc.py` also uses a separate plotting tiling, `LISA_NT_PLOT=128`, so the overview figure
+has a more readable time-frequency mesh without changing the inference grid.
+
+### What We Fixed
+
+The current WDM script is the result of a few debugging passes. The important fixes were:
+
+1. Keep essentially the full observation time. Earlier versions threw away a large chunk of the
+   year when forcing WDM-friendly lengths, which broadened the WDM posterior immediately.
+2. Fit each source on its own narrow local band. The two injected binaries are well separated, so
+   a single shared WDM band only made the problem harder without adding information.
+3. Use the correct diagonal WDM noise variance,
+
+   $$
+   \mathrm{Var}[w_{n,m}] = \frac{S_n(f_m)}{2 \Delta t} = S_n(f_m)\,f_{\rm Nyq},
+   $$
+
+   not a naive `PSD × Δf_wdm` estimate.
+4. Reparameterize the phase with $\phi_c$ at mid-observation time, exactly as in the frequency
+   script.
+5. Most importantly, use a straightforward model-based NumPyro path for the WDM sampler. Earlier
+   WDM sampler variants produced prior-width $f_0$ and $\phi_0$ posteriors even when the underlying
+   WDM likelihood agreed with the frequency-domain likelihood.
+
+The final implementation now yields WDM and frequency-domain posteriors that overlap closely in the
+full run.
 
 ### Results
 
@@ -225,6 +287,11 @@ side-by-side visualizations.
 
 ![Comparison corner GB 2](../../_static/lisa/corner_source_2.png)
 
+The important final result is that the WDM and frequency-domain posteriors now overlap closely in
+all four fitted source parameters and in the derived SNR. In particular, the earlier dramatic
+WDM-only broadening in $f_0$ and $\phi_0$ was an implementation problem, not evidence that the
+WDM representation was intrinsically much less informative for this toy study.
+
 To generate these figures, run:
 
 ```bash
@@ -247,5 +314,7 @@ python docs/studies/lisa/compare_mcmc_results.py \
   finish, avoiding the JAX-plus-fork failure mode.
 - `lisa_freq_mcmc.py` and `lisa_wdm_mcmc.py` are now ordinary scripts rather than notebook-style
   percent files.
+- The shared helper file `lisa_common.py` now holds the common prior metadata, truth-vector, and
+  posterior-output helpers used by both inference scripts.
 - The page above includes the live source for all three scripts, so the docs build exposes the
   exact code used to produce the study outputs.

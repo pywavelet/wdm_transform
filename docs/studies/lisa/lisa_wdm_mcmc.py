@@ -6,7 +6,8 @@ Bayesian inference for two Galactic binaries with a diagonal Whittle likelihood.
 
 Workflow:
 1. Load ``injection.npz``.
-2. Build the WDM data representation and analytic noise variance S[n,m] = S(f_m)·Δf.
+2. Build the WDM data representation and analytic noise variance
+   S[n,m] = S(f_m) / (2·dt) = S(f_m)·f_Nyquist.
 3. Print per-source SNR (WDM band, A channel).
 4. Run independent NumPyro NUTS chains on a narrow WDM band per source.
 5. Print NUTS diagnostics and 90 % CI coverage; save corner plots and posteriors.
@@ -31,7 +32,6 @@ from functools import partial
 
 os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
 
-import corner
 import jax
 import jax.numpy as jnp
 import lisaorbits
@@ -43,15 +43,21 @@ from jaxgb.jaxgb import JaxGB
 from lisa_common import (
     INJECTION_PATH,
     WDM_ASSET_DIR,
+    build_local_prior_info,
+    build_sampled_source_params,
     check_posterior_coverage,
+    default_local_priors,
     matched_filter_snr_wdm,
     print_posterior_summary,
     require_positive_fdot,
     save_figure,
+    save_corner_plot,
+    save_posterior_archive,
+    source_truth_vector,
     trim_frequency_band,
     wrap_phase,
 )
-from numpyro.infer import MCMC, NUTS
+from numpyro.infer import MCMC, NUTS, init_to_value
 from wdm_transform import TimeSeries
 from wdm_transform.backends import get_backend
 from wdm_transform.windows import phi_window
@@ -71,7 +77,7 @@ N_DRAWS = int(os.getenv("LISA_N_DRAWS", "1000"))
 # With NT=4, df_wdm ≈ 63 nHz — ~256 WDM channels cover the same bandwidth,
 # matching the 512 rfft bins used by the frequency-domain inference and
 # recovering the same f0 precision.
-NT = int(os.getenv("LISA_NT", "4"))
+NT = int(os.getenv("LISA_NT", "32"))
 NT_PLOT = int(os.getenv("LISA_NT_PLOT", "128"))
 A_WDM = 1.0 / 3.0
 D_WDM = 1.0
@@ -193,15 +199,13 @@ def build_wdm_band(
     src_kmin = max(k_center - jgb.n, 0)
     src_kmax = min(k_center + jgb.n, n_freqs)
 
-    phi0_ref = float(wrap_phase(src[7]))
-    tc = t_obs / 2.0
-    phi_c_ref = float(
-        wrap_phase(phi0_ref + 2 * np.pi * src[0] * tc + np.pi * src[1] * tc**2)
+    prior_info = build_local_prior_info(
+        src,
+        t_obs=t_obs,
+        prior_f0=prior_f0,
+        prior_fdot=prior_fdot,
+        prior_A=prior_A,
     )
-
-    lf0_lo, lf0_hi = float(np.log(prior_f0[0])), float(np.log(prior_f0[1]))
-    lfdot_lo, lfdot_hi = float(np.log(prior_fdot[0])), float(np.log(prior_fdot[1]))
-    lA_lo, lA_hi = float(np.log(prior_A[0])), float(np.log(prior_A[1]))
 
     x_data_local = jnp.asarray(_data_rfft[kmin_r:kmax_r], dtype=jnp.complex128)
     data_band = np.asarray(
@@ -233,37 +237,18 @@ def build_wdm_band(
         data_band=data_band,
         noise_var_band=noise_var_band,
         t_obs=t_obs,
-        prior_center=np.array([np.log(src[0]), np.log(src[1]), np.log(src[2])]),
-        prior_scale=np.array([
-            0.25 * (lf0_hi - lf0_lo),
-            0.25 * (lfdot_hi - lfdot_lo),
-            0.25 * (lA_hi - lA_lo),
-            np.pi / 4.0,
-        ]),
-        phase_ref=np.array([phi0_ref, phi_c_ref]),
-        logf0_bounds=(lf0_lo, lf0_hi),
-        logfdot_bounds=(lfdot_lo, lfdot_hi),
-        logA_bounds=(lA_lo, lA_hi),
+        prior_center=prior_info.prior_center,
+        prior_scale=prior_info.prior_scale,
+        phase_ref=prior_info.phase_ref,
+        logf0_bounds=prior_info.logf0_bounds,
+        logfdot_bounds=prior_info.logfdot_bounds,
+        logA_bounds=prior_info.logA_bounds,
     )
 
 
 BANDS = [
-    build_wdm_band(
-        SOURCE_PARAMS[0],
-        label="GB 1",
-        src_idx=0,
-        prior_f0=(SOURCE_PARAMS[0, 0] - 8e-6, SOURCE_PARAMS[0, 0] + 8e-6),
-        prior_fdot=(0.25 * SOURCE_PARAMS[0, 1], 4.0 * SOURCE_PARAMS[0, 1]),
-        prior_A=(0.3 * SOURCE_PARAMS[0, 2], 3.0 * SOURCE_PARAMS[0, 2]),
-    ),
-    build_wdm_band(
-        SOURCE_PARAMS[1],
-        label="GB 2",
-        src_idx=1,
-        prior_f0=(SOURCE_PARAMS[1, 0] - 8e-6, SOURCE_PARAMS[1, 0] + 8e-6),
-        prior_fdot=(0.25 * SOURCE_PARAMS[1, 1], 4.0 * SOURCE_PARAMS[1, 1]),
-        prior_A=(0.3 * SOURCE_PARAMS[1, 2], 3.0 * SOURCE_PARAMS[1, 2]),
-    ),
+    build_wdm_band(src, f"GB {i + 1}", i, *default_local_priors(src))
+    for i, src in enumerate(SOURCE_PARAMS)
 ]
 
 del _data_rfft
@@ -294,28 +279,6 @@ def generate_a_wdm_for(params: jnp.ndarray, wband: WdmBandData) -> jnp.ndarray:
     )
 
 
-def _physical_from_deltas(deltas: jnp.ndarray, wband: WdmBandData) -> tuple[jnp.ndarray, ...]:
-    del_logf0, del_logfdot, del_logA, del_phi_c = deltas
-    logf0 = wband.prior_center[0] + 2e-7 * del_logf0
-    logfdot = wband.prior_center[1] + wband.prior_scale[1] * del_logfdot
-    logA = wband.prior_center[2] + (1.0 / 300.0) * del_logA
-    delta_phi_c = (1.0 / 300.0) * del_phi_c
-
-    f0 = jnp.exp(logf0)
-    fdot = jnp.exp(logfdot)
-    A = jnp.exp(logA)
-
-    tc = wband.t_obs / 2.0
-    phi_c = wband.phase_ref[1] + wband.prior_scale[3] * delta_phi_c
-    phi0 = (
-        wband.phase_ref[0]
-        + wband.prior_scale[3] * delta_phi_c
-        - 2 * jnp.pi * (f0 - jnp.exp(wband.prior_center[0])) * tc
-        - jnp.pi * (fdot - jnp.exp(wband.prior_center[1])) * tc**2
-    )
-    return logf0, logfdot, logA, phi_c, f0, fdot, A, phi0
-
-
 snrs_optimal = []
 print("\nPer-source matched-filter SNR (A channel, WDM band):")
 for wband in BANDS:
@@ -328,17 +291,9 @@ for wband in BANDS:
 
 
 def sample_source_wdm(wband: WdmBandData, *, seed: int = 0) -> MCMC:
-    jgb_local = JaxGB(orbit_model, t_obs=wband.t_obs, t0=0.0, n=256)
     data_j = jnp.asarray(wband.data_band, dtype=jnp.float64)
-    noise_var_j = jnp.maximum(jnp.asarray(wband.noise_var_band, dtype=jnp.float64), 1e-30)
+    noise_var_j = jnp.asarray(wband.noise_var_band, dtype=jnp.float64)
     fixed_params_j = jnp.asarray(wband.fixed_params, dtype=jnp.float64)
-    prior_center_j = jnp.asarray(wband.prior_center, dtype=jnp.float64)
-    prior_scale_j = jnp.asarray(wband.prior_scale, dtype=jnp.float64)
-    phase_ref_j = jnp.asarray(wband.phase_ref, dtype=jnp.float64)
-    logf0_bounds_j = jnp.asarray(wband.logf0_bounds, dtype=jnp.float64)
-    logfdot_bounds_j = jnp.asarray(wband.logfdot_bounds, dtype=jnp.float64)
-    logA_bounds_j = jnp.asarray(wband.logA_bounds, dtype=jnp.float64)
-    tc = jnp.asarray(wband.t_obs / 2.0, dtype=jnp.float64)
     src_kmin = int(wband.src_kmin)
     src_kmax = int(wband.src_kmax)
     local_start = int(wband.src_kmin - wband.kmin_rfft)
@@ -348,52 +303,9 @@ def sample_source_wdm(wband: WdmBandData, *, seed: int = 0) -> MCMC:
     band_stop = int(wband.band_stop)
     kmin_rfft = int(wband.kmin_rfft)
 
-    @jax.jit
-    def logpost(deltas: jax.Array) -> jax.Array:
-        del_logf0, del_logfdot, del_logA, del_phi_c = deltas
-        logf0 = prior_center_j[0] + 2e-7 * del_logf0
-        logfdot = prior_center_j[1] + prior_scale_j[1] * del_logfdot
-        logA = prior_center_j[2] + (1.0 / 300.0) * del_logA
-        delta_phi_c = (1.0 / 300.0) * del_phi_c
-
-        f0 = jnp.exp(logf0)
-        fdot = jnp.exp(logfdot)
-        A = jnp.exp(logA)
-        phi0 = (
-            phase_ref_j[0]
-            + prior_scale_j[3] * delta_phi_c
-            - 2 * jnp.pi * (f0 - jnp.exp(prior_center_j[0])) * tc
-            - jnp.pi * (fdot - jnp.exp(prior_center_j[1])) * tc**2
-        )
-
-        log_prior = (
-            dist.Normal(0.0, 1.0).log_prob(del_logf0)
-            + dist.Normal(0.0, 1.0).log_prob(del_logfdot)
-            + dist.Normal(0.0, 1.0).log_prob(del_logA)
-            + dist.Normal(0.0, 1.0).log_prob(del_phi_c)
-            + dist.TruncatedNormal(
-                loc=prior_center_j[0],
-                scale=prior_scale_j[0],
-                low=logf0_bounds_j[0],
-                high=logf0_bounds_j[1],
-            ).log_prob(logf0)
-            + dist.TruncatedNormal(
-                loc=prior_center_j[1],
-                scale=prior_scale_j[1],
-                low=logfdot_bounds_j[0],
-                high=logfdot_bounds_j[1],
-            ).log_prob(logfdot)
-            + dist.TruncatedNormal(
-                loc=prior_center_j[2],
-                scale=prior_scale_j[2],
-                low=logA_bounds_j[0],
-                high=logA_bounds_j[1],
-            ).log_prob(logA)
-        )
-
-        params = fixed_params_j.at[0].set(f0).at[1].set(fdot).at[2].set(A).at[7].set(phi0)
-        a_loc, _, _ = jgb_local.sum_tdi(
-            params.reshape(1, -1),
+    def generate(params: jnp.ndarray) -> jnp.ndarray:
+        a_loc, _, _ = jgb.sum_tdi(
+            jnp.asarray(params, dtype=jnp.float64).reshape(1, -1),
             kmin=src_kmin,
             kmax=src_kmax,
             tdi_combination="AET",
@@ -401,9 +313,9 @@ def sample_source_wdm(wband: WdmBandData, *, seed: int = 0) -> MCMC:
         x_local = (
             jnp.zeros(band_rfft_size, dtype=jnp.complex128)
             .at[local_start:local_end]
-            .set(jnp.asarray(a_loc, dtype=jnp.complex128).reshape(-1))
+            .set(jnp.asarray(a_loc, dtype=jnp.complex128))
         )
-        h = _wdm_band_from_local_rfft(
+        return _wdm_band_from_local_rfft(
             x_local,
             _window_j,
             NT,
@@ -412,12 +324,62 @@ def sample_source_wdm(wband: WdmBandData, *, seed: int = 0) -> MCMC:
             band_start,
             band_stop,
         )
+
+    def model():
+        del_logf0 = numpyro.sample("del_logf0", dist.Normal(0.0, 1.0))
+        del_logfdot = numpyro.sample("del_logfdot", dist.Normal(0.0, 1.0))
+        del_logA = numpyro.sample("del_logA", dist.Normal(0.0, 1.0))
+        del_phi_c = numpyro.sample("del_phi_c", dist.Normal(0.0, 1.0))
+
+        logf0 = wband.prior_center[0] + 2e-7 * del_logf0
+        logfdot = wband.prior_center[1] + wband.prior_scale[1] * del_logfdot
+        logA = wband.prior_center[2] + (1.0 / 300.0) * del_logA
+        dpc = (1.0 / 300.0) * del_phi_c
+
+        numpyro.factor("p0", dist.TruncatedNormal(
+            loc=wband.prior_center[0], scale=wband.prior_scale[0],
+            low=wband.logf0_bounds[0], high=wband.logf0_bounds[1]).log_prob(logf0))
+        numpyro.factor("p1", dist.TruncatedNormal(
+            loc=wband.prior_center[1], scale=wband.prior_scale[1],
+            low=wband.logfdot_bounds[0], high=wband.logfdot_bounds[1]).log_prob(logfdot))
+        numpyro.factor("p2", dist.TruncatedNormal(
+            loc=wband.prior_center[2], scale=wband.prior_scale[2],
+            low=wband.logA_bounds[0], high=wband.logA_bounds[1]).log_prob(logA))
+
+        f0 = numpyro.deterministic("f0", jnp.exp(logf0))
+        fdot = numpyro.deterministic("fdot", jnp.exp(logfdot))
+        A = numpyro.deterministic("A", jnp.exp(logA))
+
+        phi0 = numpyro.deterministic(
+            "phi0",
+            wband.phase_ref[0]
+            + wband.prior_scale[3] * dpc
+            - 2 * jnp.pi * (f0 - jnp.exp(wband.prior_center[0])) * (wband.t_obs / 2.0)
+            - jnp.pi * (fdot - jnp.exp(wband.prior_center[1])) * (wband.t_obs / 2.0) ** 2,
+        )
+
+        params = (
+            fixed_params_j
+            .at[0].set(f0)
+            .at[1].set(fdot)
+            .at[2].set(A)
+            .at[7].set(phi0)
+        )
+        h = generate(params)
         diff = data_j - h
-        log_like = -0.5 * jnp.sum(diff**2 / noise_var_j + jnp.log(2.0 * jnp.pi * noise_var_j))
-        return log_prior + log_like
+        numpyro.factor(
+            "ll",
+            -0.5 * jnp.sum(diff**2 / noise_var_j + jnp.log(2.0 * jnp.pi * noise_var_j)),
+        )
 
     kernel = NUTS(
-        potential_fn=lambda z: -logpost(z),
+        model,
+        init_strategy=init_to_value(values={
+            "del_logf0": 0.0,
+            "del_logfdot": 0.0,
+            "del_logA": 0.0,
+            "del_phi_c": 0.0,
+        }),
         dense_mass=True,
         target_accept_prob=0.9,
     )
@@ -426,13 +388,9 @@ def sample_source_wdm(wband: WdmBandData, *, seed: int = 0) -> MCMC:
         num_warmup=N_WARMUP,
         num_samples=N_DRAWS,
         num_chains=1,
-        progress_bar=True,
+        progress_bar=False,
     )
-    mcmc.run(
-        jax.random.PRNGKey(seed),
-        init_params=jnp.zeros(4, dtype=jnp.float64),
-        extra_fields=("diverging",),
-    )
+    mcmc.run(jax.random.PRNGKey(seed), extra_fields=("diverging",))
     return mcmc
 
 
@@ -446,26 +404,22 @@ for i, wband in enumerate(BANDS):
 
     n_div = int(mcmc.get_extra_fields()["diverging"].sum())
     print(f"  Divergences: {n_div}")
-    delta_samples = np.asarray(mcmc.get_samples())
-    phys = np.asarray(jax.vmap(lambda z: jnp.stack(_physical_from_deltas(z, wband)))(jnp.asarray(delta_samples)))
-    _, _, _, _, f0_s, fdot_s, A_s, phi0_s = phys.T
-    samples_i = np.column_stack([f0_s, fdot_s, A_s, phi0_s])
+    mcmc.print_summary(exclude_deterministic=False)
 
-    truth_i = np.array([
-        wband.fixed_params[0],
-        wband.fixed_params[1],
-        wband.fixed_params[2],
-        wrap_phase(wband.fixed_params[7]),
+    s = mcmc.get_samples()
+    samples_i = np.column_stack([
+        np.asarray(s["f0"]),
+        np.asarray(s["fdot"]),
+        np.asarray(s["A"]),
+        np.asarray(s["phi0"]),
     ])
+
+    truth_i = source_truth_vector(wband.fixed_params)
     print(f"\n{'═' * 56}  {wband.label}")
     print_posterior_summary(samples_i, truth_i, PARAM_NAMES)
     check_posterior_coverage(samples_i, truth_i, PARAM_NAMES)
 
-    samples_i_full = np.tile(wband.fixed_params, (samples_i.shape[0], 1))
-    samples_i_full[:, 0] = samples_i[:, 0]
-    samples_i_full[:, 1] = samples_i[:, 1]
-    samples_i_full[:, 2] = samples_i[:, 2]
-    samples_i_full[:, 7] = samples_i[:, 3]
+    samples_i_full = build_sampled_source_params(wband.fixed_params, samples_i)
 
     noise_var_j = jnp.asarray(wband.noise_var_band, dtype=jnp.float64)
 
@@ -495,23 +449,15 @@ for i, wband in enumerate(BANDS):
 
 PARAM_NAMES_SNR = ["f0 [Hz]", "fdot [Hz/s]", "A", "phi0 [rad]", "SNR"]
 for i, (wband, samples_i) in enumerate(zip(BANDS, all_samples, strict=True)):
-    truth_i = np.array([
-        wband.fixed_params[0],
-        wband.fixed_params[1],
-        wband.fixed_params[2],
-        wrap_phase(wband.fixed_params[7]),
-        snrs_optimal[i],
-    ])
+    truth_i = source_truth_vector(wband.fixed_params, snr=snrs_optimal[i])
     print(f"\n{'═' * 56}  {wband.label}")
     print_posterior_summary(samples_i, truth_i, PARAM_NAMES_SNR)
     check_posterior_coverage(samples_i, truth_i, PARAM_NAMES_SNR)
 
-_out_path = FIGURE_OUTPUT_DIR / "posteriors.npz"
-np.savez(
-    _out_path,
+_out_path = save_posterior_archive(
+    FIGURE_OUTPUT_DIR,
     source_params=SOURCE_PARAMS,
-    samples_gb1=all_samples[0],
-    samples_gb2=all_samples[1],
+    all_samples=all_samples,
     snr_optimal=snrs_optimal,
 )
 print(f"\nSaved posteriors to {_out_path}")
@@ -564,13 +510,10 @@ corner_labels = [r"$f_0$", r"$\dot{f}$", r"$A$", r"$\phi_0$", "SNR"]
 for i, (wband, samples_i, stem) in enumerate(
     zip(BANDS, all_samples, ["gb1_corner", "gb2_corner"], strict=True)
 ):
-    truth_i = [
-        wband.fixed_params[0], wband.fixed_params[1],
-        wband.fixed_params[2], wrap_phase(wband.fixed_params[7]),
-        snrs_optimal[i],
-    ]
-    fig = corner.corner(
-        samples_i, labels=corner_labels, truths=truth_i, truth_color="tab:red",
-        quantiles=[0.05, 0.5, 0.95], show_titles=True, title_kwargs={"fontsize": 10},
+    save_corner_plot(
+        samples_i,
+        truth=source_truth_vector(wband.fixed_params, snr=snrs_optimal[i]),
+        output_dir=FIGURE_OUTPUT_DIR,
+        stem=stem,
+        labels=corner_labels,
     )
-    save_figure(fig, FIGURE_OUTPUT_DIR, stem)

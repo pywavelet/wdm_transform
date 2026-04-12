@@ -1,8 +1,10 @@
 """Shared constants, paths, PSD models, and utilities for the LISA GB study."""
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 
+import corner
 import numpy as np
 
 STUDY_DIR = Path(__file__).resolve().parent
@@ -65,6 +67,122 @@ def require_positive_fdot(source_params: np.ndarray, *, context: str) -> np.ndar
             "after updating the injection configuration."
         )
     return params
+
+
+@dataclass(frozen=True)
+class LocalPriorInfo:
+    prior_center: np.ndarray
+    prior_scale: np.ndarray
+    phase_ref: np.ndarray
+    logf0_bounds: tuple[float, float]
+    logfdot_bounds: tuple[float, float]
+    logA_bounds: tuple[float, float]
+
+
+def default_local_priors(params: np.ndarray) -> tuple[tuple[float, float], ...]:
+    """Default narrow prior box used for the resolved-source local fits."""
+    return (
+        (params[0] - 8e-6, params[0] + 8e-6),
+        (0.25 * params[1], 4.0 * params[1]),
+        (0.3 * params[2], 3.0 * params[2]),
+    )
+
+
+def build_local_prior_info(
+    params: np.ndarray,
+    *,
+    t_obs: float,
+    prior_f0: tuple[float, float],
+    prior_fdot: tuple[float, float],
+    prior_A: tuple[float, float],
+) -> LocalPriorInfo:
+    """Shared log-parameter prior metadata for the local frequency/WDM fits."""
+    phi0_ref = float(wrap_phase(params[7]))
+    tc = float(t_obs / 2.0)
+    phi_c_ref = float(
+        wrap_phase(phi0_ref + 2 * np.pi * params[0] * tc + np.pi * params[1] * tc**2)
+    )
+    logf0_bounds = (float(np.log(prior_f0[0])), float(np.log(prior_f0[1])))
+    logfdot_bounds = (float(np.log(prior_fdot[0])), float(np.log(prior_fdot[1])))
+    logA_bounds = (float(np.log(prior_A[0])), float(np.log(prior_A[1])))
+
+    return LocalPriorInfo(
+        prior_center=np.array([np.log(params[0]), np.log(params[1]), np.log(params[2])]),
+        prior_scale=np.array([
+            0.25 * (logf0_bounds[1] - logf0_bounds[0]),
+            0.25 * (logfdot_bounds[1] - logfdot_bounds[0]),
+            0.25 * (logA_bounds[1] - logA_bounds[0]),
+            np.pi / 4.0,
+        ]),
+        phase_ref=np.array([phi0_ref, phi_c_ref]),
+        logf0_bounds=logf0_bounds,
+        logfdot_bounds=logfdot_bounds,
+        logA_bounds=logA_bounds,
+    )
+
+
+def build_sampled_source_params(fixed_params: np.ndarray, samples_i: np.ndarray) -> np.ndarray:
+    """Expand sampled [f0, fdot, A, phi0, ...] rows into full 8-parameter vectors."""
+    samples_full = np.tile(np.asarray(fixed_params, dtype=float), (samples_i.shape[0], 1))
+    samples_full[:, 0] = samples_i[:, 0]
+    samples_full[:, 1] = samples_i[:, 1]
+    samples_full[:, 2] = samples_i[:, 2]
+    samples_full[:, 7] = samples_i[:, 3]
+    return samples_full
+
+
+def source_truth_vector(fixed_params: np.ndarray, *, snr: float | None = None) -> np.ndarray:
+    """Truth vector matching the local posterior column convention."""
+    truth = [
+        float(fixed_params[0]),
+        float(fixed_params[1]),
+        float(fixed_params[2]),
+        float(wrap_phase(fixed_params[7])),
+    ]
+    if snr is not None:
+        truth.append(float(snr))
+    return np.asarray(truth, dtype=float)
+
+
+def save_posterior_archive(
+    output_dir: Path,
+    *,
+    source_params: np.ndarray,
+    all_samples: list[np.ndarray],
+    snr_optimal: list[float],
+) -> Path:
+    """Write the shared posterior NPZ layout used by the study scripts."""
+    ensure_output_dir(output_dir)
+    out_path = output_dir / "posteriors.npz"
+    np.savez(
+        out_path,
+        source_params=np.asarray(source_params, dtype=float),
+        samples_gb1=np.asarray(all_samples[0], dtype=float),
+        samples_gb2=np.asarray(all_samples[1], dtype=float),
+        snr_optimal=np.asarray(snr_optimal, dtype=float),
+    )
+    return out_path
+
+
+def save_corner_plot(
+    samples: np.ndarray,
+    *,
+    truth: np.ndarray,
+    output_dir: Path,
+    stem: str,
+    labels: list[str],
+) -> Path:
+    """Render and save one corner plot using the study defaults."""
+    fig = corner.corner(
+        np.asarray(samples, dtype=float),
+        labels=labels,
+        truths=np.asarray(truth, dtype=float),
+        truth_color="tab:red",
+        quantiles=[0.05, 0.5, 0.95],
+        show_titles=True,
+        title_kwargs={"fontsize": 10},
+    )
+    return save_figure(fig, output_dir, stem)
 
 
 def floor_pow2(n: int) -> int:
