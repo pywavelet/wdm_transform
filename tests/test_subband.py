@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+from functools import lru_cache
 import numpy as np
 import pytest
 import time
@@ -8,6 +10,8 @@ from importlib.util import find_spec
 from wdm_transform import TimeSeries, WDM
 from wdm_transform.backends import get_backend
 from wdm_transform.transforms import (
+    from_freq_to_wdm_band,
+    from_time_to_wdm,
     fourier_span_from_wdm_span,
     forward_wdm_subband,
     inverse_wdm_subband,
@@ -23,6 +27,25 @@ NFOURIER = N_TOTAL // 2 + 1
 DT = 0.125
 DF = 1.0 / (N_TOTAL * DT)
 NUMPY_BACKEND = get_backend("numpy")
+
+
+@dataclass(frozen=True)
+class ForwardSubbandResult:
+    coeffs: np.ndarray
+    mmin: int
+    expected_mmin: int
+    expected_nf_sub: int
+    full_spectrum: np.ndarray
+    full_wdm_slice: np.ndarray
+
+
+@dataclass(frozen=True)
+class InverseSubbandResult:
+    forward: ForwardSubbandResult
+    recovered: np.ndarray
+    recovered_kmin: int
+    expected_kmin: int
+    expected_lendata: int
 
 
 def _generate_sinusoid(
@@ -105,17 +128,108 @@ def _one_sided_full_spectrum(kmin: int, data: np.ndarray) -> np.ndarray:
     return full
 
 
-def _snr(reference: np.ndarray, estimate: np.ndarray) -> float:
-    noise_norm = np.linalg.norm(reference - estimate)
-    if noise_norm == 0.0:
-        return float("inf")
-    return float(20.0 * np.log10(np.linalg.norm(reference) / noise_norm))
+@lru_cache(maxsize=None)
+def _wdm_block_analysis_matrix(
+    *,
+    nt: int,
+    nf: int,
+    dt: float,
+    mmin: int,
+    nf_sub_wdm: int,
+    a: float = 1.0 / 3.0,
+) -> np.ndarray:
+    """Dense forward WDM operator restricted to a compact channel block."""
+    n_total = nt * nf
+    matrix = np.empty((nt * nf_sub_wdm, n_total), dtype=float)
+    for idx in range(n_total):
+        basis = np.zeros(n_total, dtype=float)
+        basis[idx] = 1.0
+        coeffs = from_time_to_wdm(
+            basis,
+            nt=nt,
+            nf=nf,
+            a=a,
+            d=1.0,
+            dt=dt,
+            backend="numpy",
+        )[:, mmin:mmin + nf_sub_wdm]
+        matrix[:, idx] = coeffs.reshape(-1)
+    return matrix
+
+
+@lru_cache(maxsize=None)
+def _rfft_block_analysis_matrix(
+    *,
+    nt: int,
+    nf: int,
+    dt: float,
+    kmin: int,
+    lendata: int,
+) -> np.ndarray:
+    """Dense real-valued operator for a compact one-sided rFFT span.
+
+    The output stacks real and imaginary parts so the white-noise covariance
+    lives on a standard real vector space.
+    """
+    n_total = nt * nf
+    matrix = np.empty((2 * lendata, n_total), dtype=float)
+    for idx in range(n_total):
+        basis = np.zeros(n_total, dtype=float)
+        basis[idx] = 1.0
+        coeffs = np.fft.rfft(basis)[kmin:kmin + lendata]
+        matrix[:lendata, idx] = np.real(coeffs)
+        matrix[lendata:, idx] = np.imag(coeffs)
+    return matrix
+
+
+def _matched_filter_snr_from_linear_observable(
+    signal_observable: np.ndarray,
+    analysis_matrix: np.ndarray,
+    *,
+    sigma: float,
+) -> float:
+    """Exact matched-filter SNR for white time-domain noise.
+
+    If ``y = A x`` is the observed linear data vector and the underlying
+    time-domain noise is white with covariance ``sigma^2 I``, then the induced
+    covariance in the observable space is
+
+        C_y = sigma^2 A A^T.
+
+    The optimal matched-filter SNR is the noise-weighted inner product
+
+        rho^2 = (y|y) = y^T C_y^+ y,
+
+    where ``C_y^+`` denotes the pseudoinverse. This is the exact finite-
+    dimensional version of the usual GW inner product.
+    """
+    cov = sigma**2 * (analysis_matrix @ analysis_matrix.T)
+    snr2 = float(signal_observable @ (np.linalg.pinv(cov, rcond=1e-12) @ signal_observable))
+    return float(np.sqrt(max(snr2, 0.0)))
+
+
+def _matched_filter_snr_wdm_diagonal(
+    coeffs: np.ndarray,
+    noise_var: np.ndarray,
+) -> float:
+    """Diagonal WDM matched-filter SNR.
+
+    This is the WDM-domain approximation used in the study notes:
+
+        rho^2 = sum_{nm} h_nm^2 / S_nm,
+
+    where ``S_nm`` is treated as diagonal coefficient variance.
+    """
+    coeffs_arr = np.asarray(coeffs, dtype=float)
+    noise_var_arr = np.asarray(noise_var, dtype=float)
+    snr2 = np.sum(coeffs_arr**2 / np.maximum(noise_var_arr, 1e-60))
+    return float(np.sqrt(max(float(snr2), 0.0)))
 
 
 def _format_snr(value: float) -> str:
     if np.isinf(value):
-        return "SNR: inf"
-    return f"SNR: {value:.2f}"
+        return "MF SNR: inf"
+    return f"MF SNR: {value:.2f}"
 
 
 def _annotate_snr(axis, value: float) -> None:
@@ -132,10 +246,13 @@ def _annotate_snr(axis, value: float) -> None:
 def _annotate_metrics(
     axis,
     *,
-    snr: float,
+    mf_snr: float,
+    diagonal_mf_snr: float | None = None,
     runtime_ms: float | None = None,
 ) -> None:
-    lines = [_format_snr(snr)]
+    lines = [_format_snr(mf_snr)]
+    if diagonal_mf_snr is not None:
+        lines.append(f"Diag WDM MF SNR: {diagonal_mf_snr:.2f}")
     if runtime_ms is not None:
         lines.append(f"Runtime: {runtime_ms:.2f} ms")
     axis.text(
@@ -155,6 +272,108 @@ def _mean_runtime_ms(fn, repeats: int = 5) -> float:
         fn()
         durations.append((time.perf_counter() - t0) * 1000.0)
     return float(np.mean(durations))
+
+
+def _forward_subband_result(
+    subband: np.ndarray,
+    *,
+    kmin: int,
+    backend: str = "numpy",
+) -> ForwardSubbandResult:
+    lendata = int(len(subband))
+    one_sided = _one_sided_full_spectrum(kmin, np.asarray(subband))
+    signal = np.fft.irfft(one_sided, n=N_TOTAL)
+    full_wdm = WDM.from_time_series(TimeSeries(signal, dt=DT), nt=NT)
+    coeffs, mmin = forward_wdm_subband(
+        subband,
+        df=DF,
+        nfreqs_fourier=NFOURIER,
+        kmin=kmin,
+        nfreqs_wdm=NF,
+        ntimes_wdm=NT,
+        backend=backend,
+    )
+    expected_mmin, expected_nf_sub = wdm_span_from_fourier_span(
+        nfreqs_fourier=NFOURIER,
+        nfreqs_wdm=NF,
+        ntimes_wdm=NT,
+        kmin=kmin,
+        lendata=lendata,
+    )
+    return ForwardSubbandResult(
+        coeffs=np.asarray(coeffs),
+        mmin=int(mmin),
+        expected_mmin=expected_mmin,
+        expected_nf_sub=expected_nf_sub,
+        full_spectrum=one_sided,
+        full_wdm_slice=np.asarray(full_wdm.coeffs)[:, expected_mmin:expected_mmin + expected_nf_sub],
+    )
+
+
+def _assert_forward_matches_full_slice(result: ForwardSubbandResult) -> None:
+    assert result.mmin == result.expected_mmin
+    assert result.coeffs.shape == (NT, result.expected_nf_sub)
+    np.testing.assert_allclose(
+        result.coeffs,
+        result.full_wdm_slice,
+        atol=1e-10,
+        rtol=1e-10,
+    )
+
+
+def _inverse_subband_result(
+    subband: np.ndarray,
+    *,
+    kmin: int,
+    backend: str = "numpy",
+) -> InverseSubbandResult:
+    forward = _forward_subband_result(subband, kmin=kmin, backend=backend)
+    recovered, recovered_kmin = inverse_wdm_subband(
+        forward.coeffs,
+        df=DF,
+        nfreqs_fourier=NFOURIER,
+        mmin=forward.mmin,
+        nfreqs_wdm=NF,
+        ntimes_wdm=NT,
+        backend=backend,
+    )
+    expected_kmin, expected_lendata = fourier_span_from_wdm_span(
+        nfreqs_fourier=NFOURIER,
+        nfreqs_wdm=NF,
+        ntimes_wdm=NT,
+        mmin=forward.mmin,
+        nf_sub_wdm=forward.coeffs.shape[1],
+    )
+    return InverseSubbandResult(
+        forward=forward,
+        recovered=np.asarray(recovered),
+        recovered_kmin=int(recovered_kmin),
+        expected_kmin=expected_kmin,
+        expected_lendata=expected_lendata,
+    )
+
+
+def _assert_roundtrip_matches_touched_fourier(result: InverseSubbandResult) -> None:
+    assert result.recovered_kmin == result.expected_kmin
+    np.testing.assert_allclose(
+        result.recovered,
+        result.forward.full_spectrum[result.expected_kmin:result.expected_kmin + result.expected_lendata],
+        atol=1e-10,
+        rtol=1e-10,
+    )
+
+
+def _chirping_binary_subband_case() -> tuple[np.ndarray, np.ndarray, int, int]:
+    signal = _generate_wd_binary_signal(
+        f0=0.15,
+        fdot=5.0e-4,
+        amplitude=1.0,
+    )
+    one_sided = np.fft.rfft(signal)
+    k_peak = int(np.argmax(np.abs(one_sided)))
+    kmin = max(0, k_peak - 3)
+    lendata = 8
+    return signal, one_sided, kmin, lendata
 
 
 def test_subband_grid_validation_errors() -> None:
@@ -232,6 +451,25 @@ def test_span_mappings(
     assert mapped_fourier[0] + mapped_fourier[1] >= kmin + lendata
 
 
+def test_lisa_style_local_frequency_band_touches_expected_wdm_channels() -> None:
+    """Mirror the study's Fourier-support rule and check the touched channel span."""
+    band_start = 7
+    band_stop = 10
+    half = NT // 2
+    kmin = max((band_start - 1) * half, 0)
+    kmax = min(band_stop * half, NFOURIER)
+    lendata = kmax - kmin
+
+    mapped_wdm = wdm_span_from_fourier_span(
+        nfreqs_fourier=NFOURIER,
+        nfreqs_wdm=NF,
+        ntimes_wdm=NT,
+        kmin=kmin,
+        lendata=lendata,
+    )
+    assert mapped_wdm == (band_start - 1, band_stop - band_start + 2)
+
+
 @pytest.mark.parametrize(
     ("kmin", "lendata"),
     [
@@ -242,32 +480,36 @@ def test_span_mappings(
     ],
 )
 def test_forward_subband_matches_full_wdm_slice(kmin: int, lendata: int) -> None:
-    subband = _subband_case_data(kmin, lendata)
-    one_sided = _one_sided_full_spectrum(kmin, subband)
-    signal = np.fft.irfft(one_sided, n=N_TOTAL)
+    result = _forward_subband_result(_subband_case_data(kmin, lendata), kmin=kmin)
+    _assert_forward_matches_full_slice(result)
 
+
+def test_lisa_style_local_frequency_band_matches_expected_wdm_slice() -> None:
+    rng = np.random.default_rng(1234)
+    signal = rng.normal(size=N_TOTAL)
+    one_sided = np.fft.rfft(signal)
     full_wdm = WDM.from_time_series(TimeSeries(signal, dt=DT), nt=NT)
-    coeffs, mmin = forward_wdm_subband(
-        subband,
+
+    band_start = 7
+    band_stop = 10
+    half = NT // 2
+    kmin = max((band_start - 1) * half, 0)
+    kmax = min(band_stop * half, NFOURIER)
+
+    coeffs = from_freq_to_wdm_band(
+        one_sided[kmin:kmax],
         df=DF,
         nfreqs_fourier=NFOURIER,
         kmin=kmin,
         nfreqs_wdm=NF,
         ntimes_wdm=NT,
+        mmin=band_start,
+        nf_sub_wdm=band_stop - band_start,
     )
-
-    expected_mmin, expected_nf_sub = wdm_span_from_fourier_span(
-        nfreqs_fourier=NFOURIER,
-        nfreqs_wdm=NF,
-        ntimes_wdm=NT,
-        kmin=kmin,
-        lendata=lendata,
-    )
-    assert mmin == expected_mmin
-    assert coeffs.shape == (NT, expected_nf_sub)
+    assert coeffs.shape == (NT, band_stop - band_start)
     np.testing.assert_allclose(
         coeffs,
-        np.asarray(full_wdm.coeffs)[:, mmin:mmin + expected_nf_sub],
+        np.asarray(full_wdm.coeffs)[:, band_start:band_stop],
         atol=1e-10,
         rtol=1e-10,
     )
@@ -278,68 +520,19 @@ def test_forward_subband_matches_full_wdm_slice_jax() -> None:
     jax = pytest.importorskip("jax.numpy")
     kmin = 23
     lendata = 29
-    subband = _subband_case_data(kmin, lendata)
-    one_sided = _one_sided_full_spectrum(kmin, subband)
-    signal = np.fft.irfft(one_sided, n=N_TOTAL)
-
-    full_wdm = WDM.from_time_series(TimeSeries(signal, dt=DT), nt=NT)
-    coeffs, mmin = forward_wdm_subband(
-        jax.asarray(subband),
-        df=DF,
-        nfreqs_fourier=NFOURIER,
+    result = _forward_subband_result(
+        jax.asarray(_subband_case_data(kmin, lendata)),
         kmin=kmin,
-        nfreqs_wdm=NF,
-        ntimes_wdm=NT,
         backend="jax",
     )
-
-    expected_mmin, expected_nf_sub = wdm_span_from_fourier_span(
-        nfreqs_fourier=NFOURIER,
-        nfreqs_wdm=NF,
-        ntimes_wdm=NT,
-        kmin=kmin,
-        lendata=lendata,
-    )
-    assert mmin == expected_mmin
-    assert coeffs.shape == (NT, expected_nf_sub)
-    np.testing.assert_allclose(
-        np.asarray(coeffs),
-        np.asarray(full_wdm.coeffs)[:, mmin:mmin + expected_nf_sub],
-        atol=1e-10,
-        rtol=1e-10,
-    )
+    _assert_forward_matches_full_slice(result)
 
 
 def test_forward_subband_matches_full_wdm_slice_for_sinusoid() -> None:
     k0 = 37
     signal = _generate_sinusoid(k0=k0, amplitude=1.7, phase=0.31)
-    one_sided = np.fft.rfft(signal)
-
-    coeffs, mmin = forward_wdm_subband(
-        one_sided[k0:k0 + 1],
-        df=DF,
-        nfreqs_fourier=NFOURIER,
-        kmin=k0,
-        nfreqs_wdm=NF,
-        ntimes_wdm=NT,
-    )
-    full_wdm = WDM.from_time_series(TimeSeries(signal, dt=DT), nt=NT)
-
-    expected_mmin, expected_nf_sub = wdm_span_from_fourier_span(
-        nfreqs_fourier=NFOURIER,
-        nfreqs_wdm=NF,
-        ntimes_wdm=NT,
-        kmin=k0,
-        lendata=1,
-    )
-    assert mmin == expected_mmin
-    assert coeffs.shape == (NT, expected_nf_sub)
-    np.testing.assert_allclose(
-        coeffs,
-        np.asarray(full_wdm.coeffs)[:, mmin:mmin + expected_nf_sub],
-        atol=1e-10,
-        rtol=1e-10,
-    )
+    result = _forward_subband_result(np.fft.rfft(signal)[k0:k0 + 1], kmin=k0)
+    _assert_forward_matches_full_slice(result)
 
 
 def test_full_wdm_matches_analytic_sinusoid_formula_after_normalization() -> None:
@@ -438,136 +631,64 @@ def test_forward_then_inverse_recovers_zero_padded_fourier_span(
     kmin: int,
     lendata: int,
 ) -> None:
-    subband = _subband_case_data(kmin, lendata)
-    full_spectrum = _one_sided_full_spectrum(kmin, subband)
-
-    coeffs, mmin = forward_wdm_subband(
-        subband,
-        df=DF,
-        nfreqs_fourier=NFOURIER,
-        kmin=kmin,
-        nfreqs_wdm=NF,
-        ntimes_wdm=NT,
-    )
-    recovered, recovered_kmin = inverse_wdm_subband(
-        coeffs,
-        df=DF,
-        nfreqs_fourier=NFOURIER,
-        mmin=mmin,
-        nfreqs_wdm=NF,
-        ntimes_wdm=NT,
-    )
-
-    expected_kmin, expected_lendata = fourier_span_from_wdm_span(
-        nfreqs_fourier=NFOURIER,
-        nfreqs_wdm=NF,
-        ntimes_wdm=NT,
-        mmin=mmin,
-        nf_sub_wdm=coeffs.shape[1],
-    )
-    assert recovered_kmin == expected_kmin
-    np.testing.assert_allclose(
-        recovered,
-        full_spectrum[expected_kmin:expected_kmin + expected_lendata],
-        atol=1e-10,
-        rtol=1e-10,
-    )
+    result = _inverse_subband_result(_subband_case_data(kmin, lendata), kmin=kmin)
+    _assert_roundtrip_matches_touched_fourier(result)
 
 
 def test_chirping_binary_subband_roundtrip() -> None:
-    signal = _generate_wd_binary_signal(
-        f0=0.15,
-        fdot=5.0e-4,
-        amplitude=1.0,
-    )
-    one_sided = np.fft.rfft(signal)
-    k_peak = int(np.argmax(np.abs(one_sided)))
-    kmin = max(0, k_peak - 3)
-    lendata = 8
-    subband = one_sided[kmin:kmin + lendata]
-    full_spectrum = _one_sided_full_spectrum(kmin, subband)
+    _, one_sided, kmin, lendata = _chirping_binary_subband_case()
+    result = _inverse_subband_result(one_sided[kmin:kmin + lendata], kmin=kmin)
+    _assert_roundtrip_matches_touched_fourier(result)
 
-    coeffs, mmin = forward_wdm_subband(
-        subband,
-        df=DF,
-        nfreqs_fourier=NFOURIER,
+
+def test_chirping_binary_subband_matched_filter_snr_matches_fourier() -> None:
+    sigma = 0.3
+    _, one_sided, kmin, lendata = _chirping_binary_subband_case()
+    result = _forward_subband_result(one_sided[kmin:kmin + lendata], kmin=kmin)
+
+    fourier_operator = _rfft_block_analysis_matrix(
+        nt=NT,
+        nf=NF,
+        dt=DT,
         kmin=kmin,
-        nfreqs_wdm=NF,
-        ntimes_wdm=NT,
+        lendata=lendata,
     )
-    recovered, recovered_kmin = inverse_wdm_subband(
-        coeffs,
-        df=DF,
-        nfreqs_fourier=NFOURIER,
-        mmin=mmin,
-        nfreqs_wdm=NF,
-        ntimes_wdm=NT,
+    wdm_operator = _wdm_block_analysis_matrix(
+        nt=NT,
+        nf=NF,
+        dt=DT,
+        mmin=result.mmin,
+        nf_sub_wdm=result.coeffs.shape[1],
     )
+    signal_fourier = np.concatenate([np.real(one_sided[kmin:kmin + lendata]), np.imag(one_sided[kmin:kmin + lendata])])
+    signal_wdm = result.coeffs.reshape(-1)
 
-    expected_kmin, expected_lendata = fourier_span_from_wdm_span(
-        nfreqs_fourier=NFOURIER,
-        nfreqs_wdm=NF,
-        ntimes_wdm=NT,
-        mmin=mmin,
-        nf_sub_wdm=coeffs.shape[1],
+    snr_fourier = _matched_filter_snr_from_linear_observable(
+        signal_fourier,
+        fourier_operator,
+        sigma=sigma,
     )
-    assert recovered_kmin == expected_kmin
-    np.testing.assert_allclose(
-        recovered,
-        full_spectrum[expected_kmin:expected_kmin + expected_lendata],
-        atol=1e-10,
-        rtol=1e-10,
+    snr_wdm = _matched_filter_snr_from_linear_observable(
+        signal_wdm,
+        wdm_operator,
+        sigma=sigma,
     )
+    noise_var_diag = sigma**2 * np.sum(wdm_operator**2, axis=1).reshape(result.coeffs.shape)
+    snr_wdm_diag = _matched_filter_snr_wdm_diagonal(result.coeffs, noise_var_diag)
+    np.testing.assert_allclose(snr_wdm, snr_fourier, rtol=1e-10, atol=1e-10)
+    assert np.isfinite(snr_wdm_diag)
 
 
 @pytest.mark.skipif(find_spec("jax") is None, reason="jax is not installed")
 def test_chirping_binary_subband_roundtrip_jax() -> None:
     jax = pytest.importorskip("jax.numpy")
-    signal = _generate_wd_binary_signal(
-        f0=0.15,
-        fdot=5.0e-4,
-        amplitude=1.0,
-    )
-    one_sided = np.fft.rfft(signal)
-    k_peak = int(np.argmax(np.abs(one_sided)))
-    kmin = max(0, k_peak - 3)
-    lendata = 8
-    subband = one_sided[kmin:kmin + lendata]
-    full_spectrum = _one_sided_full_spectrum(kmin, subband)
-
-    coeffs, mmin = forward_wdm_subband(
-        jax.asarray(subband),
-        df=DF,
-        nfreqs_fourier=NFOURIER,
+    _, one_sided, kmin, lendata = _chirping_binary_subband_case()
+    result = _inverse_subband_result(
+        jax.asarray(one_sided[kmin:kmin + lendata]),
         kmin=kmin,
-        nfreqs_wdm=NF,
-        ntimes_wdm=NT,
         backend="jax",
     )
-    recovered, recovered_kmin = inverse_wdm_subband(
-        coeffs,
-        df=DF,
-        nfreqs_fourier=NFOURIER,
-        mmin=mmin,
-        nfreqs_wdm=NF,
-        ntimes_wdm=NT,
-        backend="jax",
-    )
-
-    expected_kmin, expected_lendata = fourier_span_from_wdm_span(
-        nfreqs_fourier=NFOURIER,
-        nfreqs_wdm=NF,
-        ntimes_wdm=NT,
-        mmin=mmin,
-        nf_sub_wdm=coeffs.shape[1],
-    )
-    assert recovered_kmin == expected_kmin
-    np.testing.assert_allclose(
-        np.asarray(recovered),
-        full_spectrum[expected_kmin:expected_kmin + expected_lendata],
-        atol=1e-10,
-        rtol=1e-10,
-    )
+    _assert_roundtrip_matches_touched_fourier(result)
 
 
 def test_chirping_binary_subband_diagnostics_plot(outdir) -> None:
@@ -577,21 +698,12 @@ def test_chirping_binary_subband_diagnostics_plot(outdir) -> None:
     test_outdir = outdir / "test_subband"
     test_outdir.mkdir(parents=True, exist_ok=True)
 
-    signal = _generate_wd_binary_signal(
-        f0=0.15,
-        fdot=5.0e-4,
-        amplitude=1.0,
-    )
+    signal, one_sided, kmin, lendata = _chirping_binary_subband_case()
     full_runtime_ms = _mean_runtime_ms(
         lambda: WDM.from_time_series(TimeSeries(signal, dt=DT), nt=NT)
     )
-    one_sided = np.fft.rfft(signal)
-    k_peak = int(np.argmax(np.abs(one_sided)))
-    kmin = max(0, k_peak - 3)
-    lendata = 8
-    subband = one_sided[kmin:kmin + lendata]
     full_wdm = WDM.from_time_series(TimeSeries(signal, dt=DT), nt=NT)
-    full_spectrum = _one_sided_full_spectrum(kmin, subband)
+    subband = one_sided[kmin:kmin + lendata]
     subband_runtime_ms = _mean_runtime_ms(
         lambda: forward_wdm_subband(
             subband,
@@ -602,47 +714,45 @@ def test_chirping_binary_subband_diagnostics_plot(outdir) -> None:
             ntimes_wdm=NT,
         )
     )
-
-    coeffs, mmin = forward_wdm_subband(
-        subband,
-        df=DF,
-        nfreqs_fourier=NFOURIER,
+    result = _inverse_subband_result(subband, kmin=kmin)
+    _assert_roundtrip_matches_touched_fourier(result)
+    coeffs = result.forward.coeffs
+    mmin = result.forward.mmin
+    recovered = result.recovered
+    recovered_kmin = result.recovered_kmin
+    reference_fourier = subband
+    reference_coeffs = coeffs
+    sigma = 0.3
+    fourier_operator = _rfft_block_analysis_matrix(
+        nt=NT,
+        nf=NF,
+        dt=DT,
         kmin=kmin,
-        nfreqs_wdm=NF,
-        ntimes_wdm=NT,
+        lendata=lendata,
     )
-    recovered, recovered_kmin = inverse_wdm_subband(
-        coeffs,
-        df=DF,
-        nfreqs_fourier=NFOURIER,
-        mmin=mmin,
-        nfreqs_wdm=NF,
-        ntimes_wdm=NT,
-    )
-
-    expected_kmin, expected_lendata = fourier_span_from_wdm_span(
-        nfreqs_fourier=NFOURIER,
-        nfreqs_wdm=NF,
-        ntimes_wdm=NT,
+    wdm_operator = _wdm_block_analysis_matrix(
+        nt=NT,
+        nf=NF,
+        dt=DT,
         mmin=mmin,
         nf_sub_wdm=coeffs.shape[1],
     )
-    reference_fourier = full_spectrum[
-        expected_kmin:expected_kmin + expected_lendata
-    ]
-    np.testing.assert_allclose(
-        recovered,
-        reference_fourier,
-        atol=1e-10,
-        rtol=1e-10,
+    fourier_mf_snr = _matched_filter_snr_from_linear_observable(
+        np.concatenate([np.real(reference_fourier), np.imag(reference_fourier)]),
+        fourier_operator,
+        sigma=sigma,
     )
-
-    zero_padded_signal = np.fft.irfft(full_spectrum, n=N_TOTAL)
-    expected_wdm = WDM.from_time_series(TimeSeries(zero_padded_signal, dt=DT), nt=NT)
-    reference_coeffs = np.asarray(expected_wdm.coeffs)[:, mmin:mmin + coeffs.shape[1]]
-
-    fourier_snr = _snr(reference_fourier, recovered)
-    wdm_snr = _snr(reference_coeffs, coeffs)
+    wdm_mf_snr = _matched_filter_snr_from_linear_observable(
+        reference_coeffs.reshape(-1),
+        wdm_operator,
+        sigma=sigma,
+    )
+    wdm_diag_noise_var = sigma**2 * np.sum(wdm_operator**2, axis=1).reshape(reference_coeffs.shape)
+    wdm_diag_mf_snr = _matched_filter_snr_wdm_diagonal(
+        reference_coeffs,
+        wdm_diag_noise_var,
+    )
+    np.testing.assert_allclose(wdm_mf_snr, fourier_mf_snr, rtol=1e-10, atol=1e-10)
 
     fourier_freqs = (recovered_kmin + np.arange(recovered.shape[0])) * DF
     full_freqs = np.fft.rfftfreq(N_TOTAL, d=DT)
@@ -674,7 +784,7 @@ def test_chirping_binary_subband_diagnostics_plot(outdir) -> None:
     axes[0].set_xlabel("Frequency [Hz]")
     axes[0].set_ylabel("Magnitude")
     axes[0].legend(loc="upper right")
-    _annotate_metrics(axes[0], snr=fourier_snr)
+    _annotate_metrics(axes[0], mf_snr=fourier_mf_snr)
 
     full_image = axes[1].imshow(
         full_wdm_abs.T,
@@ -700,7 +810,12 @@ def test_chirping_binary_subband_diagnostics_plot(outdir) -> None:
     axes[1].set_title("Full WDM grid with overlapping global channel range highlighted")
     axes[1].set_xlabel("Time [s]")
     axes[1].set_ylabel("Frequency [Hz]")
-    _annotate_metrics(axes[1], snr=wdm_snr, runtime_ms=full_runtime_ms)
+    _annotate_metrics(
+        axes[1],
+        mf_snr=wdm_mf_snr,
+        diagonal_mf_snr=wdm_diag_mf_snr,
+        runtime_ms=full_runtime_ms,
+    )
     fig.colorbar(full_image, ax=axes[1], label="|WDM coefficient|")
 
     compact_image = axes[2].imshow(
@@ -727,7 +842,12 @@ def test_chirping_binary_subband_diagnostics_plot(outdir) -> None:
     axes[2].set_title("Returned compact WDM block positioned on the full global channel grid")
     axes[2].set_xlabel("Time [s]")
     axes[2].set_ylabel("Frequency [Hz]")
-    _annotate_metrics(axes[2], snr=wdm_snr, runtime_ms=subband_runtime_ms)
+    _annotate_metrics(
+        axes[2],
+        mf_snr=wdm_mf_snr,
+        diagonal_mf_snr=wdm_diag_mf_snr,
+        runtime_ms=subband_runtime_ms,
+    )
     fig.colorbar(compact_image, ax=axes[2], label="|WDM coefficient|")
 
     axes[3].plot(full_freqs, np.abs(one_sided), color="0.82", linewidth=1.4, label="full rFFT")
@@ -750,7 +870,7 @@ def test_chirping_binary_subband_diagnostics_plot(outdir) -> None:
     axes[3].set_xlabel("Frequency [Hz]")
     axes[3].set_ylabel("Magnitude")
     axes[3].legend(loc="upper right")
-    _annotate_metrics(axes[3], snr=fourier_snr)
+    _annotate_metrics(axes[3], mf_snr=fourier_mf_snr)
 
     fig.savefig(test_outdir / "subband_diagnostics_vertical.png", dpi=140)
     plt.close(fig)

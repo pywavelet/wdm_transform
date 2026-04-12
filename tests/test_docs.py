@@ -1,5 +1,4 @@
 from __future__ import annotations
-
 import os
 import subprocess
 import sys
@@ -9,8 +8,8 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-DOCS_CONFIG = ROOT / "docs" / "mkdocs.yml"
-DOCS_CONFIG_REL = Path("docs") / "mkdocs.yml"
+DOCS_CONFIG = ROOT / "mkdocs.yml"
+DOCS_CONFIG_REL = Path("mkdocs.yml")
 WALKTHROUGH = ROOT / "docs" / "examples" / "wdm_walkthrough.py"
 BENCHMARK_SCRIPT = ROOT / "docs" / "examples" / "generate_benchmark_plot.py"
 
@@ -54,6 +53,24 @@ def test_mkdocs_builds_walkthrough_page(tmp_path: Path) -> None:
     benchmark_html = benchmark_page.read_text(encoding="utf-8")
     assert "checked-in benchmark snapshot" in benchmark_html
     assert "benchmark_runtime.png" in benchmark_html
+
+    study_page = site_dir / "studies" / "toymodels" / "monochrome_stationary_psd" / "index.html"
+    assert study_page.exists()
+
+    study_html = study_page.read_text(encoding="utf-8")
+    assert "Sinusoid in Colored Noise" in study_html
+    assert "outdir_monochrome_stationary_psd/posterior_comparison.png" in study_html
+    assert "jupyter-wrapper" not in study_html
+
+    lisa_page = site_dir / "studies" / "lisa" / "lisa_demo" / "index.html"
+    assert lisa_page.exists()
+
+    lisa_html = lisa_page.read_text(encoding="utf-8")
+    assert "LISA Galactic-Binary Study" in lisa_html
+    assert "lisa_freq_mcmc_assets/local_frequency_bands.png" in lisa_html
+    assert "lisa_wdm_mcmc_assets/wdm_band_fit.png" in lisa_html
+    assert "data_generation.py" in lisa_html
+    assert "jupyter-wrapper" not in lisa_html
 
     api_page = site_dir / "reference" / "api" / "index.html"
     assert api_page.exists()

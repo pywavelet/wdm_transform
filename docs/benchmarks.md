@@ -23,8 +23,9 @@ available backends.
 
 ## Notes
 
-- The default snapshot covers `N = 2048` through `1048576` and uses 7 timed runs per point.
+- The default benchmark range covers `N = 2048` through `33554432` and uses 7 timed runs per point.
+- Refreshing the full default snapshot is now substantially more expensive than before.
 - Each measurement uses one warmup call before timed runs.
 - JAX timings are synchronized before the timer stops, so they include the actual device work.
 - The timing panels show mean runtimes in milliseconds, with a shaded band for one standard deviation.
-- The error panel shows the maximum absolute difference after `inverse_wdm(forward_wdm(x))`.
+- The error panel shows the maximum absolute difference after `from_wdm_to_time(from_time_to_wdm(x))`.

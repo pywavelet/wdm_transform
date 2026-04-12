@@ -4,6 +4,7 @@ from .base import Backend
 
 
 def load_cupy_backend() -> Backend:
+    """Import CuPy and return a :class:`Backend` wrapper for it."""
     try:
         import cupy as cp
         import cupy.fft as cpfft

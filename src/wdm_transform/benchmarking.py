@@ -30,6 +30,11 @@ DEFAULT_N_VALUES = [
     262144,
     524288,
     1048576,
+    2097152,
+    4194304,
+    8388608,
+    16777216,
+    33554432,
 ]
 FIXED_PARAMS = {"a": 0.4, "d": 0.8, "dt": 1.0}
 
@@ -123,7 +128,7 @@ def benchmark_forward(
     backend_data = backend.asarray(signal)
 
     return _measure_runtime(
-        lambda: transforms.forward_wdm(backend_data, nt=nt, nf=nf, **fixed_params),
+        lambda: transforms.from_time_to_wdm(backend_data, nt=nt, nf=nf, **fixed_params),
         num_runs,
     )
 
@@ -142,7 +147,7 @@ def benchmark_inverse(
     backend_coeffs = backend.asarray(coeffs)
 
     return _measure_runtime(
-        lambda: transforms.inverse_wdm(backend_coeffs, **fixed_params),
+        lambda: transforms.from_wdm_to_time(backend_coeffs, **fixed_params),
         num_runs,
     )
 
@@ -158,8 +163,8 @@ def benchmark_roundtrip_error(
     fixed_params = {**FIXED_PARAMS, "backend": backend}
     backend_signal = backend.asarray(signal)
 
-    coeffs = transforms.forward_wdm(backend_signal, nt=nt, nf=nf, **fixed_params)
-    recovered = transforms.inverse_wdm(coeffs, **fixed_params)
+    coeffs = transforms.from_time_to_wdm(backend_signal, nt=nt, nf=nf, **fixed_params)
+    recovered = transforms.from_wdm_to_time(coeffs, **fixed_params)
     _synchronize_result(recovered)
 
     recovered_np = np.asarray(recovered)
@@ -228,7 +233,6 @@ def run_benchmarks(  # pragma: no cover
         results["forward"][backend_name] = {}
         print(f"\nBackend: {backend_name}")
         print("-" * 40)
-
         for n in n_values:
             factorization = find_factorization(n)
             if factorization is None:
@@ -266,7 +270,6 @@ def run_benchmarks(  # pragma: no cover
         results["inverse"][backend_name] = {}
         print(f"\nBackend: {backend_name}")
         print("-" * 40)
-
         for n in n_values:
             factorization = find_factorization(n)
             if factorization is None:
@@ -302,7 +305,6 @@ def run_benchmarks(  # pragma: no cover
         results["error"][backend_name] = {}
         print(f"\nBackend: {backend_name}")
         print("-" * 40)
-
         for n in n_values:
             factorization = find_factorization(n)
             if factorization is None:
@@ -347,21 +349,16 @@ def print_summary(results: dict[str, Any]) -> None:  # pragma: no cover
             print(f"\n{transform_type.upper()} TRANSFORM:")
         print("-" * 40)
 
-        all_n = sorted(
-            {
-                n
-                for backend_data in backends_data.values()
-                for n in backend_data
-            }
-        )
-        header = f"{'N':>10} | " + " | ".join(f"{b:>12}" for b in backends_data)
+        labels = list(backends_data)
+        all_n = sorted({n for records in backends_data.values() for n in records})
+        header = f"{'N':>10} | " + " | ".join(f"{backend:>12}" for backend in labels)
         print(header)
         print("-" * len(header))
 
         for n in all_n:
             row = f"{n:>10} | "
             values = []
-            for backend_name in backends_data:
+            for backend_name in labels:
                 record = backends_data.get(backend_name, {}).get(n)
                 if record is None:
                     values.append(f"{'SKIPPED':>12}")
@@ -406,22 +403,13 @@ def plot_results(  # pragma: no cover
     backend_styles = {
         "numpy": {
             "color": "tab:blue",
-            "linestyle": "-",
-            "marker": "o",
-            "markerfacecolor": "white",
-            "markeredgewidth": 1.8,
             "zorder": 3,
         },
         "jax": {
             "color": "tab:orange",
-            "linestyle": "--",
-            "marker": "s",
-            "markerfacecolor": "tab:orange",
-            "markeredgewidth": 1.2,
             "zorder": 4,
         },
     }
-
     for ax, transform_type in zip(axes, ("forward", "inverse", "error"), strict=True):
         backends_data = results.get(transform_type, {})
         for backend_name, backend_results in backends_data.items():
@@ -432,6 +420,8 @@ def plot_results(  # pragma: no cover
                 "linewidth": 2.2,
                 "markersize": 6.5,
                 "label": backend_name,
+                "linestyle": "-",
+                "marker": "o",
                 **backend_styles.get(backend_name, {}),
             }
             if transform_type == "error":
@@ -507,7 +497,7 @@ Examples:
         nargs="+",
         type=int,
         default=DEFAULT_N_VALUES,
-        help="Input sizes to test (default: 2048 4096 8192 16384)",
+        help="Input sizes to test (default: 2048 through 33554432)",
     )
     parser.add_argument(
         "--runs",

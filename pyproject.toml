@@ -44,11 +44,15 @@ dev = [
     "ruff>=0.6",
 ]
 docs = [
+    "corner>=2.2",
+    "ipywidgets>=8.1",
+    "jax[cpu]>=0.4.30",
     "mkdocs>=1.6",
     "mkdocs-jupyter>=0.25",
     "mkdocs-material>=9.6",
     "mkdocstrings>=1.0",
     "mkdocstrings-python>=2.0",
+    "numpyro>=0.15",
 ]
 
 [tool.setuptools]
@@ -119,3 +123,9 @@ Use one of:
 feat = "MINOR"
 add = "MINOR"
 fix = "PATCH"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
+    "pytest-cov>=7.1.0",
+]

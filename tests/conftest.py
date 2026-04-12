@@ -58,5 +58,3 @@ def backend_name(request: pytest.FixtureRequest) -> str:
 @pytest.fixture
 def backend(backend_name: str) -> Backend:
     return get_backend(backend_name)
-
-

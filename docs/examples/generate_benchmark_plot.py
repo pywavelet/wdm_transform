@@ -46,7 +46,7 @@ def main() -> None:
         nargs="+",
         type=int,
         default=DEFAULT_N_VALUES,
-        help="Input sizes to test (default: 2048 4096 8192 16384)",
+        help="Input sizes to test (default: 2048 through 33554432)",
     )
     parser.add_argument(
         "--runs",

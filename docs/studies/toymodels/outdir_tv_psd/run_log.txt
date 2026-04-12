@@ -1,0 +1,18 @@
+Adjusted WDM tiling from nt=24 to nt=32 so that n_total=2048 factors into an even (nt, nf)=(32, 64) grid.
+Largest off-diagonal absolute correlation: 0.494
+Median off-diagonal absolute correlation: 0.062
+Original WDM grid shape:         (32, 65)
+Fitted interior grid shape:      (30, 63)
+Raw trimmed-power relative err.: 1.491
+Posterior mean relative error:   0.337
+Posterior vs true PSD error:     0.292
+MCMC chains:                     2
+Divergences:                     0
+phi_time: mean=36.90, n_eff=588.6, r_hat=0.997
+phi_freq: mean=36.82, n_eff=328.7, r_hat=1.004
+log_psd[center] at (15, 31): mean=0.17, n_eff=679.7, r_hat=0.997
+log_psd[low_freq] at (15, 12): mean=1.53, n_eff=1274.0, r_hat=0.997
+log_psd[high_freq] at (15, 50): mean=-1.24, n_eff=577.9, r_hat=1.004
+Whitened coefficient mean:       -0.020
+Whitened coefficient variance:   0.966
+Posterior predictive 90% coverage of observed w^2: 0.898

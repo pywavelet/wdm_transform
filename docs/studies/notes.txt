@@ -1,0 +1,117 @@
+Future WDM case notes
+=====================
+
+Why the current examples do not show a strong WDM advantage
+-----------------------------------------------------------
+
+The current docs examples are useful, but they are still relatively easy:
+
+- one dominant monochromatic signal
+- stationary Gaussian noise
+- either a small number of glitches or one contiguous gap
+- exact time-domain handling is still straightforward
+
+In that regime, WDM should not be expected to beat the correct time-domain
+likelihood. At best, it should match the answer while using a simpler local
+approximation.
+
+
+More compelling future case
+---------------------------
+
+Title idea:
+"Monochromatic signal with multiple gaps, transient glitches, and colored noise"
+
+Synthetic setup:
+
+- persistent sinusoidal signal with parameters (A, f0, phi)
+- colored noise rather than white noise
+- several missing intervals with different widths
+- several loud transient glitches, ideally with oscillatory high-frequency content
+- optional slow drift in the background level or PSD
+
+Why this case is harder:
+
+- exact time-domain inference now needs both masking and glitch handling
+- naive FFT treatment is poor because the mask and transients mix frequency bins
+- exact FFT-domain treatment would need dense covariance structure
+- nuisance modeling becomes cumbersome if every glitch is given its own template
+
+Why WDM may help more clearly:
+
+- missing intervals are localized in WDM time bins
+- transient glitches are also localized in WDM time bins, often across many channels
+- the persistent sinusoid remains concentrated in a small set of channels
+- one can exclude or downweight only the contaminated WDM regions instead of
+  building a fully dense global covariance model
+
+
+Good comparison to show
+-----------------------
+
+Compare four inference strategies:
+
+1. Full-information reference
+   Only feasible because the data is synthetic.
+   Use the true glitch and gap model in the likelihood.
+
+2. Masked time-domain approximation
+   Use observed samples only, but ignore explicit glitch modeling.
+
+3. Naive FFT approximation
+   Treat Fourier bins as diagonal even though masking/glitches break that.
+
+4. WDM localized likelihood
+   Detect contaminated WDM regions and exclude or downweight them.
+
+The goal is not "WDM always wins".
+The goal is:
+
+- WDM should outperform naive FFT
+- WDM should approach the masked/full reference
+- WDM should do so with a simpler nuisance treatment
+
+
+Potential WDM workflow
+----------------------
+
+1. Transform data to WDM.
+2. Build a contamination score from:
+   - unusually large coefficient magnitudes
+   - cross-channel coherence in a short time span
+   - mismatch to expected stationary-noise variance
+3. Mark contaminated WDM time-frequency regions.
+4. Either:
+   - exclude those coefficients from the likelihood, or
+   - include them with inflated variance / reduced weight.
+5. Fit the sinusoid using only the remaining WDM support.
+6. Compare posterior width and bias against the other methods.
+
+
+Useful diagnostics to include
+-----------------------------
+
+- contamination map in the WDM grid
+- retained vs excluded WDM support
+- overlap between true signal support and excluded bins
+- posterior comparison for (A, f0, phi)
+- runtime or implementation complexity comparison
+
+
+Variants worth trying
+---------------------
+
+- two nearby sinusoids instead of one
+- chirping signal instead of a monochromatic one
+- nonstationary noise level that changes in time
+- irregular rather than blocky gaps
+- glitch population with a range of durations and carrier frequencies
+
+
+Bottom line
+-----------
+
+The next example should be designed so that the nuisance is genuinely local in
+WDM space but globally awkward in time/FFT space. That is the regime where WDM
+has the best chance to show a real practical advantage instead of only matching
+the easier methods on a toy problem.

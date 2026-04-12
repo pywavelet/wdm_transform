@@ -11,9 +11,35 @@ frequency-domain data, and WDM coefficients.
 - `FrequencySeries`: FFT-domain data with frequency spacing metadata
 - `WDM`: real-valued WDM coefficients plus inverse transforms
 
-## Start Here
+## Docs Structure
 
-- Read the API overview for the object model.
-- Open the WDM walkthrough for an executed example with plots.
-- Check the benchmarks page for a backend runtime snapshot and regeneration command.
-- Use the API overview for the conceptual guide plus live signatures and docstrings pulled from the implementation.
+### Learn
+
+Start here if you want the transform intuition before looking at code:
+
+- [What Is WDM?](guide/what-is-wdm.md)
+- [Windows And Atoms](guide/windows-and-atoms.md)
+- [Reconstruction And Inference](guide/reconstruction-and-inference.md)
+
+### Tutorial
+
+Use the executed walkthrough to see the package API and plots in one place:
+
+- [WDM Walkthrough](examples/wdm_walkthrough.py)
+
+### Case Studies
+
+These are longer worked examples showing how WDM behaves in specific analysis problems:
+
+- [Sinusoid In Colored Noise](studies/toymodels/monochrome_stationary_psd.md)
+- [Time-Varying WDM PSD](studies/toymodels/tv_psd.md)
+- [Deglitching](studies/toymodels/deglitching.md)
+- [Signal With A Gap](studies/toymodels/monochrome_gaps.md)
+
+### Reference
+
+Use these when you want implementation-oriented details:
+
+- [API Overview](guide/api-overview.md)
+- [Package Layout](guide/package-layout.md)
+- [Benchmarks](benchmarks.md)

@@ -1,0 +1,108 @@
+site_name: wdm-transform
+site_description: Experimental object-oriented WDM transform package.
+repo_url: https://github.com/pywavelet/wdm_transform
+repo_name: wdm-transform
+edit_uri: edit/main/docs/
+docs_dir: docs
+site_dir: site
+
+theme:
+  name: material
+  logo: _static/logo.png
+  favicon: _static/logo.png
+  palette:
+    scheme: default
+    primary: white
+    accent: blue grey
+  font:
+    text: Inter
+    code: JetBrains Mono
+  features:
+    - navigation.sections
+    - navigation.top
+    - toc.follow
+    - search.suggest
+    - search.highlight
+    - content.action.edit
+    - content.action.view
+    - content.code.copy
+  icon:
+    repo: fontawesome/brands/github
+
+extra_css:
+  - stylesheets/extra.css
+
+extra_javascript:
+  - javascripts/mathjax.js
+  - https://cdnjs.cloudflare.com/ajax/libs/mathjax/3.2.2/es5/tex-mml-chtml.min.js
+
+plugins:
+  - search
+  - mkdocstrings:
+      default_handler: python
+      handlers:
+        python:
+          paths:
+            - src
+          options:
+            docstring_style: google
+            docstring_section_style: list
+            group_by_category: false
+            heading_level: 2
+            members_order: source
+            separate_signature: true
+            show_root_heading: true
+            show_root_full_path: false
+            show_signature_annotations: true
+            show_source: true
+  - mkdocs-jupyter:
+      include:
+        - "*.py"
+        - "*.ipynb"
+      ignore:
+        - "__pycache__/*"
+        - "examples/generate_benchmark_plot.py"
+        - "examples/generate_wdm_assets.py"
+        - "studies/*.py"
+        - "studies/**/*.py"
+      execute: true
+      include_source: true
+      show_input: true
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - pymdownx.details
+  - pymdownx.arithmatex:
+      generic: true
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.superfences
+  - pymdownx.snippets:
+      base_path: ["."]       # relative to where mkdocs is run (repo root)
+      check_paths: true
+  - toc:
+      permalink: true
+
+nav:
+  - Home: index.md
+  - Fundamentals:
+      - What Is WDM?: guide/what-is-wdm.md
+      - Windows And Atoms: guide/windows-and-atoms.md
+      - Reconstruction And Inference: guide/reconstruction-and-inference.md
+  - Tutorial & Walkthrough: examples/wdm_walkthrough.py
+  - Examples:
+      - Basic Signal Processing:
+          - Sinusoid In Colored Noise: studies/toymodels/monochrome_stationary_psd.md
+          - Signal With A Gap: studies/toymodels/monochrome_gaps.md
+          - Deglitching: studies/toymodels/deglitching.md
+      - Advanced Applications:
+          - LISA GB Inference: studies/lisa/lisa_demo.md
+          - Monochromatic Signal in Time-Varying Noise: studies/toymodels/monochrome_tv_psd.md
+          - Time-Varying WDM PSD: studies/toymodels/tv_psd.md
+  - API Reference:
+      - API Overview: guide/api-overview.md
+      - Package Layout: guide/package-layout.md
+      - Benchmarks: benchmarks.md
