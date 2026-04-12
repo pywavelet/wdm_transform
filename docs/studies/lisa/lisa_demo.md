@@ -18,7 +18,8 @@ here.
 2. `lisa_freq_mcmc.py` loads that cache and performs two independent local frequency-domain fits
    with a narrow-band Whittle likelihood.
 3. `lisa_wdm_mcmc.py` loads the same cache, transforms the injected data to WDM coefficients, and
-   performs a joint two-source fit on a restricted time-frequency band.
+   performs two independent per-source fits on narrow WDM bands (mirroring the frequency-domain
+   approach). Uses $n_t = 4$ by default for fine frequency resolution ($\Delta f \approx 63$ nHz).
 
 ## How To Run
 
@@ -143,31 +144,54 @@ where each $g_{n,m}$ is a localized Wilson-Daubechies-Meyer atom centered near t
 frequency bin $m$.
 
 The full likelihood would require the covariance of those coefficients. This study uses a diagonal
-approximation calibrated from synthetic stationary-noise draws:
+approximation with analytic per-pixel variance $\Sigma_{n,m} = S_n(f_m) \cdot f_{\rm Nyq}$:
 
 $$
-\Sigma_{n,m} \approx \mathrm{Var}[w_{n,m}]
-\quad\text{with}\quad
 \log p(w \mid \theta) \propto -\frac{1}{2}
 \sum_{n,m \in \mathcal{B}} \left[
 \frac{(w_{n,m} - h_{n,m}(\theta))^2}{\Sigma_{n,m}} + \log(2\pi \Sigma_{n,m})
 \right]
 $$
 
-Unlike the FFT fit, the WDM run models both binaries jointly on one shared band because they occupy
-the same localized time-frequency patch once projected into the WDM grid.
+Like the frequency-domain run, each binary is fit independently on a narrow per-source band (the
+two GBs are separated by 52.6 µHz, much wider than either source's bandwidth).
+
+### Tiling choice and expected posterior widths
+
+The WDM tiling parameter $n_t$ sets the frequency channel spacing
+$\Delta f_{\rm wdm} = n_t / (2 T_{\rm obs})$.
+
+| $n_t$ | $\Delta f_{\rm wdm}$ | WDM channels in $\pm$8 µHz band | expected $\sigma_{f_0}$ vs freq-domain |
+|--------|----------------------|----------------------------------|----------------------------------------|
+| 128    | 2.0 µHz              | ~4                               | ~$\sqrt{128/2} \approx 8\times$ wider |
+| 16     | 0.25 µHz             | ~64                              | ~$2\times$ wider                       |
+| 4      | 63 nHz               | ~256                             | ~$\sqrt{2} \approx 1.4\times$ wider   |
+| 2      | 32 nHz ≈ rfft bin    | ~512                             | $\approx \sqrt{2}\times$ wider (minimum achievable) |
+
+The irreducible $\sqrt{2}$ factor arises because each WDM pixel retains only the **real part** of
+its analytic coefficient ($\chi^2_1$ noise) whereas the frequency-domain Whittle likelihood uses
+the full **complex** residual ($\chi^2_2$ noise). The per-pixel information loss is exactly a
+factor of 2 in Fisher, giving $\sqrt{2}$ wider marginal posteriors for phase-sensitive parameters
+($f_0$, $\phi_0$) at matched SNR. Amplitude ($A$) posteriors are unaffected since they are
+determined by total power, not phase.
+
+The scripts use $n_t = 4$ by default, giving ~256 WDM channels over the waveform bandwidth —
+nearly matching the 512 complex rfft bins of the frequency-domain inference — with posteriors
+expected to be ~$\sqrt{2} \approx 1.4\times$ wider in $f_0$ and $\phi_0$.
 
 ### Results
 
-The first plot shows the injected data on the WDM grid and the selected analysis band.
+The first plot shows the injected data on the WDM grid (rendered at $n_t = 128$ for readability)
+with the narrow per-source analysis bands highlighted.
 
 ![WDM overview](../../_static/lisa_wdm_mcmc_assets/wdm_overview.png)
 
-The band-limited comparison shows the observed WDM coefficients next to the posterior median model.
+The band-limited comparison shows the observed WDM coefficients next to the posterior median model
+for each source.
 
 ![Band-limited WDM fit](../../_static/lisa_wdm_mcmc_assets/wdm_band_fit.png)
 
-The joint fit still produces source-level posteriors, shown here as one corner plot per binary.
+Independent per-source posterior corner plots (one per binary):
 
 ![WDM-domain GB 1 corner](../../_static/lisa_wdm_mcmc_assets/gb1_corner.png)
 

@@ -127,15 +127,15 @@ def source_a_band_jax(params: jnp.ndarray, kmin: int, kmax: int) -> jnp.ndarray:
 class BandData:
     label: str
     freqs: np.ndarray
-    data: np.ndarray          # complex frequency-domain data in band
-    noise_psd: np.ndarray     # one-sided noise PSD in band
-    fixed_params: np.ndarray  # full 8-param vector (extrinsic held fixed)
+    data: np.ndarray
+    noise_psd: np.ndarray
+    fixed_params: np.ndarray
     t_obs: float
     band_kmin: int
     band_kmax: int
-    prior_center: np.ndarray  # [logf0, logfdot, logA]
-    prior_scale: np.ndarray   # scales for [logf0, logfdot, logA, delta_phi_c]
-    phase_ref: np.ndarray     # [phi0_ref, phi_c_ref]
+    prior_center: np.ndarray
+    prior_scale: np.ndarray
+    phase_ref: np.ndarray
     logf0_bounds: tuple[float, float]
     logfdot_bounds: tuple[float, float]
     logA_bounds: tuple[float, float]
@@ -213,43 +213,27 @@ for i, src in enumerate(SOURCE_PARAMS):
     kmax = min(k_center + jgb.n, n_freq)
     band_freqs = freqs[kmin:kmax]
     noise_band = np.maximum(np.interp(band_freqs, freqs, noise_psd_full), 1e-60)
-    
+
     h = source_a_band_jax(jnp.asarray(src, dtype=jnp.float64), int(kmin), int(kmax))
-    snr = matched_filter_snr_rfft(
-        np.asarray(h), noise_band, band_freqs, dt=dt
-    )
+    snr = matched_filter_snr_rfft(np.asarray(h), noise_band, band_freqs, dt=dt)
     snrs_optimal.append(float(snr))
     print(f"  GB {i + 1}: SNR = {snr:.1f}")
 
-# ── NUTS per source ───────────────────────────────────────────────────────────
-
 
 def sample_source(band: BandData, *, seed: int = 0) -> MCMC:
-    """Run NUTS for one source.
-
-    ``data_j`` and ``psd_j`` are captured once as JAX constants to avoid
-    redundant conversion inside the likelihood at every NUTS step.
-    """
+    """Run NUTS for one source."""
     data_j = jnp.asarray(band.data, dtype=jnp.complex128)
     psd_j = jnp.asarray(band.noise_psd, dtype=jnp.float64)
     dt_j = jnp.asarray(dt, dtype=jnp.float64)
     df_j = jnp.asarray(df, dtype=jnp.float64)
 
     def model():
-        # Scale parameters to have O(1) posterior variance. This prevents NUTS mass-matrix 
-        # adaptation from hitting regularization floors which causes max_tree_depth stalls.
         snr_guess = 300.0
-        
-        # logf0: analytical Fisher std on f0 is ~2e-10 Hz. For f0=1e-3, d(logf0) ~ 2e-7
         scale_logf0 = 2e-7
-        # logA: fractional amplitude error is ~ 1/SNR
         scale_logA = 1.0 / snr_guess
-        # phase: error is ~ 1/SNR
         scale_phi_c = 1.0 / snr_guess
-        # logfdot: prior dominated, bounds span O(1).
         scale_logfdot = band.prior_scale[1]
 
-        # Use unconstrained variables with unit Normal priors
         del_logf0 = numpyro.sample("del_logf0", dist.Normal(0.0, 1.0))
         del_logfdot = numpyro.sample("del_logfdot", dist.Normal(0.0, 1.0))
         del_logA = numpyro.sample("del_logA", dist.Normal(0.0, 1.0))
@@ -260,7 +244,6 @@ def sample_source(band: BandData, *, seed: int = 0) -> MCMC:
         logA = band.prior_center[2] + scale_logA * del_logA
         delta_phi_c = scale_phi_c * del_phi_c
 
-        # Add physical prior log-probabilities 
         numpyro.factor("prior_logf0", dist.TruncatedNormal(
             loc=band.prior_center[0], scale=band.prior_scale[0],
             low=band.logf0_bounds[0], high=band.logf0_bounds[1]).log_prob(logf0))
@@ -344,7 +327,6 @@ for i, band in enumerate(BANDS):
         np.asarray(s["phi0"]),
     ])
 
-    # SNR computation for samples
     samples_i_full = np.tile(SOURCE_PARAMS[i], (samples_i.shape[0], 1))
     samples_i_full[:, 0] = samples_i[:, 0]
     samples_i_full[:, 1] = samples_i[:, 1]
@@ -367,10 +349,8 @@ for i, band in enumerate(BANDS):
 
     snr_samples = np.asarray(_get_snrs(jnp.array(samples_i_full)))
     samples_i = np.column_stack([samples_i, snr_samples])
-    
     all_samples.append(samples_i)
 
-# ── Posterior summaries and coverage ─────────────────────────────────────────
 PARAM_NAMES = ["f0 [Hz]", "fdot [Hz/s]", "A", "phi0 [rad]", "SNR"]
 
 for i, (band, samples_i) in enumerate(zip(BANDS, all_samples, strict=True)):
@@ -385,13 +365,12 @@ for i, (band, samples_i) in enumerate(zip(BANDS, all_samples, strict=True)):
     print_posterior_summary(samples_i, truth_i, PARAM_NAMES)
     check_posterior_coverage(samples_i, truth_i, PARAM_NAMES)
 
-# ── Plots ─────────────────────────────────────────────────────────────────────
 fig, axes = plt.subplots(2, 1, figsize=(11, 7), constrained_layout=True)
 for ax, band, samples in zip(axes, BANDS, all_samples, strict=True):
     theta_med = np.median(samples, axis=0)
     params_med = band.fixed_params.copy()
     params_med[[0, 1, 2, 7]] = [theta_med[0], theta_med[1], theta_med[2],
-                                  wrap_phase(theta_med[3]) % (2 * np.pi)]
+                                wrap_phase(theta_med[3]) % (2 * np.pi)]
     model_med = source_a_band(params_med, band.band_kmin, band.band_kmax)
 
     ax.plot(band.freqs, np.abs(band.data), lw=1.0, label="Data")
@@ -416,7 +395,6 @@ for i, (samples_i, stem) in enumerate(
     )
     save_figure(fig, FIGURE_OUTPUT_DIR, stem)
 
-# ── Save posteriors ───────────────────────────────────────────────────────────
 _out_path = FIGURE_OUTPUT_DIR / "posteriors.npz"
 np.savez(
     _out_path,
