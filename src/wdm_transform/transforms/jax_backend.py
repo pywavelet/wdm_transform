@@ -14,11 +14,13 @@ JAX-specific implementation choices.
 
 Coefficient layout
 ------------------
-Same as ``xp_backend``: shape ``(nt, nf + 1)`` with all-real entries.
+Same as ``xp_backend``: outputs are returned canonically with shape
+``(batch, nt, nf + 1)`` and all-real entries. Legacy unbatched inputs are
+accepted by the public entry points and normalized to a singleton batch.
 
-* ``W[:, 0]``       — DC edge channel     (m = 0)
-* ``W[:, 1:nf]``    — interior channels   (m = 1 … nf−1)
-* ``W[:, nf]``      — Nyquist edge channel (m = nf)
+* ``W[..., 0]``       — DC edge channel     (m = 0)
+* ``W[..., 1:nf]``    — interior channels   (m = 1 … nf−1)
+* ``W[..., nf]``      — Nyquist edge channel (m = nf)
 """
 
 from __future__ import annotations
@@ -50,14 +52,14 @@ def _cnm_jax(n: Any, m: Any) -> Any:
 
 def _project_to_real_signal_spectrum_impl(spectrum: jnp.ndarray) -> jnp.ndarray:
     """Return the discrete Fourier coefficients of ``real(ifft(spectrum))``."""
-    n_total = spectrum.shape[0]
+    n_total = spectrum.shape[-1]
     mirror = (-jnp.arange(n_total)) % n_total
-    return 0.5 * (spectrum + jnp.conjugate(spectrum[mirror]))
+    return 0.5 * (spectrum + jnp.conjugate(spectrum[..., mirror]))
 
 
 @partial(jit, static_argnames=("nt", "nf"))
-def _from_spectrum_to_wdm_impl(
-    x_fft: jnp.ndarray,
+def _from_spectrum_to_wdm_batch_impl(
+    x_fft_batch: jnp.ndarray,
     window: jnp.ndarray,
     nt: int,
     nf: int,
@@ -73,12 +75,12 @@ def _from_spectrum_to_wdm_impl(
     2. Batch-multiply by the phi-window and batch-IFFT.
     3. Apply the phase correction C_{n,m} via a vectorised outer product.
 
-    Returns shape ``(nt, nf + 1)`` with all-real coefficients.
+    Returns shape ``(batch, nt, nf + 1)`` with all-real coefficients.
 
     Parameters
     ----------
-    x_fft : jnp.ndarray, shape (N,)
-        Complex-valued Fourier-domain signal.
+    x_fft_batch : jnp.ndarray, shape (batch, N)
+        Complex-valued Fourier-domain signals.
     window : jnp.ndarray, shape (nt,)
         Precomputed phi-window of length nt.
     nt, nf : int
@@ -90,14 +92,12 @@ def _from_spectrum_to_wdm_impl(
     sqrt2 = jnp.sqrt(2.0)
 
     # --- DC edge channel (m = 0) ---
-    block = x_fft[1:half] * window[1:half]
+    block = x_fft_batch[:, 1:half] * window[None, 1:half]
     larr = jnp.arange(1, half)
+    dc_phase = jnp.exp(4j * jnp.pi * larr[None, :] * narr[:, None] / nt)
     coeffs_dc = jnp.real(
-        jnp.sum(
-            jnp.exp(4j * jnp.pi * larr[None, :] * narr[:, None] / nt) * block[None, :],
-            axis=1,
-        )
-        + x_fft[0] * window[0] / 2.0
+        jnp.einsum("bl,nl->bn", block, dc_phase)
+        + x_fft_batch[:, 0][:, None] * window[0] / 2.0
     ) / (nt * nf)
 
     # --- Interior channels (m = 1…nf−1), fully vectorised ---
@@ -105,33 +105,31 @@ def _from_spectrum_to_wdm_impl(
     upper = mid_m[:, None] * half + jnp.arange(half)[None, :]   # shape (nf-1, half)
     lower = (mid_m[:, None] - 1) * half + jnp.arange(half)[None, :]
     mid_indices = jnp.concatenate([upper, lower], axis=1)        # shape (nf-1, nt)
-    mid_blocks = x_fft[mid_indices] * window[None, :]            # broadcast window
-    mid_times = jnp.fft.ifft(mid_blocks, axis=1).T               # shape (nt, nf-1)
+    mid_blocks = x_fft_batch[:, mid_indices] * window[None, None, :]
+    mid_times = jnp.fft.ifft(mid_blocks, axis=-1).transpose(0, 2, 1)
     mid_phase = jnp.conjugate(_cnm_jax(narr[:, None], mid_m[None, :]))
-    coeffs_mid = (sqrt2 / nf) * jnp.real(mid_phase * mid_times)
+    coeffs_mid = (sqrt2 / nf) * jnp.real(mid_times * mid_phase[None, :, :])
 
     # --- Nyquist edge channel (m = nf) ---
-    block = x_fft[n_total // 2 - half:n_total // 2] * window[-half:]
+    block = x_fft_batch[:, n_total // 2 - half:n_total // 2] * window[None, -half:]
     larr = jnp.arange(n_total // 2 - half, n_total // 2)
+    nyq_phase = jnp.exp(4j * jnp.pi * larr[None, :] * narr[:, None] / nt)
     coeffs_nyq = jnp.real(
-        jnp.sum(
-            jnp.exp(4j * jnp.pi * larr[None, :] * narr[:, None] / nt) * block[None, :],
-            axis=1,
-        )
-        + x_fft[n_total // 2] * window[0] / 2.0
+        jnp.einsum("bl,nl->bn", block, nyq_phase)
+        + x_fft_batch[:, n_total // 2][:, None] * window[0] / 2.0
     ) / (nt * nf)
 
-    # Assemble (nt, nf+1): [DC | interior | Nyquist]
+    # Assemble (batch, nt, nf+1): [DC | interior | Nyquist]
     return jnp.concatenate([
-        coeffs_dc[:, None],
+        coeffs_dc[:, :, None],
         coeffs_mid,
-        coeffs_nyq[:, None],
-    ], axis=1)
+        coeffs_nyq[:, :, None],
+    ], axis=2)
 
 
 @partial(jit, static_argnames=("nt", "nf"))
-def _from_wdm_to_spectrum_impl(
-    w: jnp.ndarray,
+def _from_wdm_to_spectrum_batch_impl(
+    w_batch: jnp.ndarray,
     window: jnp.ndarray,
     nt: int,
     nf: int,
@@ -149,7 +147,7 @@ def _from_wdm_to_spectrum_impl(
 
     Parameters
     ----------
-    w : jnp.ndarray, shape (nt, nf + 1)
+    w_batch : jnp.ndarray, shape (batch, nt, nf + 1)
         Real-valued WDM coefficients.
     window : jnp.ndarray, shape (nt,)
         Precomputed phi-window.
@@ -158,54 +156,49 @@ def _from_wdm_to_spectrum_impl(
     """
     n_total = nt * nf
     half = nt // 2
-    coeffs_dc = w[:, 0]
-    coeffs_nyq = w[:, nf]
+    coeffs_dc = w_batch[:, :, 0]
+    coeffs_nyq = w_batch[:, :, nf]
+    batch_idx = jnp.arange(w_batch.shape[0])[:, None, None]
 
     # Modulate and FFT along the time axis: y[n,m] = C_{n,m} · W[n,m] · nf/√2
     n_idx = jnp.arange(nt)[:, None]
     m_idx = jnp.arange(1, nf)[None, :]
-    ylm = _cnm_jax(n_idx, m_idx) * w[:, 1:nf] * nf / jnp.sqrt(2.0)
-    spectrum_blocks = jnp.fft.fft(ylm, axis=0)
+    ylm = _cnm_jax(n_idx, m_idx)[None, :, :] * w_batch[:, :, 1:nf] * nf / jnp.sqrt(2.0)
+    spectrum_blocks = jnp.fft.fft(ylm, axis=1)
 
-    x_recon = jnp.zeros(n_total, dtype=jnp.complex128)
+    x_recon = jnp.zeros((w_batch.shape[0], n_total), dtype=jnp.complex128)
     narr = jnp.arange(nt)
 
     # --- DC edge ---
     larr = jnp.arange(1, half)
-    x_recon = x_recon.at[1:half].add(
-        jnp.sum(
-            coeffs_dc[:, None]
-            * jnp.exp(-4j * jnp.pi * narr[:, None] * larr[None, :] / nt),
-            axis=0,
-        )
+    dc_phase = jnp.exp(-4j * jnp.pi * narr[:, None] * larr[None, :] / nt)
+    x_recon = x_recon.at[:, 1:half].add(
+        jnp.einsum("bn,nl->bl", coeffs_dc, dc_phase)
         * nf
-        * window[1:half]
+        * window[None, 1:half]
     )
-    x_recon = x_recon.at[0].add(jnp.sum(coeffs_dc) * nf * window[0] / 2.0)
+    x_recon = x_recon.at[:, 0].add(jnp.sum(coeffs_dc, axis=1) * nf * window[0] / 2.0)
 
     # --- Interior channels: vectorised scatter-add ---
-    mid_blocks = spectrum_blocks.T * window[None, :]
+    mid_blocks = spectrum_blocks.transpose(0, 2, 1) * window[None, None, :]
     shifted_blocks = jnp.concatenate(
-        [mid_blocks[:, half:], mid_blocks[:, :half]],
-        axis=1,
+        [mid_blocks[:, :, half:], mid_blocks[:, :, :half]],
+        axis=2,
     )
-    mid_indices = (
-        (jnp.arange(1, nf)[:, None] - 1) * half + jnp.arange(nt)[None, :]
-    ).reshape(-1)
-    x_recon = x_recon.at[mid_indices].add(shifted_blocks.reshape(-1))
+    mid_indices = (jnp.arange(1, nf)[:, None] - 1) * half + jnp.arange(nt)[None, :]
+    x_recon = x_recon.at[batch_idx, mid_indices[None, :, :]].add(shifted_blocks)
 
     # --- Nyquist edge ---
     larr = jnp.arange(n_total // 2 - half, n_total // 2)
-    x_recon = x_recon.at[n_total // 2 - half:n_total // 2].add(
-        jnp.sum(
-            coeffs_nyq[:, None]
-            * jnp.exp(-4j * jnp.pi * narr[:, None] * larr[None, :] / nt),
-            axis=0,
-        )
+    nyq_phase = jnp.exp(-4j * jnp.pi * narr[:, None] * larr[None, :] / nt)
+    x_recon = x_recon.at[:, n_total // 2 - half:n_total // 2].add(
+        jnp.einsum("bn,nl->bl", coeffs_nyq, nyq_phase)
         * nf
-        * window[-half:]
+        * window[None, -half:]
     )
-    x_recon = x_recon.at[n_total // 2].add(jnp.sum(coeffs_nyq) * nf * window[0] / 2.0)
+    x_recon = x_recon.at[:, n_total // 2].add(
+        jnp.sum(coeffs_nyq, axis=1) * nf * window[0] / 2.0
+    )
 
     return x_recon / (nf / 2.0)
 
@@ -231,7 +224,8 @@ def from_time_to_wdm(
     This entry point validates inputs, builds the phi-window on the host,
     converts it to a JAX array, and dispatches to the JIT-compiled kernel.
 
-    Returns shape ``(nt, nf + 1)`` with all-real coefficients.
+    Returns shape ``(batch, nt, nf + 1)``. Rank-1 inputs are normalized to a
+    singleton leading batch axis.
     """
     validate_transform_shape(nt, nf)
     validate_window_parameter(a)
@@ -239,17 +233,19 @@ def from_time_to_wdm(
     n_total = nt * nf
     xp = backend.xp
     samples = backend.asarray(data, dtype=xp.complex128)
-    if samples.ndim != 1:
-        raise ValueError("Input time-domain data must be one-dimensional.")
-    if int(samples.shape[0]) != n_total:
-        raise ValueError(f"Input length {samples.shape[0]} must equal nt*nf={n_total}.")
+    if samples.ndim not in (1, 2):
+        raise ValueError("Input time-domain data must be one- or two-dimensional.")
+    if samples.ndim == 1:
+        samples = samples[None, :]
+    if int(samples.shape[-1]) != n_total:
+        raise ValueError(f"Input length {samples.shape[-1]} must equal nt*nf={n_total}.")
 
-    spectrum = backend.asarray(backend.fft.fft(samples), dtype=xp.complex128)
+    spectrum = backend.asarray(backend.fft.fft(samples, axis=-1), dtype=xp.complex128)
     window = jnp.asarray(
         phi_window(backend, nt, nf, dt, a, d),
         dtype=jnp.complex128,
     )
-    return _from_spectrum_to_wdm_impl(spectrum, window, nt, nf)
+    return _from_spectrum_to_wdm_batch_impl(spectrum, window, nt, nf)
 
 
 def from_freq_to_wdm(
@@ -269,17 +265,19 @@ def from_freq_to_wdm(
     n_total = nt * nf
     xp = backend.xp
     spectrum = backend.asarray(data, dtype=xp.complex128)
-    if spectrum.ndim != 1:
-        raise ValueError("Input frequency-domain data must be one-dimensional.")
-    if int(spectrum.shape[0]) != n_total:
-        raise ValueError(f"Input length {spectrum.shape[0]} must equal nt*nf={n_total}.")
+    if spectrum.ndim not in (1, 2):
+        raise ValueError("Input frequency-domain data must be one- or two-dimensional.")
+    if spectrum.ndim == 1:
+        spectrum = spectrum[None, :]
+    if int(spectrum.shape[-1]) != n_total:
+        raise ValueError(f"Input length {spectrum.shape[-1]} must equal nt*nf={n_total}.")
 
     projected = _project_to_real_signal_spectrum_impl(spectrum)
     window = jnp.asarray(
         phi_window(backend, nt, nf, dt, a, d),
         dtype=jnp.complex128,
     )
-    return _from_spectrum_to_wdm_impl(projected, window, nt, nf)
+    return _from_spectrum_to_wdm_batch_impl(projected, window, nt, nf)
 
 
 def from_wdm_to_time(
@@ -293,13 +291,16 @@ def from_wdm_to_time(
     """Inverse WDM transform (JAX backend).
 
     See ``xp_backend.from_wdm_to_time`` for the full mathematical description.
-    Accepts shape ``(nt, nf + 1)``.
+    Accepts shape ``(nt, nf + 1)`` or ``(batch, nt, nf + 1)`` and returns
+    the canonical batch-first shape ``(batch, nt * nf)``.
     """
     w = backend.asarray(coeffs, dtype=jnp.float64)
-    if w.ndim != 2:
-        raise ValueError("WDM coefficients must be a two-dimensional array.")
+    if w.ndim not in (2, 3):
+        raise ValueError("WDM coefficients must be a two- or three-dimensional array.")
+    if w.ndim == 2:
+        w = w[None, :, :]
 
-    nt, ncols = (int(dim) for dim in w.shape)
+    nt, ncols = (int(dim) for dim in w.shape[-2:])
     nf = ncols - 1
     validate_transform_shape(nt, nf)
     validate_window_parameter(a)
@@ -308,8 +309,8 @@ def from_wdm_to_time(
         phi_window(backend, nt, nf, dt, a, d),
         dtype=jnp.complex128,
     )
-    spectrum = _from_wdm_to_spectrum_impl(w, window, nt, nf)
-    return jnp.real(jnp.fft.ifft(spectrum))
+    spectrum = _from_wdm_to_spectrum_batch_impl(w, window, nt, nf)
+    return jnp.real(jnp.fft.ifft(spectrum, axis=-1))
 
 
 def from_wdm_to_freq(
@@ -322,10 +323,12 @@ def from_wdm_to_freq(
 ) -> Any:
     """Frequency-domain reconstruction from WDM coefficients (JAX backend)."""
     w = backend.asarray(coeffs, dtype=jnp.float64)
-    if w.ndim != 2:
-        raise ValueError("WDM coefficients must be a two-dimensional array.")
+    if w.ndim not in (2, 3):
+        raise ValueError("WDM coefficients must be a two- or three-dimensional array.")
+    if w.ndim == 2:
+        w = w[None, :, :]
 
-    nt, ncols = (int(dim) for dim in w.shape)
+    nt, ncols = (int(dim) for dim in w.shape[-2:])
     nf = ncols - 1
     validate_transform_shape(nt, nf)
     validate_window_parameter(a)
@@ -334,5 +337,5 @@ def from_wdm_to_freq(
         phi_window(backend, nt, nf, dt, a, d),
         dtype=jnp.complex128,
     )
-    analytic = _from_wdm_to_spectrum_impl(w, window, nt, nf)
+    analytic = _from_wdm_to_spectrum_batch_impl(w, window, nt, nf)
     return _project_to_real_signal_spectrum_impl(analytic)

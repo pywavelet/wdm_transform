@@ -11,12 +11,13 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True)
 class TimeSeries:
-    """One-dimensional sampled time-domain data.
+    """Sampled time-domain data.
 
     Parameters
     ----------
     data : array_like
-        Sample values on a uniform time grid.
+        Sample values on a uniform time grid with shape ``(n,)`` or
+        ``(batch, n)``. Stored internally as ``(batch, n)``.
     dt : float
         Time spacing between adjacent samples.
     backend : Backend
@@ -31,23 +32,30 @@ class TimeSeries:
         backend = get_backend(self.backend)
         data = backend.asarray(self.data)
 
-        if data.ndim != 1:
-            raise ValueError("TimeSeries data must be one-dimensional.")
+        if data.ndim not in (1, 2):
+            raise ValueError("TimeSeries data must be one- or two-dimensional.")
         if self.dt <= 0:
             raise ValueError("dt must be positive.")
+        if data.ndim == 1:
+            data = data[None, :]
 
         object.__setattr__(self, "backend", backend)
         object.__setattr__(self, "data", data)
 
     def __repr__(self) -> str:
         return (
-            f"TimeSeries(n={self.n}, dt={self.dt}, df={self.df}, "
+            f"TimeSeries(batch_size={self.batch_size}, n={self.n}, dt={self.dt}, df={self.df}, "
             f"fs={self.fs}, nyquist={self.nyquist}, duration={self.duration})"
         )
 
     @property
     def n(self) -> int:
-        """Number of samples."""
+        """Number of samples per series."""
+        return int(self.data.shape[-1])
+
+    @property
+    def batch_size(self) -> int | None:
+        """Leading batch size."""
         return int(self.data.shape[0])
 
     @property
@@ -85,7 +93,7 @@ class TimeSeries:
         The output keeps the same backend and uses the Fourier spacing implied
         by ``self.dt``.
         """
-        transformed = self.backend.fft.fft(self.data)
+        transformed = self.backend.fft.fft(self.data, axis=-1)
         return FrequencySeries(transformed, df=self.df, backend=self.backend)
 
     def to_wdm(
@@ -110,12 +118,13 @@ class TimeSeries:
 
 @dataclass(frozen=True)
 class FrequencySeries:
-    """One-dimensional FFT-domain data with spacing metadata.
+    """FFT-domain data with spacing metadata.
 
     Parameters
     ----------
     data : array_like
-        Spectrum samples on the discrete Fourier grid.
+        Spectrum samples on the discrete Fourier grid with shape ``(n,)`` or
+        ``(batch, n)``. Stored internally as ``(batch, n)``.
     df : float
         Frequency spacing between adjacent Fourier bins.
     backend : Backend
@@ -130,23 +139,30 @@ class FrequencySeries:
         backend = get_backend(self.backend)
         data = backend.asarray(self.data)
 
-        if data.ndim != 1:
-            raise ValueError("FrequencySeries data must be one-dimensional.")
+        if data.ndim not in (1, 2):
+            raise ValueError("FrequencySeries data must be one- or two-dimensional.")
         if self.df <= 0:
             raise ValueError("df must be positive.")
+        if data.ndim == 1:
+            data = data[None, :]
 
         object.__setattr__(self, "backend", backend)
         object.__setattr__(self, "data", data)
 
     def __repr__(self) -> str:
         return (
-            f"FrequencySeries(n={self.n}, df={self.df}, dt={self.dt}, "
+            f"FrequencySeries(batch_size={self.batch_size}, n={self.n}, df={self.df}, dt={self.dt}, "
             f"fs={self.fs}, nyquist={self.nyquist}, duration={self.duration})"
         )
 
     @property
     def n(self) -> int:
-        """Number of Fourier bins."""
+        """Number of Fourier bins per series."""
+        return int(self.data.shape[-1])
+
+    @property
+    def batch_size(self) -> int | None:
+        """Leading batch size."""
         return int(self.data.shape[0])
 
     @property
@@ -183,7 +199,7 @@ class FrequencySeries:
             If ``True``, discard any residual imaginary part after the inverse
             FFT and return a real-valued series.
         """
-        recovered = self.backend.fft.ifft(self.data)
+        recovered = self.backend.fft.ifft(self.data, axis=-1)
         if real:
             recovered = self.backend.xp.real(recovered)
         return TimeSeries(recovered, dt=self.dt, backend=self.backend)

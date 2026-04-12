@@ -33,6 +33,40 @@ def _to_numpy(array: Any) -> np.ndarray:
     return np.asarray(array)
 
 
+def _batched_axes(
+    *,
+    ax: Any | None,
+    batch_size: int,
+    sharex: bool = False,
+    sharey: bool = False,
+) -> tuple[Any, np.ndarray]:
+    plt = _get_pyplot()
+    if ax is None:
+        fig, axes = plt.subplots(
+            batch_size,
+            1,
+            squeeze=False,
+            sharex=sharex,
+            sharey=sharey,
+        )
+        return fig, axes[:, 0]
+
+    axes = np.asarray(ax, dtype=object)
+    if axes.ndim == 0:
+        if batch_size == 1:
+            return axes.item().figure, np.array([axes.item()], dtype=object)
+        raise ValueError(
+            "Batched plotting requires one axis per batch element when `ax` is provided."
+        )
+
+    flat_axes = axes.reshape(-1)
+    if flat_axes.size != batch_size:
+        raise ValueError(
+            f"Batched plotting expected {batch_size} axes, got {flat_axes.size}."
+        )
+    return flat_axes[0].figure, flat_axes
+
+
 def _fmt_time_axis(
     t: np.ndarray,
     axis: Any,
@@ -82,13 +116,25 @@ def plot_time_series(
     **kwargs: Any,
 ) -> tuple[Any, Any]:
     """Plot a time-domain series against its sample times."""
+    data = _to_numpy(series.data)
+    if data.ndim == 2:
+        fig, axes = _batched_axes(ax=ax, batch_size=data.shape[0], sharex=True)
+        times = _to_numpy(series.times)
+        for idx, axis in enumerate(axes):
+            axis.plot(times, data[idx], label=label, **kwargs)
+            axis.set_ylabel("Amplitude")
+            axis.set_title(f"Batch {idx}")
+            _fmt_time_axis(times, axis)
+        fig.tight_layout()
+        return fig, axes
+
     plt = _get_pyplot()
     if ax is None:
         fig, axis = plt.subplots()
     else:
         fig, axis = ax.figure, ax
     times = _to_numpy(series.times)
-    axis.plot(times, _to_numpy(series.data), label=label, **kwargs)
+    axis.plot(times, data, label=label, **kwargs)
     axis.set_ylabel("Amplitude")
     _fmt_time_axis(times, axis)
     return fig, axis
@@ -107,6 +153,26 @@ def plot_frequency_series(
 
     By default, only non-negative frequencies are shown.
     """
+    data = _to_numpy(series.data)
+    if data.ndim == 2:
+        fig, axes = _batched_axes(ax=ax, batch_size=data.shape[0], sharex=True)
+        freqs = _to_numpy(series.freqs)
+        if positive_only:
+            mask = freqs >= 0.0
+            freqs = freqs[mask]
+            data = data[:, mask]
+
+        values = np.abs(data) if magnitude else data
+        for idx, axis in enumerate(axes):
+            axis.plot(freqs, values[idx], label=label, **kwargs)
+            axis.set_xlabel("Frequency [Hz]")
+            axis.set_ylabel("Magnitude" if magnitude else "Value")
+            axis.set_title(f"Batch {idx}")
+            if positive_only and len(freqs) > 0:
+                axis.set_xlim(0.0, float(freqs[-1]))
+        fig.tight_layout()
+        return fig, axes
+
     plt = _get_pyplot()
     if ax is None:
         fig, axis = plt.subplots()
@@ -114,7 +180,6 @@ def plot_frequency_series(
         fig, axis = ax.figure, ax
 
     freqs = _to_numpy(series.freqs)
-    data = _to_numpy(series.data)
     if positive_only:
         mask = freqs >= 0.0
         freqs = freqs[mask]
@@ -137,6 +202,23 @@ def plot_periodogram(
     **kwargs: Any,
 ) -> tuple[Any, Any]:
     """Plot the squared spectrum magnitude on log-log axes."""
+    data = _to_numpy(series.data)
+    if data.ndim == 2:
+        fig, axes = _batched_axes(ax=ax, batch_size=data.shape[0], sharex=True, sharey=True)
+        freqs = _to_numpy(series.freqs)
+        if positive_only:
+            mask = freqs > 0.0
+            freqs = freqs[mask]
+            data = data[:, mask]
+
+        for idx, axis in enumerate(axes):
+            axis.loglog(freqs, np.abs(data[idx]) ** 2, **kwargs)
+            axis.set_xlabel("Frequency [Hz]")
+            axis.set_ylabel("Periodogram")
+            axis.set_title(f"Batch {idx}")
+        fig.tight_layout()
+        return fig, axes
+
     plt = _get_pyplot()
     if ax is None:
         fig, axis = plt.subplots()
@@ -144,7 +226,6 @@ def plot_periodogram(
         fig, axis = ax.figure, ax
 
     freqs = _to_numpy(series.freqs)
-    data = _to_numpy(series.data)
     if positive_only:
         mask = freqs > 0.0
         freqs = freqs[mask]
@@ -165,6 +246,26 @@ def plot_spectrogram(
 ) -> tuple[Any, Any]:
     """Compute and plot a scipy spectrogram for a time-domain series."""
     spectrogram = _require_scipy()
+    data = _to_numpy(series.data)
+    if data.ndim == 2:
+        fig, axes = _batched_axes(ax=ax, batch_size=data.shape[0], sharex=True, sharey=True)
+        spec_kwargs = {} if spec_kwargs is None else dict(spec_kwargs)
+        plot_kwargs = {} if plot_kwargs is None else dict(plot_kwargs)
+        plot_kwargs.setdefault("cmap", "Reds")
+        fs = 1.0 / series.dt
+
+        for idx, axis in enumerate(axes):
+            freqs, times, sxx = spectrogram(data[idx], fs=fs, **spec_kwargs)
+            mesh = axis.pcolormesh(times, freqs, sxx, shading="nearest", **plot_kwargs)
+            _fmt_time_axis(times, axis)
+            axis.set_ylabel("Frequency [Hz]")
+            axis.set_ylim(top=fs / 2.0)
+            axis.set_title(f"Batch {idx}")
+            colorbar = fig.colorbar(mesh, ax=axis)
+            colorbar.set_label("Spectrogram Amplitude")
+        fig.tight_layout()
+        return fig, axes
+
     plt = _get_pyplot()
     if ax is None:
         fig, axis = plt.subplots()
@@ -176,7 +277,7 @@ def plot_spectrogram(
     plot_kwargs.setdefault("cmap", "Reds")
 
     fs = 1.0 / series.dt
-    freqs, times, sxx = spectrogram(_to_numpy(series.data), fs=fs, **spec_kwargs)
+    freqs, times, sxx = spectrogram(data, fs=fs, **spec_kwargs)
     mesh = axis.pcolormesh(times, freqs, sxx, shading="nearest", **plot_kwargs)
     _fmt_time_axis(times, axis)
     axis.set_ylabel("Frequency [Hz]")
@@ -209,6 +310,101 @@ def plot_wdm_grid(
     plt = _get_pyplot()
     from matplotlib.colors import LogNorm, TwoSlopeNorm
 
+    coeffs = _wdm_unpacked_grid(wdm)
+    if coeffs.ndim == 3:
+        fig, axes = _batched_axes(ax=ax, batch_size=coeffs.shape[0], sharex=True, sharey=True)
+        time_grid = _wdm_time_grid(wdm)
+        freq_grid = _wdm_freq_grid(wdm)
+
+        for idx, axis in enumerate(axes):
+            z = coeffs[idx].T
+            whiten_slice = None if whiten_by is None else np.asarray(whiten_by)[idx]
+            if whiten_slice is not None:
+                z = z / whiten_slice
+            if absolute:
+                z = np.abs(z)
+            else:
+                z = np.real(z)
+
+            local_norm = norm
+            if local_norm is None:
+                try:
+                    if np.all(np.isnan(z)):
+                        raise ValueError("All WDM data is NaN.")
+                    if zscale == "log":
+                        positive = z[z > 0]
+                        local_norm = LogNorm(vmin=np.nanmin(positive), vmax=np.nanmax(positive))
+                    elif not absolute:
+                        local_norm = TwoSlopeNorm(
+                            vmin=float(np.nanmin(z)),
+                            vcenter=0.0,
+                            vmax=float(np.nanmax(z)),
+                        )
+                except Exception as exc:
+                    warnings.warn(
+                        f"Falling back to default linear normalization for WDM plot: {exc}",
+                        stacklevel=2,
+                    )
+                    local_norm = None
+
+            local_cmap = "viridis" if absolute else "bwr" if cmap is None else cmap
+            cmap_obj = plt.get_cmap(local_cmap).copy()
+            cmap_obj.set_bad(color=nan_color)
+
+            image = axis.imshow(
+                z,
+                aspect="auto",
+                extent=[time_grid[0], time_grid[-1], freq_grid[0], freq_grid[-1]],
+                origin="lower",
+                cmap=cmap_obj,
+                norm=local_norm,
+                interpolation="nearest",
+                **kwargs,
+            )
+
+            if show_colorbar:
+                colorbar = fig.colorbar(image, ax=axis)
+                if cbar_label is None:
+                    local_cbar_label = "Absolute WDM Amplitude" if absolute else "WDM Amplitude"
+                else:
+                    local_cbar_label = cbar_label
+                colorbar.set_label(local_cbar_label)
+
+            axis.set_yscale(freq_scale)
+            axis.set_ylabel("Frequency [Hz]")
+            _fmt_time_axis(time_grid, axis)
+            axis.set_title(f"Batch {idx}")
+
+            local_freq_range = freq_range or (float(freq_grid[0]), float(freq_grid[-1]))
+            axis.set_ylim(local_freq_range)
+
+            if detailed_axes:
+                axis.set_xlabel(rf"Time bins [$\Delta T$={wdm.delta_t:.4g}s, Nt={wdm.nt}]")
+                axis.set_ylabel(
+                    rf"Frequency bins [$\Delta F$={wdm.delta_f:.4g}Hz, Nf={wdm.nf + 1}]"
+                )
+
+            label = kwargs.get("label", "")
+            info = f"{wdm.nf + 1}x{wdm.nt}" if show_gridinfo else ""
+            text = f"{label}\n{info}" if label and info else (label or info)
+            if text:
+                txtbox_local = {} if txtbox_kwargs is None else dict(txtbox_kwargs)
+                txtbox_local.setdefault("boxstyle", "round")
+                txtbox_local.setdefault("facecolor", "white")
+                txtbox_local.setdefault("alpha", 0.2)
+                axis.text(
+                    0.05,
+                    0.95,
+                    text,
+                    transform=axis.transAxes,
+                    fontsize=12,
+                    verticalalignment="top",
+                    bbox=txtbox_local,
+                )
+
+        fig.tight_layout()
+        return fig, axes
+
     if ax is None:
         fig, axis = plt.subplots()
     else:
@@ -216,7 +412,7 @@ def plot_wdm_grid(
 
     time_grid = _wdm_time_grid(wdm)
     freq_grid = _wdm_freq_grid(wdm)
-    z = _wdm_unpacked_grid(wdm).T
+    z = coeffs.T
     if whiten_by is not None:
         z = z / whiten_by
     if absolute:
