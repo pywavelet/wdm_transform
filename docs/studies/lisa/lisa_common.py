@@ -6,6 +6,12 @@ from pathlib import Path
 
 import corner
 import numpy as np
+from wdm_transform.signal_processing import (
+    matched_filter_snr_rfft,
+    matched_filter_snr_wdm,
+    noise_characteristic_strain,
+    rfft_characteristic_strain,
+)
 
 STUDY_DIR = Path(__file__).resolve().parent
 BACKGROUND_DIR = STUDY_DIR / "outdir_gb_background"
@@ -200,61 +206,6 @@ def place_local_tdi(segment, kmin: int, n_freqs: int) -> np.ndarray:
     return full
 
 
-def rfft_characteristic_strain(
-    coeffs: np.ndarray,
-    freqs: np.ndarray,
-    dt: float,
-) -> np.ndarray:
-    """Convert NumPy rFFT coefficients into characteristic strain."""
-    coeffs_arr = np.asarray(coeffs, dtype=np.complex128)
-    freqs_arr = np.asarray(freqs, dtype=float)
-    h_c = np.zeros_like(freqs_arr, dtype=float)
-    pos = freqs_arr > 0.0
-    h_c[pos] = 2.0 * freqs_arr[pos] * np.abs(dt * coeffs_arr[pos])
-    return h_c
-
-
-def noise_characteristic_strain(noise_psd: np.ndarray, freqs: np.ndarray) -> np.ndarray:
-    """Convert one-sided PSD to characteristic noise strain."""
-    noise_psd_arr = np.asarray(noise_psd, dtype=float)
-    freqs_arr = np.asarray(freqs, dtype=float)
-    h_n = np.zeros_like(freqs_arr, dtype=float)
-    pos = freqs_arr > 0.0
-    h_n[pos] = np.sqrt(freqs_arr[pos] * np.maximum(noise_psd_arr[pos], 0.0))
-    return h_n
-
-
-def matched_filter_snr_rfft(
-    coeffs: np.ndarray,
-    noise_psd: np.ndarray,
-    freqs: np.ndarray,
-    *,
-    dt: float,
-) -> float:
-    """Matched-filter SNR using one-sided PSD and NumPy rFFT coefficients."""
-    coeffs_arr = np.asarray(coeffs, dtype=np.complex128)
-    noise_psd_arr = np.asarray(noise_psd, dtype=float)
-    freqs_arr = np.asarray(freqs, dtype=float)
-    pos = freqs_arr > 0.0
-    if pos.sum() < 2:
-        return 0.0
-    df = float(freqs_arr[pos][1] - freqs_arr[pos][0])
-    h_tilde = dt * coeffs_arr[pos]
-    snr2 = 4.0 * df * np.sum(np.abs(h_tilde) ** 2 / np.maximum(noise_psd_arr[pos], 1e-60))
-    return float(np.sqrt(max(float(np.real(snr2)), 0.0)))
-
-
-def matched_filter_snr_wdm(
-    coeffs: np.ndarray,
-    noise_var: np.ndarray,
-) -> float:
-    """Matched-filter SNR for real WDM coefficients with diagonal noise variance."""
-    coeffs_arr = np.asarray(coeffs, dtype=float)
-    noise_var_arr = np.asarray(noise_var, dtype=float)
-    snr2 = np.sum(coeffs_arr**2 / np.maximum(noise_var_arr, 1e-60))
-    return float(np.sqrt(max(float(snr2), 0.0)))
-
-
 # ── Frequency-axis models ─────────────────────────────────────────────────────
 
 
@@ -356,34 +307,6 @@ def build_total_noise_psd(
     fg_mean = np.mean(fg_time, axis=0)
     fg_interp = np.interp(target_freqs, freqs_response, fg_mean, left=0.0, right=0.0)
     return np.maximum(noise_tdi15_psd(channel, target_freqs) + fg_interp, 1e-60)
-
-
-# ── WDM noise utilities ───────────────────────────────────────────────────────
-
-
-def wdm_noise_variance(
-    noise_psd: np.ndarray,
-    freq_grid: np.ndarray,
-    nt: int,
-) -> np.ndarray:
-    """WDM pixel variance S_n(f_m) / (2·dt) broadcast over *nt* time bins.
-
-    From the WDM Parseval identity, the per-pixel noise variance for a
-    stationary process with one-sided physical PSD S_n(f) is:
-
-        E[w[n,m]²] = S_n(f_m) / (2·dt) = S_n(f_m) · f_Nyquist
-
-    where f_Nyquist = freq_grid[-1] = 1/(2·dt).  This is independent of
-    the WDM frequency-bin spacing Δf_wdm.  Using Δf_wdm instead (as a
-    naive "PSD × bandwidth" estimate) underestimates the variance by nf,
-    causing the likelihood curvature to be nf× too large and driving NUTS
-    step sizes to zero.
-
-    ``noise_psd`` must already be sampled on ``freq_grid``.
-    """
-    f_nyquist = float(freq_grid[-1])  # = 1 / (2 * dt)
-    var_row = np.maximum(np.asarray(noise_psd, dtype=float) * f_nyquist, 1e-60)
-    return np.broadcast_to(var_row[None, :], (nt, len(var_row))).copy()
 
 
 def trim_frequency_band(

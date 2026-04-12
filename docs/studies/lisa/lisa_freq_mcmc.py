@@ -36,7 +36,6 @@ from lisa_common import (
     build_sampled_source_params,
     check_posterior_coverage,
     default_local_priors,
-    matched_filter_snr_rfft,
     print_posterior_summary,
     require_positive_fdot,
     save_figure,
@@ -47,6 +46,7 @@ from lisa_common import (
 )
 from numpy.fft import rfft, rfftfreq
 from numpyro.infer import MCMC, NUTS, init_to_value
+from wdm_transform.signal_processing import matched_filter_snr_rfft
 
 jax.config.update("jax_enable_x64", True)
 

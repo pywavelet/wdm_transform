@@ -123,3 +123,9 @@ Use one of:
 feat = "MINOR"
 add = "MINOR"
 fix = "PATCH"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
+    "pytest-cov>=7.1.0",
+]

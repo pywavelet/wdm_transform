@@ -23,12 +23,9 @@ from lisa_common import (
     ensure_output_dir,
     freqs_gal,
     galactic_psd,
-    matched_filter_snr_rfft,
-    noise_characteristic_strain,
     noise_tdi15_psd,
     omega_gw,
     place_local_tdi,
-    rfft_characteristic_strain,
     save_figure,
     tdi15_factor,
 )
@@ -36,6 +33,11 @@ from matplotlib import pyplot as plt
 from numpy.fft import irfft, rfft, rfftfreq
 from scipy.integrate import simpson
 from tqdm.auto import tqdm
+from wdm_transform.signal_processing import (
+    matched_filter_snr_rfft,
+    noise_characteristic_strain,
+    rfft_characteristic_strain,
+)
 
 OUTDIR = BACKGROUND_DIR
 

@@ -28,7 +28,6 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from functools import partial
 
 os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
 
@@ -47,7 +46,6 @@ from lisa_common import (
     build_sampled_source_params,
     check_posterior_coverage,
     default_local_priors,
-    matched_filter_snr_wdm,
     print_posterior_summary,
     require_positive_fdot,
     save_figure,
@@ -59,8 +57,8 @@ from lisa_common import (
 )
 from numpyro.infer import MCMC, NUTS, init_to_value
 from wdm_transform import TimeSeries
-from wdm_transform.backends import get_backend
-from wdm_transform.windows import phi_window
+from wdm_transform.signal_processing import matched_filter_snr_wdm, wdm_noise_variance
+from wdm_transform.transforms import forward_wdm_band
 
 jax.config.update("jax_enable_x64", True)
 
@@ -124,38 +122,7 @@ time_grid_plot = np.asarray(probe_plot.time_grid)
 orbit_model = lisaorbits.EqualArmlengthOrbits()
 jgb = JaxGB(orbit_model, t_obs=t_obs, t0=0.0, n=256)
 half = NT // 2
-
-_jax_backend = get_backend("jax")
-_window_j = jnp.asarray(
-    phi_window(_jax_backend, NT, NF, dt, A_WDM, D_WDM), dtype=jnp.complex128
-)
-
-
-@partial(jax.jit, static_argnames=("nt", "nf", "kmin_rfft", "band_start", "band_stop"))
-def _wdm_band_from_local_rfft(
-    x_local: jnp.ndarray,
-    window: jnp.ndarray,
-    nt: int,
-    nf: int,
-    kmin_rfft: int,
-    band_start: int,
-    band_stop: int,
-) -> jnp.ndarray:
-    _half = nt // 2
-    narr = jnp.arange(nt)
-    band_m = jnp.arange(band_start, band_stop)
-
-    upper = band_m[:, None] * _half + jnp.arange(_half)[None, :]
-    lower = (band_m[:, None] - 1) * _half + jnp.arange(_half)[None, :]
-    mid_local = jnp.concatenate([upper, lower], axis=1) - kmin_rfft
-
-    mid_blocks = x_local[mid_local] * window[None, :]
-    mid_times = jnp.fft.ifft(mid_blocks, axis=1).T
-
-    parity = jnp.where((narr[:, None] + band_m[None, :]) % 2 == 0, 1.0, -1.0)
-    mid_phase = jnp.conj(jnp.exp((1j * jnp.pi / 4.0) * (1.0 - parity)))
-
-    return (jnp.sqrt(2.0) / nf) * jnp.real(mid_phase * mid_times)
+DF_RFFT = 1.0 / t_obs
 
 
 @dataclass(frozen=True)
@@ -208,11 +175,20 @@ def build_wdm_band(
     )
 
     x_data_local = jnp.asarray(_data_rfft[kmin_r:kmax_r], dtype=jnp.complex128)
-    data_band = np.asarray(
-        _wdm_band_from_local_rfft(
-            x_data_local, _window_j, NT, NF, kmin_r, band_sl.start, band_sl.stop,
-        )
+    data_band = forward_wdm_band(
+        x_data_local,
+        df=DF_RFFT,
+        nfreqs_fourier=n_freqs,
+        kmin=kmin_r,
+        nfreqs_wdm=NF,
+        ntimes_wdm=NT,
+        mmin=band_sl.start,
+        nf_sub_wdm=band_sl.stop - band_sl.start,
+        a=A_WDM,
+        d=D_WDM,
+        backend="jax",
     )
+    data_band = np.asarray(data_band)
 
     band_freqs = freq_grid[band_sl.start:band_sl.stop]
     noise_psd_band = np.maximum(
@@ -220,8 +196,7 @@ def build_wdm_band(
                   left=noise_psd_saved[0], right=noise_psd_saved[-1]),
         1e-60,
     )
-    f_nyquist = float(freq_grid[-1])
-    noise_var_band = np.tile(noise_psd_band * f_nyquist, (NT, 1))
+    noise_var_band = wdm_noise_variance(noise_psd_band, nt=NT, dt=dt)
 
     return WdmBandData(
         label=label,
@@ -273,10 +248,20 @@ def generate_a_wdm_for(params: jnp.ndarray, wband: WdmBandData) -> jnp.ndarray:
         .at[local_start:local_end]
         .set(jnp.asarray(a_loc, dtype=jnp.complex128))
     )
-    return _wdm_band_from_local_rfft(
-        x_local, _window_j, NT, NF,
-        wband.kmin_rfft, wband.band_start, wband.band_stop,
+    h_band = forward_wdm_band(
+        x_local,
+        df=DF_RFFT,
+        nfreqs_fourier=n_freqs,
+        kmin=wband.kmin_rfft,
+        nfreqs_wdm=NF,
+        ntimes_wdm=NT,
+        mmin=wband.band_start,
+        nf_sub_wdm=wband.band_stop - wband.band_start,
+        a=A_WDM,
+        d=D_WDM,
+        backend="jax",
     )
+    return h_band
 
 
 snrs_optimal = []
@@ -315,15 +300,20 @@ def sample_source_wdm(wband: WdmBandData, *, seed: int = 0) -> MCMC:
             .at[local_start:local_end]
             .set(jnp.asarray(a_loc, dtype=jnp.complex128))
         )
-        return _wdm_band_from_local_rfft(
+        h_band = forward_wdm_band(
             x_local,
-            _window_j,
-            NT,
-            NF,
-            kmin_rfft,
-            band_start,
-            band_stop,
+            df=DF_RFFT,
+            nfreqs_fourier=n_freqs,
+            kmin=kmin_rfft,
+            nfreqs_wdm=NF,
+            ntimes_wdm=NT,
+            mmin=band_start,
+            nf_sub_wdm=band_stop - band_start,
+            a=A_WDM,
+            d=D_WDM,
+            backend="jax",
         )
+        return h_band
 
     def model():
         del_logf0 = numpyro.sample("del_logf0", dist.Normal(0.0, 1.0))
@@ -436,9 +426,18 @@ for i, wband in enumerate(BANDS):
                 jnp.zeros(wb.band_rfft_size, dtype=jnp.complex128)
                 .at[local_start:local_end].set(a_loc_s)
             )
-            h_wdm = _wdm_band_from_local_rfft(
-                x_local, _window_j, NT, NF,
-                wb.kmin_rfft, wb.band_start, wb.band_stop,
+            h_wdm = forward_wdm_band(
+                x_local,
+                df=DF_RFFT,
+                nfreqs_fourier=n_freqs,
+                kmin=wb.kmin_rfft,
+                nfreqs_wdm=NF,
+                ntimes_wdm=NT,
+                mmin=wb.band_start,
+                nf_sub_wdm=wb.band_stop - wb.band_start,
+                a=A_WDM,
+                d=D_WDM,
+                backend="jax",
             )
             return jnp.sqrt(jnp.sum(h_wdm**2 / noise_var_j))
         return jax.vmap(_single_snr)(ps)
