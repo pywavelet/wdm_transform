@@ -51,7 +51,7 @@ uv run mkdocs build
 uv run mkdocs serve
 
 # run the benchmark CLI
-uv run python -m wdm_transform.benchmarking --backends numpy jax
+uv run wdm_transform_benchmarking --backends numpy jax --runs 3 --outdir /tmp/wdm-bench --pow2 12 22
 
 # refresh the checked-in benchmark snapshot used in the docs
 uv run python docs/examples/generate_benchmark_plot.py --backends numpy jax

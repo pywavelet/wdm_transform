@@ -26,6 +26,9 @@ dependencies = [
     "scipy>=1.13",
 ]
 
+[project.scripts]
+wdm_transform_benchmarking = "wdm_transform.benchmarking:main"
+
 [project.urls]
 Homepage = "https://github.com/pywavelet/wdm_transform"
 Repository = "https://github.com/pywavelet/wdm_transform"
