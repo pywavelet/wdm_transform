@@ -3,6 +3,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 import time
+from importlib.util import find_spec
 
 from wdm_transform import TimeSeries, WDM
 from wdm_transform.backends import get_backend
@@ -272,6 +273,43 @@ def test_forward_subband_matches_full_wdm_slice(kmin: int, lendata: int) -> None
     )
 
 
+@pytest.mark.skipif(find_spec("jax") is None, reason="jax is not installed")
+def test_forward_subband_matches_full_wdm_slice_jax() -> None:
+    jax = pytest.importorskip("jax.numpy")
+    kmin = 23
+    lendata = 29
+    subband = _subband_case_data(kmin, lendata)
+    one_sided = _one_sided_full_spectrum(kmin, subband)
+    signal = np.fft.irfft(one_sided, n=N_TOTAL)
+
+    full_wdm = WDM.from_time_series(TimeSeries(signal, dt=DT), nt=NT)
+    coeffs, mmin = forward_wdm_subband(
+        jax.asarray(subband),
+        df=DF,
+        nfreqs_fourier=NFOURIER,
+        kmin=kmin,
+        nfreqs_wdm=NF,
+        ntimes_wdm=NT,
+        backend="jax",
+    )
+
+    expected_mmin, expected_nf_sub = wdm_span_from_fourier_span(
+        nfreqs_fourier=NFOURIER,
+        nfreqs_wdm=NF,
+        ntimes_wdm=NT,
+        kmin=kmin,
+        lendata=lendata,
+    )
+    assert mmin == expected_mmin
+    assert coeffs.shape == (NT, expected_nf_sub)
+    np.testing.assert_allclose(
+        np.asarray(coeffs),
+        np.asarray(full_wdm.coeffs)[:, mmin:mmin + expected_nf_sub],
+        atol=1e-10,
+        rtol=1e-10,
+    )
+
+
 def test_forward_subband_matches_full_wdm_slice_for_sinusoid() -> None:
     k0 = 37
     signal = _generate_sinusoid(k0=k0, amplitude=1.7, phase=0.31)
@@ -476,6 +514,56 @@ def test_chirping_binary_subband_roundtrip() -> None:
     assert recovered_kmin == expected_kmin
     np.testing.assert_allclose(
         recovered,
+        full_spectrum[expected_kmin:expected_kmin + expected_lendata],
+        atol=1e-10,
+        rtol=1e-10,
+    )
+
+
+@pytest.mark.skipif(find_spec("jax") is None, reason="jax is not installed")
+def test_chirping_binary_subband_roundtrip_jax() -> None:
+    jax = pytest.importorskip("jax.numpy")
+    signal = _generate_wd_binary_signal(
+        f0=0.15,
+        fdot=5.0e-4,
+        amplitude=1.0,
+    )
+    one_sided = np.fft.rfft(signal)
+    k_peak = int(np.argmax(np.abs(one_sided)))
+    kmin = max(0, k_peak - 3)
+    lendata = 8
+    subband = one_sided[kmin:kmin + lendata]
+    full_spectrum = _one_sided_full_spectrum(kmin, subband)
+
+    coeffs, mmin = forward_wdm_subband(
+        jax.asarray(subband),
+        df=DF,
+        nfreqs_fourier=NFOURIER,
+        kmin=kmin,
+        nfreqs_wdm=NF,
+        ntimes_wdm=NT,
+        backend="jax",
+    )
+    recovered, recovered_kmin = inverse_wdm_subband(
+        coeffs,
+        df=DF,
+        nfreqs_fourier=NFOURIER,
+        mmin=mmin,
+        nfreqs_wdm=NF,
+        ntimes_wdm=NT,
+        backend="jax",
+    )
+
+    expected_kmin, expected_lendata = fourier_span_from_wdm_span(
+        nfreqs_fourier=NFOURIER,
+        nfreqs_wdm=NF,
+        ntimes_wdm=NT,
+        mmin=mmin,
+        nf_sub_wdm=coeffs.shape[1],
+    )
+    assert recovered_kmin == expected_kmin
+    np.testing.assert_allclose(
+        np.asarray(recovered),
         full_spectrum[expected_kmin:expected_kmin + expected_lendata],
         atol=1e-10,
         rtol=1e-10,
