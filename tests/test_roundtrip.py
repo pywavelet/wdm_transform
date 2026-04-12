@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 from pathlib import Path
+from importlib.util import find_spec
 import pytest
 
 from wdm_transform import FrequencySeries, TimeSeries, WDM
@@ -44,7 +45,7 @@ def test_wdm_time_roundtrip(backend_name: str, backend: Backend) -> None:
     coeffs = WDM.from_time_series(backend_series, nt=nt, a=1.0 / 3.0, backend=backend)
     recovered = coeffs.to_time_series()
 
-    assert coeffs.coeffs.shape == (nt, nf + 1)
+    assert coeffs.coeffs.shape == (1, nt, nf + 1)
     np.testing.assert_allclose(
         np.asarray(coeffs.coeffs),
         np.asarray(numpy_coeffs.coeffs),
@@ -79,11 +80,217 @@ def test_wdm_frequency_reconstruction_matches_fft(backend: Backend) -> None:
     )
 
 
+def test_batched_jax_time_roundtrip_matches_stacked_single_series() -> None:
+    pytest.importorskip("jax")
+
+    series, nt, nf = _example_series()
+    samples = np.asarray(series.data[0])
+    batched_samples = np.stack([samples, 0.5 * samples, -samples], axis=0)
+    batched_series = TimeSeries(batched_samples, dt=series.dt, backend="jax")
+
+    coeffs = WDM.from_time_series(batched_series, nt=nt, backend="jax")
+    recovered = coeffs.to_time_series()
+
+    expected_coeffs = np.stack([
+        np.asarray(WDM.from_time_series(TimeSeries(row, dt=series.dt), nt=nt).coeffs[0])
+        for row in batched_samples
+    ], axis=0)
+
+    assert coeffs.batch_size == 3
+    assert coeffs.coeffs.shape == (3, nt, nf + 1)
+    np.testing.assert_allclose(np.asarray(coeffs.coeffs), expected_coeffs, atol=1e-10, rtol=1e-10)
+    np.testing.assert_allclose(np.asarray(recovered.data), batched_samples, atol=1e-10, rtol=1e-10)
+
+
+def test_batched_jax_frequency_roundtrip_matches_stacked_single_series() -> None:
+    pytest.importorskip("jax")
+
+    series, nt, _ = _example_series()
+    base_spectrum = np.asarray(series.to_frequency_series().data[0])
+    spectra = np.stack([
+        base_spectrum,
+        0.5 * base_spectrum,
+        -base_spectrum,
+    ], axis=0)
+    batched_series = FrequencySeries(spectra, df=series.df, backend="jax")
+
+    coeffs = WDM.from_frequency_series(batched_series, nt=nt, backend="jax")
+    reconstructed = coeffs.to_frequency_series()
+
+    expected_coeffs = np.stack([
+        np.asarray(WDM.from_frequency_series(FrequencySeries(row, df=series.df), nt=nt).coeffs[0])
+        for row in spectra
+    ], axis=0)
+
+    np.testing.assert_allclose(np.asarray(coeffs.coeffs), expected_coeffs, atol=1e-10, rtol=1e-10)
+    np.testing.assert_allclose(np.asarray(reconstructed.data), spectra, atol=1e-10, rtol=1e-10)
+
+
+def test_batched_jax_batch_size_one_roundtrip() -> None:
+    pytest.importorskip("jax")
+
+    series, nt, nf = _example_series()
+    batched = TimeSeries(np.asarray(series.data[0])[None, :], dt=series.dt, backend="jax")
+    coeffs = batched.to_wdm(nt=nt)
+    recovered = coeffs.to_time_series()
+
+    assert batched.batch_size == 1
+    assert coeffs.batch_size == 1
+    assert coeffs.shape == (1, nt, nf + 1)
+    np.testing.assert_allclose(np.asarray(recovered.data), np.asarray(batched.data), atol=1e-10, rtol=1e-10)
+
+
+def test_batched_numpy_time_roundtrip_matches_stacked_single_series() -> None:
+    series, nt, nf = _example_series()
+    samples = np.asarray(series.data[0])
+    batched_samples = np.stack([samples, 0.5 * samples, -samples], axis=0)
+    batched_series = TimeSeries(batched_samples, dt=series.dt, backend="numpy")
+
+    coeffs = WDM.from_time_series(batched_series, nt=nt, backend="numpy")
+    recovered = coeffs.to_time_series()
+
+    expected_coeffs = np.stack([
+        np.asarray(WDM.from_time_series(TimeSeries(row, dt=series.dt), nt=nt, backend="numpy").coeffs[0])
+        for row in batched_samples
+    ], axis=0)
+
+    assert coeffs.batch_size == 3
+    assert coeffs.coeffs.shape == (3, nt, nf + 1)
+    np.testing.assert_allclose(np.asarray(coeffs.coeffs), expected_coeffs, atol=1e-10, rtol=1e-10)
+    np.testing.assert_allclose(np.asarray(recovered.data), batched_samples, atol=1e-10, rtol=1e-10)
+
+
+def test_batched_numpy_frequency_roundtrip_matches_stacked_single_series() -> None:
+    series, nt, _ = _example_series()
+    base_spectrum = np.asarray(series.to_frequency_series().data[0])
+    spectra = np.stack([base_spectrum, 0.5 * base_spectrum, -base_spectrum], axis=0)
+    batched_series = FrequencySeries(spectra, df=series.df, backend="numpy")
+
+    coeffs = WDM.from_frequency_series(batched_series, nt=nt, backend="numpy")
+    reconstructed = coeffs.to_frequency_series()
+
+    expected_coeffs = np.stack([
+        np.asarray(
+            WDM.from_frequency_series(FrequencySeries(row, df=series.df), nt=nt, backend="numpy").coeffs[0]
+        )
+        for row in spectra
+    ], axis=0)
+
+    np.testing.assert_allclose(np.asarray(coeffs.coeffs), expected_coeffs, atol=1e-10, rtol=1e-10)
+    np.testing.assert_allclose(np.asarray(reconstructed.data), spectra, atol=1e-10, rtol=1e-10)
+
+
+def test_batched_numpy_batch_size_one_roundtrip() -> None:
+    series, nt, nf = _example_series()
+    batched = TimeSeries(np.asarray(series.data[0])[None, :], dt=series.dt, backend="numpy")
+    coeffs = batched.to_wdm(nt=nt)
+    recovered = coeffs.to_time_series()
+
+    assert batched.batch_size == 1
+    assert coeffs.batch_size == 1
+    assert coeffs.shape == (1, nt, nf + 1)
+    np.testing.assert_allclose(np.asarray(recovered.data), np.asarray(batched.data), atol=1e-10, rtol=1e-10)
+
+
+@pytest.mark.skipif(find_spec("cupy") is None, reason="cupy is not installed")
+def test_batched_cupy_matches_stacked_single_series() -> None:
+    series, nt, nf = _example_series()
+    samples = np.asarray(series.data[0])
+    batched_samples = np.stack([samples, 0.5 * samples, -samples], axis=0)
+    batched_series = TimeSeries(batched_samples, dt=series.dt, backend="cupy")
+
+    coeffs = WDM.from_time_series(batched_series, nt=nt, backend="cupy")
+    recovered = coeffs.to_time_series()
+
+    expected_coeffs = np.stack([
+        np.asarray(WDM.from_time_series(TimeSeries(row, dt=series.dt), nt=nt, backend="cupy").coeffs[0])
+        for row in batched_samples
+    ], axis=0)
+
+    assert coeffs.coeffs.shape == (3, nt, nf + 1)
+    np.testing.assert_allclose(np.asarray(coeffs.coeffs), expected_coeffs, atol=1e-10, rtol=1e-10)
+    np.testing.assert_allclose(np.asarray(recovered.data), batched_samples, atol=1e-10, rtol=1e-10)
+
+
+def test_batched_numpy_matches_jax_coefficients() -> None:
+    pytest.importorskip("jax")
+
+    series, nt, _ = _example_series()
+    samples = np.asarray(series.data[0])
+    batched_samples = np.stack([samples, 0.5 * samples, -samples], axis=0)
+
+    numpy_coeffs = WDM.from_time_series(
+        TimeSeries(batched_samples, dt=series.dt, backend="numpy"),
+        nt=nt,
+        backend="numpy",
+    )
+    jax_coeffs = WDM.from_time_series(
+        TimeSeries(batched_samples, dt=series.dt, backend="jax"),
+        nt=nt,
+        backend="jax",
+    )
+
+    np.testing.assert_allclose(
+        np.asarray(numpy_coeffs.coeffs),
+        np.asarray(jax_coeffs.coeffs),
+        atol=1e-10,
+        rtol=1e-10,
+    )
+
+
 def test_top_level_module_exports_and_env_backend(monkeypatch) -> None:
     assert FrequencySeries.__name__ == "FrequencySeries"
 
     monkeypatch.setenv("WDM_BACKEND", "numpy")
     assert get_backend().name == "numpy"
+
+
+def test_batched_plot_methods_create_one_axis_per_batch_element() -> None:
+    pytest.importorskip("matplotlib")
+    matplotlib = pytest.importorskip("matplotlib")
+    matplotlib.use("Agg", force=True)
+    plt = pytest.importorskip("matplotlib.pyplot")
+
+    time_series = TimeSeries(np.zeros((2, 16)), dt=0.25)
+    freq_series = FrequencySeries(np.zeros((2, 16), dtype=complex), df=0.25)
+    wdm = WDM(np.zeros((2, 4, 5)), dt=0.25, backend="jax")
+
+    fig, axes = time_series.plot()
+    assert len(np.ravel(axes)) == 2
+    assert all(ax.get_ylabel() == "Amplitude" for ax in np.ravel(axes))
+    plt.close(fig)
+
+    fig, axes = freq_series.plot()
+    assert len(np.ravel(axes)) == 2
+    assert all(ax.get_ylabel() == "Magnitude" for ax in np.ravel(axes))
+    plt.close(fig)
+
+    fig, axes = wdm.plot()
+    assert len(np.ravel(axes)) == 2
+    assert all(ax.get_ylabel() == "Frequency [Hz]" for ax in np.ravel(axes))
+    plt.close(fig)
+
+
+def test_singleton_plot_methods_return_one_element_axes_arrays() -> None:
+    matplotlib = pytest.importorskip("matplotlib")
+    matplotlib.use("Agg", force=True)
+    plt = pytest.importorskip("matplotlib.pyplot")
+
+    time_series = TimeSeries(np.zeros(16), dt=0.25)
+    freq_series = FrequencySeries(np.zeros(16, dtype=complex), df=0.25)
+    wdm = WDM(np.zeros((4, 5)), dt=0.25, backend="numpy")
+
+    fig, axes = time_series.plot()
+    assert np.asarray(axes).shape == (1,)
+    plt.close(fig)
+
+    fig, axes = freq_series.plot()
+    assert np.asarray(axes).shape == (1,)
+    plt.close(fig)
+
+    fig, axes = wdm.plot()
+    assert np.asarray(axes).shape == (1,)
+    plt.close(fig)
 
 
 def test_wdm_roundtrip_diagnostics_plots(outdir: Path) -> None:

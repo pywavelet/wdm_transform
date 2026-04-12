@@ -6,11 +6,14 @@ time bins and ``nf + 1`` frequency channels (m = 0, 1, …, nf).
 
 Coefficient layout
 ------------------
-The coefficient matrix has shape ``(nt, nf + 1)``:
+The coefficient matrix is stored canonically with shape
+``(batch, nt, nf + 1)``. A single unbatched input with shape
+``(nt, nf + 1)`` is accepted at construction time and normalized to a
+singleton leading batch axis:
 
-* ``coeffs[:, 0]``    — DC channel      (m = 0)
-* ``coeffs[:, 1:nf]`` — interior channels (m = 1 … nf−1)
-* ``coeffs[:, nf]``   — Nyquist channel (m = nf)
+* ``coeffs[..., 0]``    — DC channel      (m = 0)
+* ``coeffs[..., 1:nf]`` — interior channels (m = 1 … nf−1)
+* ``coeffs[..., nf]``   — Nyquist channel (m = nf)
 
 All entries are real-valued (float64).
 """
@@ -32,9 +35,10 @@ class WDM:
 
     Parameters
     ----------
-    coeffs : array, shape (nt, nf + 1)
-        Real-valued coefficient matrix.  Column m corresponds to
-        frequency channel m (0 ≤ m ≤ nf).
+    coeffs : array, shape (nt, nf + 1) or (batch, nt, nf + 1)
+        Real-valued coefficient matrix. Column m corresponds to
+        frequency channel m (0 ≤ m ≤ nf). Stored internally as
+        ``(batch, nt, nf + 1)``.
     dt : float
         Sampling interval of the original time-domain signal.
     a : float
@@ -55,12 +59,14 @@ class WDM:
         backend = get_backend(self.backend)
         coeffs = backend.asarray(self.coeffs, dtype=backend.xp.float64)
 
-        if coeffs.ndim != 2:
-            raise ValueError("WDM coeffs must be a two-dimensional array.")
+        if coeffs.ndim not in (2, 3):
+            raise ValueError("WDM coeffs must be a two- or three-dimensional array.")
         if self.dt <= 0:
             raise ValueError("dt must be positive.")
+        if coeffs.ndim == 2:
+            coeffs = coeffs[None, :, :]
 
-        nt, ncols = (int(dim) for dim in coeffs.shape)
+        nt, ncols = (int(dim) for dim in coeffs.shape[-2:])
         nf = ncols - 1
         validate_transform_shape(nt, nf)
         validate_window_parameter(self.a)
@@ -71,7 +77,7 @@ class WDM:
     def __repr__(self) -> str:
         return (
             "WDM("
-            f"nt={self.nt}, nf={self.nf}, n={self.n}, "
+            f"batch_size={self.batch_size}, nt={self.nt}, nf={self.nf}, n={self.n}, "
             f"dt={self.dt}, df={self.df}, fs={self.fs}, nyquist={self.nyquist}, "
             f"delta_t={self.delta_t}, delta_f={self.delta_f}, "
             f"duration={self.duration}, a={self.a}, d={self.d}"
@@ -168,21 +174,26 @@ class WDM:
     @property
     def nt(self) -> int:
         """Number of WDM time bins."""
-        return int(self.coeffs.shape[0])
+        return int(self.coeffs.shape[-2])
 
     @property
     def nf(self) -> int:
         """Number of interior frequency channels.
 
         The total number of frequency channels is ``nf + 1``
-        (m = 0, 1, …, nf), so ``coeffs.shape[1] == nf + 1``.
+        (m = 0, 1, …, nf), so ``coeffs.shape[-1] == nf + 1``.
         """
-        return int(self.coeffs.shape[1]) - 1
+        return int(self.coeffs.shape[-1]) - 1
 
     @property
-    def shape(self) -> tuple[int, int]:
-        """(nt, nf + 1) shape of the coefficient matrix."""
-        return (self.nt, self.nf + 1)
+    def shape(self) -> tuple[int, ...]:
+        """Shape of the stored coefficient array."""
+        return tuple(int(dim) for dim in self.coeffs.shape)
+
+    @property
+    def batch_size(self) -> int | None:
+        """Leading batch size."""
+        return int(self.coeffs.shape[0])
 
     @property
     def n(self) -> int:
@@ -252,12 +263,12 @@ class WDM:
     @property
     def dc_channel(self) -> Any:
         """DC edge-channel coefficients (m = 0)."""
-        return self.coeffs[:, 0]
+        return self.coeffs[..., 0]
 
     @property
     def nyquist_channel(self) -> Any:
         """Nyquist edge-channel coefficients (m = nf)."""
-        return self.coeffs[:, self.nf]
+        return self.coeffs[..., self.nf]
 
     def to_time_series(self) -> TimeSeries:
         """Reconstruct the time-domain signal via the inverse WDM transform."""

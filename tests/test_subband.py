@@ -152,7 +152,7 @@ def _wdm_block_analysis_matrix(
             d=1.0,
             dt=dt,
             backend="numpy",
-        )[:, mmin:mmin + nf_sub_wdm]
+        )[0, :, mmin:mmin + nf_sub_wdm]
         matrix[:, idx] = coeffs.reshape(-1)
     return matrix
 
@@ -306,7 +306,7 @@ def _forward_subband_result(
         expected_mmin=expected_mmin,
         expected_nf_sub=expected_nf_sub,
         full_spectrum=one_sided,
-        full_wdm_slice=np.asarray(full_wdm.coeffs)[:, expected_mmin:expected_mmin + expected_nf_sub],
+        full_wdm_slice=np.asarray(full_wdm.coeffs)[0, :, expected_mmin:expected_mmin + expected_nf_sub],
     )
 
 
@@ -509,7 +509,7 @@ def test_lisa_style_local_frequency_band_matches_expected_wdm_slice() -> None:
     assert coeffs.shape == (NT, band_stop - band_start)
     np.testing.assert_allclose(
         coeffs,
-        np.asarray(full_wdm.coeffs)[:, band_start:band_stop],
+        np.asarray(full_wdm.coeffs)[0, :, band_start:band_stop],
         atol=1e-10,
         rtol=1e-10,
     )
@@ -556,7 +556,7 @@ def test_full_wdm_matches_analytic_sinusoid_formula_after_normalization() -> Non
 
     # This analytic convention differs by a factor nf from the package normalization.
     np.testing.assert_allclose(
-        np.asarray(full_wdm.coeffs),
+        np.asarray(full_wdm.coeffs)[0],
         np.real(analytic) / NF,
         atol=1e-10,
         rtol=1e-10,
@@ -583,8 +583,8 @@ def test_inverse_subband_matches_full_frequency_slice(
         + 0.05 * np.sin(2.0 * np.pi * times * 0.31)
     )
     full_wdm = WDM.from_time_series(TimeSeries(signal, dt=DT), nt=NT)
-    coeffs = np.zeros_like(np.asarray(full_wdm.coeffs))
-    coeffs[:, mmin:mmin + nf_sub_wdm] = np.asarray(full_wdm.coeffs)[:, mmin:mmin + nf_sub_wdm]
+    coeffs = np.zeros_like(np.asarray(full_wdm.coeffs)[0])
+    coeffs[:, mmin:mmin + nf_sub_wdm] = np.asarray(full_wdm.coeffs)[0, :, mmin:mmin + nf_sub_wdm]
 
     reconstructed, kmin = inverse_wdm_subband(
         coeffs[:, mmin:mmin + nf_sub_wdm],
@@ -612,7 +612,7 @@ def test_inverse_subband_matches_full_frequency_slice(
     assert reconstructed.shape == (lendata,)
     np.testing.assert_allclose(
         reconstructed,
-        np.asarray(expected.data)[kmin:kmin + lendata],
+        np.asarray(expected.data)[0, kmin:kmin + lendata],
         atol=1e-10,
         rtol=1e-10,
     )
@@ -761,7 +761,7 @@ def test_chirping_binary_subband_diagnostics_plot(outdir) -> None:
     recovered_full = _one_sided_full_spectrum(recovered_kmin, recovered)
     full_band_coeffs = np.full((NT, NF + 1), np.nan, dtype=float)
     full_band_coeffs[:, mmin:mmin + coeffs.shape[1]] = np.abs(coeffs)
-    full_wdm_abs = np.abs(np.asarray(full_wdm.coeffs))
+    full_wdm_abs = np.abs(np.asarray(full_wdm.coeffs)[0])
     wdm_vmin = 0.0
     wdm_vmax = float(np.nanmax(full_wdm_abs))
     fig, axes = plt.subplots(4, 1, figsize=(10, 16), constrained_layout=True)

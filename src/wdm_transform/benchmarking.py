@@ -19,6 +19,7 @@ import numpy as np
 from . import backends, transforms
 
 DEFAULT_BACKENDS = ["numpy", "jax"]
+DEFAULT_BATCH_SIZE = 3
 DEFAULT_N_VALUES = [
     2048,
     4096,
@@ -48,16 +49,22 @@ def validate_backend_available(backend_name: str) -> bool:  # pragma: no cover
         return False
 
 
-def generate_benchmark_signal(n: int) -> np.ndarray:  # pragma: no cover
+def generate_benchmark_signal(
+    n: int,
+    *,
+    batch_size: int | None = None,
+) -> np.ndarray:  # pragma: no cover
     """Generate a deterministic real benchmark signal."""
     rng = np.random.default_rng(42)
-    return rng.standard_normal(n)
+    if batch_size is None:
+        return rng.standard_normal((1, n))
+    return rng.standard_normal((batch_size, n))
 
 
 def generate_benchmark_coeffs(nt: int, nf: int) -> np.ndarray:  # pragma: no cover
     """Generate deterministic real WDM coefficient grids."""
     rng = np.random.default_rng(42)
-    return rng.standard_normal((nt, nf + 1))
+    return rng.standard_normal((1, nt, nf + 1))
 
 
 def find_factorization(n: int) -> tuple[int, int] | None:  # pragma: no cover
@@ -152,6 +159,45 @@ def benchmark_inverse(
     )
 
 
+def benchmark_forward_serial_batch(
+    signal_batch: np.ndarray,
+    backend_name: str,
+    nt: int,
+    nf: int,
+    num_runs: int = 7,
+) -> tuple[float, float]:  # pragma: no cover
+    """Benchmark serial forward transforms over a leading batch axis."""
+    backend = backends.get_backend(backend_name)
+    fixed_params = {**FIXED_PARAMS, "backend": backend}
+    backend_batch = backend.asarray(signal_batch)
+
+    return _measure_runtime(
+        lambda: [
+            transforms.from_time_to_wdm(backend_batch[idx], nt=nt, nf=nf, **fixed_params)
+            for idx in range(int(backend_batch.shape[0]))
+        ],
+        num_runs,
+    )
+
+
+def benchmark_forward_batched(
+    signal_batch: np.ndarray,
+    backend_name: str,
+    nt: int,
+    nf: int,
+    num_runs: int = 7,
+) -> tuple[float, float]:  # pragma: no cover
+    """Benchmark a single batched forward transform call."""
+    backend = backends.get_backend(backend_name)
+    fixed_params = {**FIXED_PARAMS, "backend": backend}
+    backend_batch = backend.asarray(signal_batch)
+
+    return _measure_runtime(
+        lambda: transforms.from_time_to_wdm(backend_batch, nt=nt, nf=nf, **fixed_params),
+        num_runs,
+    )
+
+
 def benchmark_roundtrip_error(
     signal: np.ndarray,
     backend_name: str,
@@ -197,10 +243,39 @@ def _result_record(
     }
 
 
+def _batch_forward_result_record(
+    *,
+    single_mean_seconds: float,
+    single_std_seconds: float,
+    serial_mean_seconds: float,
+    serial_std_seconds: float,
+    batched_mean_seconds: float,
+    batched_std_seconds: float,
+    batch_size: int,
+    nt: int,
+    nf: int,
+) -> dict[str, float | int]:
+    return {
+        "single_mean_seconds": single_mean_seconds,
+        "single_std_seconds": single_std_seconds,
+        "serial_mean_seconds": serial_mean_seconds,
+        "serial_std_seconds": serial_std_seconds,
+        "batched_mean_seconds": batched_mean_seconds,
+        "batched_std_seconds": batched_std_seconds,
+        "batched_vs_serial_speedup": (
+            serial_mean_seconds / batched_mean_seconds if batched_mean_seconds else float("inf")
+        ),
+        "batch_size": batch_size,
+        "nt": nt,
+        "nf": nf,
+    }
+
+
 def run_benchmarks(  # pragma: no cover
     backends_to_test: list[str],
     n_values: list[int],
     num_runs: int = 7,
+    batch_size: int = DEFAULT_BATCH_SIZE,
 ) -> dict[str, Any]:
     """Run benchmark suite across backends and input sizes."""
     available_backends = [b for b in backends_to_test if validate_backend_available(b)]
@@ -210,10 +285,12 @@ def run_benchmarks(  # pragma: no cover
             "available_backends": available_backends,
             "n_values": n_values,
             "num_runs": num_runs,
+            "batch_size": batch_size,
             "parameters": FIXED_PARAMS,
         },
         "forward": {},
         "inverse": {},
+        "batch_forward": {},
         "error": {},
     }
 
@@ -298,6 +375,71 @@ def run_benchmarks(  # pragma: no cover
                 print(f"  N={n:>8}: FAILED ({type(exc).__name__}: {exc})")
 
     print("\n" + "=" * 70)
+    print(f"{batch_size}-CHANNEL JAX FORWARD BATCH COMPARISON")
+    print("=" * 70)
+
+    batch_backend_names = [backend_name for backend_name in available_backends if backend_name == "jax"]
+    for backend_name in batch_backend_names:
+        results["batch_forward"][backend_name] = {}
+        print(f"\nBackend: {backend_name}")
+        print("-" * 40)
+        for n in n_values:
+            factorization = find_factorization(n)
+            if factorization is None:
+                print(f"  N={n:>8}: SKIPPED (no valid factorization)")
+                continue
+
+            nt, nf = factorization
+            signal_batch = generate_benchmark_signal(nt * nf, batch_size=batch_size)
+            single_record = results["forward"].get(backend_name, {}).get(n)
+            try:
+                serial_mean_seconds, serial_std_seconds = benchmark_forward_serial_batch(
+                    signal_batch,
+                    backend_name,
+                    nt,
+                    nf,
+                    num_runs,
+                )
+                batched_mean_seconds, batched_std_seconds = benchmark_forward_batched(
+                    signal_batch,
+                    backend_name,
+                    nt,
+                    nf,
+                    num_runs,
+                )
+                if single_record is None:
+                    single_mean_seconds, single_std_seconds = benchmark_forward(
+                        signal_batch[0],
+                        backend_name,
+                        nt,
+                        nf,
+                        num_runs,
+                    )
+                else:
+                    single_mean_seconds = float(single_record["mean_seconds"])
+                    single_std_seconds = float(single_record["std_seconds"])
+
+                results["batch_forward"][backend_name][n] = _batch_forward_result_record(
+                    single_mean_seconds=single_mean_seconds,
+                    single_std_seconds=single_std_seconds,
+                    serial_mean_seconds=serial_mean_seconds,
+                    serial_std_seconds=serial_std_seconds,
+                    batched_mean_seconds=batched_mean_seconds,
+                    batched_std_seconds=batched_std_seconds,
+                    batch_size=batch_size,
+                    nt=nt,
+                    nf=nf,
+                )
+                print(
+                    f"  N={n:>8}: single={single_mean_seconds*1e3:>10.4f} ms  "
+                    f"serial={serial_mean_seconds*1e3:>10.4f} ms  "
+                    f"batched={batched_mean_seconds*1e3:>10.4f} ms  "
+                    f"speedup={serial_mean_seconds / batched_mean_seconds:>6.3f}x"
+                )
+            except Exception as exc:
+                print(f"  N={n:>8}: FAILED ({type(exc).__name__}: {exc})")
+
+    print("\n" + "=" * 70)
     print("ROUNDTRIP RECONSTRUCTION ERROR")
     print("=" * 70)
 
@@ -338,13 +480,15 @@ def print_summary(results: dict[str, Any]) -> None:  # pragma: no cover
     print("SUMMARY TABLE")
     print("=" * 70)
 
-    for transform_type in ("forward", "inverse", "error"):
+    for transform_type in ("forward", "inverse", "batch_forward", "error"):
         backends_data = results.get(transform_type, {})
         if not backends_data:
             continue
 
         if transform_type == "error":
             print("\nROUNDTRIP ERROR:")
+        elif transform_type == "batch_forward":
+            print("\nBATCHED JAX FORWARD:")
         else:
             print(f"\n{transform_type.upper()} TRANSFORM:")
         print("-" * 40)
@@ -365,6 +509,8 @@ def print_summary(results: dict[str, Any]) -> None:  # pragma: no cover
                     continue
                 if transform_type == "error":
                     values.append(f"{record['max_abs_error']:.3e}".rjust(12))
+                elif transform_type == "batch_forward":
+                    values.append(f"{record['batched_vs_serial_speedup']:>10.3f}x")
                 else:
                     values.append(f"{record['mean_seconds']*1e3:>10.4f} ms")
             print(row + " | ".join(values))
@@ -394,10 +540,11 @@ def plot_results(  # pragma: no cover
     destination = Path(output_path)
     destination.parent.mkdir(parents=True, exist_ok=True)
 
-    fig, axes = plt.subplots(1, 3, figsize=(16, 5.5))
+    fig, axes = plt.subplots(1, 4, figsize=(21, 5.5))
     transform_titles = {
         "forward": "Forward Transform",
         "inverse": "Inverse Transform",
+        "batch_forward": "3x Forward Comparison (JAX)",
         "error": "Round-Trip Error",
     }
     backend_styles = {
@@ -410,7 +557,7 @@ def plot_results(  # pragma: no cover
             "zorder": 4,
         },
     }
-    for ax, transform_type in zip(axes, ("forward", "inverse", "error"), strict=True):
+    for ax, transform_type in zip(axes, ("forward", "inverse", "batch_forward", "error"), strict=True):
         backends_data = results.get(transform_type, {})
         for backend_name, backend_results in backends_data.items():
             ns = sorted(backend_results)
@@ -427,6 +574,43 @@ def plot_results(  # pragma: no cover
             if transform_type == "error":
                 error_values = [backend_results[n]["max_abs_error"] for n in ns]
                 ax.plot(ns, error_values, **style)
+            elif transform_type == "batch_forward":
+                single_ms = [backend_results[n]["single_mean_seconds"] * 1e3 for n in ns]
+                serial_ms = [backend_results[n]["serial_mean_seconds"] * 1e3 for n in ns]
+                batched_ms = [backend_results[n]["batched_mean_seconds"] * 1e3 for n in ns]
+                ax.plot(
+                    ns,
+                    single_ms,
+                    linewidth=2.2,
+                    markersize=6.5,
+                    linestyle="-",
+                    marker="o",
+                    label="jax single",
+                    color="tab:orange",
+                    zorder=4,
+                )
+                ax.plot(
+                    ns,
+                    serial_ms,
+                    linewidth=2.2,
+                    markersize=6.5,
+                    linestyle="-",
+                    marker="s",
+                    label="jax serial x3",
+                    color="tab:red",
+                    zorder=3,
+                )
+                ax.plot(
+                    ns,
+                    batched_ms,
+                    linewidth=2.2,
+                    markersize=6.5,
+                    linestyle="-",
+                    marker="^",
+                    label="jax batched x3",
+                    color="tab:green",
+                    zorder=5,
+                )
             else:
                 mean_ms = [backend_results[n]["mean_seconds"] * 1e3 for n in ns]
                 std_ms = [backend_results[n]["std_seconds"] * 1e3 for n in ns]
@@ -449,7 +633,7 @@ def plot_results(  # pragma: no cover
         ax.grid(True, which="both", alpha=0.3)
 
     axes[0].set_ylabel("Mean runtime (ms)")
-    axes[2].set_ylabel("Max abs reconstruction error")
+    axes[3].set_ylabel("Max abs reconstruction error")
     handles, labels = axes[0].get_legend_handles_labels()
     if handles:
         fig.legend(

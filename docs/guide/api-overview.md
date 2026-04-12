@@ -4,7 +4,9 @@ The package currently centers on three public objects.
 
 ## `TimeSeries`
 
-`TimeSeries` represents one-dimensional sampled time-domain data and the sample spacing `dt`.
+`TimeSeries` represents sampled time-domain data and the sample spacing `dt`.
+It accepts either a single series with shape `(n,)` or a leading-batch layout
+with shape `(batch, n)`, and stores data canonically as `(batch, n)`.
 
 Typical operations:
 
@@ -15,7 +17,9 @@ Typical operations:
 
 ## `FrequencySeries`
 
-`FrequencySeries` represents one-dimensional FFT-domain data and the frequency spacing `df`.
+`FrequencySeries` represents FFT-domain data and the frequency spacing `df`.
+It accepts either shape `(n,)` or `(batch, n)`, and stores data canonically as
+`(batch, n)`.
 
 Typical operations:
 
@@ -41,6 +45,21 @@ Typical operations:
 - `to_time_series()`
 - `to_frequency_series()`
 - `plot()`
+
+The coefficient layout is stored canonically as `(batch, nt, nf + 1)`. Users
+may still pass a single transform with shape `(nt, nf + 1)`, which is
+normalized to a singleton batch internally.
+
+```python
+import jax.numpy as jnp
+from wdm_transform import TimeSeries
+
+aet = jnp.stack([a_channel, e_channel, t_channel], axis=0)
+series = TimeSeries(aet, dt=dt, backend="jax")
+wdm = series.to_wdm(nt=nt)
+
+assert wdm.coeffs.shape == (3, nt, aet.shape[-1] // nt + 1)
+```
 
 ## Backend model
 

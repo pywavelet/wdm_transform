@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 import wdm_transform.plotting as plotting
 from wdm_transform import WDM, FrequencySeries, TimeSeries
@@ -49,13 +50,13 @@ def test_explicit_transform_api_roundtrips_between_time_freq_and_wdm() -> None:
     np.testing.assert_allclose(coeffs_from_freq, coeffs_from_time)
     np.testing.assert_allclose(
         from_wdm_to_time(coeffs_from_time, a=0.25, d=1.0, dt=dt),
-        samples,
+        samples[None, :],
         atol=1e-12,
         rtol=1e-12,
     )
     np.testing.assert_allclose(
         from_wdm_to_freq(coeffs_from_time, a=0.25, d=1.0, dt=dt),
-        spectrum,
+        spectrum[None, :],
     )
 def test_from_freq_to_wdm_matches_real_ifft_projection_for_nonhermitian_input() -> None:
     nt, nf, dt = 16, 16, 0.25
@@ -102,6 +103,10 @@ def test_series_convenience_spacing_and_duration_properties() -> None:
     time_series = TimeSeries(np.arange(8, dtype=float), dt=0.25)
     frequency_series = FrequencySeries(np.arange(8, dtype=complex), df=0.5)
 
+    assert time_series.data.shape == (1, 8)
+    assert frequency_series.data.shape == (1, 8)
+    assert time_series.batch_size == 1
+    assert frequency_series.batch_size == 1
     assert time_series.n == 8
     assert time_series.df == 0.5
     assert time_series.fs == 4.0
@@ -129,6 +134,24 @@ def test_wdm_convenience_grid_properties() -> None:
     assert wdm.delta_t == nf * dt
     assert wdm.delta_f == 1.0 / (2.0 * nf * dt)
     assert wdm.duration == nt * nf * dt
+    assert wdm.coeffs.shape == (1, nt, nf + 1)
+    assert wdm.batch_size == 1
     np.testing.assert_allclose(wdm.time_grid, np.arange(nt) * (nf * dt))
     np.testing.assert_allclose(wdm.freq_grid, np.arange(nf + 1) / (2.0 * nf * dt))
     assert wdm.freq_grid[-1] == wdm.nyquist
+
+
+def test_batched_time_series_to_wdm_matches_classmethod_jax() -> None:
+    pytest.importorskip("jax")
+
+    nt, nf, dt = 32, 32, 0.125
+    base = np.sin(2.0 * np.pi * np.arange(nt * nf) * dt * 0.15)
+    batched = np.stack([base, 0.5 * base, -base], axis=0)
+    series = TimeSeries(batched, dt=dt, backend="jax")
+
+    from_instance = series.to_wdm(nt=nt)
+    from_class = WDM.from_time_series(series, nt=nt)
+
+    assert from_instance.batch_size == 3
+    assert from_instance.shape == (3, nt, nf + 1)
+    np.testing.assert_allclose(np.asarray(from_instance.coeffs), np.asarray(from_class.coeffs))

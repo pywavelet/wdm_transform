@@ -27,12 +27,14 @@ sub-band only touches a length-``nt`` slice of the full spectrum.
 
 Coefficient layout
 ------------------
-The coefficient matrix ``W`` has shape ``(nt, nf + 1)`` with all real
-entries:
+The coefficient matrix ``W`` is returned canonically with shape
+``(batch, nt, nf + 1)`` and all real entries. Public entry points still
+accept legacy unbatched inputs and normalize them to a singleton leading
+batch axis.
 
-* ``W[:, 0]``       — DC edge channel     (m = 0)
-* ``W[:, 1:nf]``    — interior channels   (m = 1 … nf−1)
-* ``W[:, nf]``      — Nyquist edge channel (m = nf)
+* ``W[..., 0]``       — DC edge channel     (m = 0)
+* ``W[..., 1:nf]``    — interior channels   (m = 1 … nf−1)
+* ``W[..., nf]``      — Nyquist edge channel (m = nf)
 
 There are nt time bins and nf + 1 frequency channels, giving
 nt · (nf + 1) total coefficients for a signal of length N = nt · nf.
@@ -49,9 +51,9 @@ from ..windows import cnm, phi_window, validate_transform_shape, validate_window
 def _project_to_real_signal_spectrum(spectrum: Any, backend: Backend) -> Any:
     """Return the discrete Fourier coefficients of ``real(ifft(spectrum))``."""
     xp = backend.xp
-    n_total = int(spectrum.shape[0])
+    n_total = int(spectrum.shape[-1])
     mirror = (-xp.arange(n_total)) % n_total
-    return 0.5 * (spectrum + xp.conjugate(spectrum[mirror]))
+    return 0.5 * (spectrum + xp.conjugate(spectrum[..., mirror]))
 
 
 def _compute_wdm_from_spectrum(
@@ -149,6 +151,52 @@ def _reconstruct_spectrum_from_wdm(
     return x_recon / (nf / 2.0)
 
 
+def _compute_wdm_from_spectrum_batch(
+    x_fft: Any,
+    *,
+    nt: int,
+    nf: int,
+    window: Any,
+    backend: Backend,
+) -> Any:
+    """Batch wrapper around the single-series forward WDM kernel."""
+    xp = backend.xp
+    coeffs = [
+        _compute_wdm_from_spectrum(
+            x_fft[idx],
+            nt=nt,
+            nf=nf,
+            window=window,
+            backend=backend,
+        )
+        for idx in range(int(x_fft.shape[0]))
+    ]
+    return xp.stack(coeffs, axis=0)
+
+
+def _reconstruct_spectrum_from_wdm_batch(
+    w: Any,
+    *,
+    nt: int,
+    nf: int,
+    window: Any,
+    backend: Backend,
+) -> Any:
+    """Batch wrapper around the single-series inverse WDM kernel."""
+    xp = backend.xp
+    spectra = [
+        _reconstruct_spectrum_from_wdm(
+            w[idx],
+            nt=nt,
+            nf=nf,
+            window=window,
+            backend=backend,
+        )
+        for idx in range(int(w.shape[0]))
+    ]
+    return xp.stack(spectra, axis=0)
+
+
 def from_time_to_wdm(
     data: Any,
     *,
@@ -196,7 +244,7 @@ def from_time_to_wdm(
 
     Parameters
     ----------
-    data : array, shape (nt * nf,)
+    data : array, shape (nt * nf,) or (batch, nt * nf)
         Real-valued time-domain samples.
     nt : int
         Number of WDM time bins (must be even).
@@ -216,7 +264,7 @@ def from_time_to_wdm(
 
     Returns
     -------
-    coeffs : array, shape (nt, nf + 1), float64
+    coeffs : array, shape (batch, nt, nf + 1), float64
         Real-valued WDM coefficients.  Column m corresponds to
         frequency channel m.
     """
@@ -225,17 +273,19 @@ def from_time_to_wdm(
 
     n_total = nt * nf
     samples = backend.asarray(data, dtype=backend.xp.complex128)
-    if samples.ndim != 1:
-        raise ValueError("Input time-domain data must be one-dimensional.")
-    if int(samples.shape[0]) != n_total:
-        raise ValueError(f"Input length {samples.shape[0]} must equal nt*nf={n_total}.")
+    if samples.ndim not in (1, 2):
+        raise ValueError("Input time-domain data must be one- or two-dimensional.")
+    if samples.ndim == 1:
+        samples = samples[None, :]
+    if int(samples.shape[-1]) != n_total:
+        raise ValueError(f"Input length {samples.shape[-1]} must equal nt*nf={n_total}.")
 
-    x_fft = backend.asarray(backend.fft.fft(samples), dtype=backend.xp.complex128)
+    x_fft = backend.asarray(backend.fft.fft(samples, axis=-1), dtype=backend.xp.complex128)
     window = backend.asarray(
         phi_window(backend, nt, nf, dt, a, d),
         dtype=backend.xp.complex128,
     )
-    return _compute_wdm_from_spectrum(
+    return _compute_wdm_from_spectrum_batch(
         x_fft,
         nt=nt,
         nf=nf,
@@ -260,10 +310,12 @@ def from_freq_to_wdm(
 
     n_total = nt * nf
     spectrum = backend.asarray(data, dtype=backend.xp.complex128)
-    if spectrum.ndim != 1:
-        raise ValueError("Input frequency-domain data must be one-dimensional.")
-    if int(spectrum.shape[0]) != n_total:
-        raise ValueError(f"Input length {spectrum.shape[0]} must equal nt*nf={n_total}.")
+    if spectrum.ndim not in (1, 2):
+        raise ValueError("Input frequency-domain data must be one- or two-dimensional.")
+    if spectrum.ndim == 1:
+        spectrum = spectrum[None, :]
+    if int(spectrum.shape[-1]) != n_total:
+        raise ValueError(f"Input length {spectrum.shape[-1]} must equal nt*nf={n_total}.")
 
     projected = backend.asarray(
         _project_to_real_signal_spectrum(spectrum, backend),
@@ -273,7 +325,7 @@ def from_freq_to_wdm(
         phi_window(backend, nt, nf, dt, a, d),
         dtype=backend.xp.complex128,
     )
-    return _compute_wdm_from_spectrum(
+    return _compute_wdm_from_spectrum_batch(
         projected,
         nt=nt,
         nf=nf,
@@ -334,8 +386,9 @@ def from_wdm_to_time(
 
     Parameters
     ----------
-    coeffs : array, shape (nt, nf + 1), float64
-        Real-valued WDM coefficients.
+    coeffs : array, shape (nt, nf + 1) or (batch, nt, nf + 1), float64
+        Real-valued WDM coefficients. Outputs are returned canonically as
+        ``(batch, nt, nf + 1)``.
     a, d : float
         Window parameters (d is reserved/unused).
     dt : float
@@ -345,15 +398,17 @@ def from_wdm_to_time(
 
     Returns
     -------
-    signal : array, shape (nt * nf,), float64
+    signal : array, shape (batch, nt * nf), float64
         Reconstructed time-domain signal.
     """
     xp = backend.xp
     w = backend.asarray(coeffs, dtype=xp.float64)
-    if w.ndim != 2:
-        raise ValueError("WDM coefficients must be a two-dimensional array.")
+    if w.ndim not in (2, 3):
+        raise ValueError("WDM coefficients must be a two- or three-dimensional array.")
+    if w.ndim == 2:
+        w = w[None, :, :]
 
-    nt, ncols = (int(dim) for dim in w.shape)
+    nt, ncols = (int(dim) for dim in w.shape[-2:])
     nf = ncols - 1
     validate_transform_shape(nt, nf)
     validate_window_parameter(a)
@@ -362,14 +417,14 @@ def from_wdm_to_time(
         phi_window(backend, nt, nf, dt, a, d),
         dtype=xp.complex128,
     )
-    spectrum = _reconstruct_spectrum_from_wdm(
+    spectrum = _reconstruct_spectrum_from_wdm_batch(
         w,
         nt=nt,
         nf=nf,
         window=window,
         backend=backend,
     )
-    return xp.real(backend.fft.ifft(spectrum))
+    return xp.real(backend.fft.ifft(spectrum, axis=-1))
 
 
 def from_wdm_to_freq(
@@ -383,10 +438,12 @@ def from_wdm_to_freq(
     """Reconstruct the Fourier-domain signal represented by WDM coefficients."""
     xp = backend.xp
     w = backend.asarray(coeffs, dtype=xp.float64)
-    if w.ndim != 2:
-        raise ValueError("WDM coefficients must be a two-dimensional array.")
+    if w.ndim not in (2, 3):
+        raise ValueError("WDM coefficients must be a two- or three-dimensional array.")
+    if w.ndim == 2:
+        w = w[None, :, :]
 
-    nt, ncols = (int(dim) for dim in w.shape)
+    nt, ncols = (int(dim) for dim in w.shape[-2:])
     nf = ncols - 1
     validate_transform_shape(nt, nf)
     validate_window_parameter(a)
@@ -395,7 +452,7 @@ def from_wdm_to_freq(
         phi_window(backend, nt, nf, dt, a, d),
         dtype=xp.complex128,
     )
-    analytic = _reconstruct_spectrum_from_wdm(
+    analytic = _reconstruct_spectrum_from_wdm_batch(
         w,
         nt=nt,
         nf=nf,
