@@ -41,3 +41,7 @@ Thumbs.db
 
 test_out/
 docs/studies/run_all.sh
+
+# Generated notebook outputs and images (use docs/_static/ instead)
+docs/studies/**/outdir_*/
+docs/studies/**/*_assets/
