@@ -125,7 +125,8 @@ def plot_time_series(
             axis.set_ylabel("Amplitude")
             axis.set_title(f"Batch {idx}")
             _fmt_time_axis(times, axis)
-        fig.tight_layout()
+        if ax is None:
+            fig.tight_layout()
         return fig, axes
 
     plt = _get_pyplot()
@@ -170,7 +171,8 @@ def plot_frequency_series(
             axis.set_title(f"Batch {idx}")
             if positive_only and len(freqs) > 0:
                 axis.set_xlim(0.0, float(freqs[-1]))
-        fig.tight_layout()
+        if ax is None:
+            fig.tight_layout()
         return fig, axes
 
     plt = _get_pyplot()
@@ -402,7 +404,8 @@ def plot_wdm_grid(
                     bbox=txtbox_local,
                 )
 
-        fig.tight_layout()
+        if ax is None:
+            fig.tight_layout()
         return fig, axes
 
     if ax is None:

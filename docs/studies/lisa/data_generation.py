@@ -5,9 +5,11 @@ Pipeline:
 2. Compute the sky-averaged detector-response tensor (cached to disk).
 3. Draw a full-year A/E/T realization of instrument noise + stochastic foreground.
 4. Inject resolved Galactic binaries (JaxGB) into the realization.
-5. Compute and print per-source matched-filter SNR (A+E channels).
+5. Compute and print per-source matched-filter SNR (A+E+T channels).
 6. Save ``injection.npz`` and diagnostic plots.
 """
+import atexit
+import time
 from multiprocessing import cpu_count, get_context
 
 import healpy as hp
@@ -40,6 +42,15 @@ from wdm_transform.signal_processing import (
 )
 
 OUTDIR = BACKGROUND_DIR
+_SCRIPT_START = time.perf_counter()
+
+
+def _print_runtime() -> None:
+    elapsed = time.perf_counter() - _SCRIPT_START
+    print(f"\n[data_generation.py] runtime: {elapsed:.2f} s ({elapsed / 60.0:.2f} min)")
+
+
+atexit.register(_print_runtime)
 
 # Number of orbital time steps for the response-tensor computation.
 # Workers read this constant at import time — it must not change.
@@ -406,7 +417,7 @@ def main():
         white = np.random.normal(size=len(freqs_all)) + 1j * np.random.normal(size=len(freqs_all))
         return np.sqrt(psd) * white / np.sqrt(2)
 
-    nAf, nEf = _noise_fd(0), _noise_fd(1)
+    nAf, nEf, nTf = _noise_fd(0), _noise_fd(1), _noise_fd(2)
 
     DT_chunk = yr / ntimes
     Nsamp_chunk = int(DT_chunk / dt)
@@ -416,18 +427,22 @@ def main():
 
     gAtf = np.zeros((ntimes, len(freqs_chunk)), dtype=complex)
     gEtf = np.zeros((ntimes, len(freqs_chunk)), dtype=complex)
+    gTtf = np.zeros((ntimes, len(freqs_chunk)), dtype=complex)
 
     with get_process_pool() as pool:
         for ti, AETf in pool.imap_unordered(compute_time, range(ntimes)):
             gAtf[ti] = AETf[0]
             gEtf[ti] = AETf[1]
+            gTtf[ti] = AETf[2]
 
     n_freqs = len(freqs_all)
     gAf = stitch_chunked_foreground_spectrum(gAtf, n_freqs)
     gEf = stitch_chunked_foreground_spectrum(gEtf, n_freqs)
+    gTf = stitch_chunked_foreground_spectrum(gTtf, n_freqs)
 
     a_bg_f = nAf + gAf
     e_bg_f = nEf + gEf
+    t_bg_f = nTf + gTf
 
     plt.loglog(freqs_all, np.abs(nAf) ** 2, label="A Noise", alpha=0.5)
     plt.loglog(freqs_chunk, np.abs(gAtf[ntimes // 2]) ** 2, label=f"A Galaxy t={ntimes//2}", alpha=0.5)
@@ -450,39 +465,53 @@ def main():
 
     psd_A = build_total_noise_psd(Rtildeop_tf_times_H, frequencies, freqs_all, channel=0)
     psd_E = build_total_noise_psd(Rtildeop_tf_times_H, frequencies, freqs_all, channel=1)
+    psd_T = build_total_noise_psd(Rtildeop_tf_times_H, frequencies, freqs_all, channel=2)
 
     gb_orbit = lisaorbits.EqualArmlengthOrbits()
     jgb_full = JaxGB(gb_orbit, t_obs=yr, t0=0.0, n=256)
 
     gb_Af = np.zeros(n_freqs, dtype=np.complex128)
     gb_Ef = np.zeros(n_freqs, dtype=np.complex128)
+    gb_Tf = np.zeros(n_freqs, dtype=np.complex128)
     source_Af: list[np.ndarray] = []
     source_Ef: list[np.ndarray] = []
-    snrs: list[float] = []
+    source_Tf: list[np.ndarray] = []
+    snrs_ae: list[float] = []
+    snrs_aet: list[float] = []
 
     print(f"\nInjecting {len(SOURCE_PARAMS)} resolved GB sources with JaxGB:")
     for i, src in enumerate(SOURCE_PARAMS):
         params_j = jnp.asarray(src, dtype=jnp.float64)
-        a_loc, e_loc, _ = jgb_full.get_tdi(params_j, tdi_generation=1.5, tdi_combination="AET")
+        a_loc, e_loc, t_loc = jgb_full.get_tdi(params_j, tdi_generation=1.5, tdi_combination="AET")
         kmin = int(jnp.asarray(jgb_full.get_kmin(params_j[None, 0:1])).reshape(-1)[0])
         h_A = place_local_tdi(np.asarray(a_loc), kmin, n_freqs)
         h_E = place_local_tdi(np.asarray(e_loc), kmin, n_freqs)
+        h_T = place_local_tdi(np.asarray(t_loc), kmin, n_freqs)
         gb_Af += h_A
         gb_Ef += h_E
+        gb_Tf += h_T
         source_Af.append(h_A)
         source_Ef.append(h_E)
+        source_Tf.append(h_T)
         snr_A = matched_filter_snr_rfft(h_A, psd_A, freqs_all, dt=dt)
         snr_E = matched_filter_snr_rfft(h_E, psd_E, freqs_all, dt=dt)
-        snrs.append(float(np.hypot(snr_A, snr_E)))
-        print(f"  Source {i + 1}: f0={src[0]:.5e} Hz  SNR (A+E) = {snrs[-1]:.1f}")
+        snr_T = matched_filter_snr_rfft(h_T, psd_T, freqs_all, dt=dt)
+        snrs_ae.append(float(np.hypot(snr_A, snr_E)))
+        snrs_aet.append(float(np.sqrt(snr_A**2 + snr_E**2 + snr_T**2)))
+        print(
+            f"  Source {i + 1}: f0={src[0]:.5e} Hz  "
+            f"SNR (A+E+T) = {snrs_aet[-1]:.1f}"
+        )
 
     data_At = irfft(a_bg_f + gb_Af, n=Nsamp_tot)
     data_Et = irfft(e_bg_f + gb_Ef, n=Nsamp_tot)
+    data_Tt = irfft(t_bg_f + gb_Tf, n=Nsamp_tot)
 
-    fig, axes = plt.subplots(2, 1, figsize=(11, 8), sharex=True, constrained_layout=True)
+    fig, axes = plt.subplots(3, 1, figsize=(11, 11), sharex=True, constrained_layout=True)
     plot_specs = [
         ("A", psd_A, gb_Af, source_Af),
         ("E", psd_E, gb_Ef, source_Ef),
+        ("T", psd_T, gb_Tf, source_Tf),
     ]
     for ax, (label, noise_psd, total_signal, components) in zip(axes, plot_specs):
         ax.loglog(
@@ -522,10 +551,14 @@ def main():
         freqs=freqs_all,
         noise_psd_A=psd_A,
         noise_psd_E=psd_E,
+        noise_psd_T=psd_T,
         data_At=data_At,
         data_Et=data_Et,
+        data_Tt=data_Tt,
         source_params=SOURCE_PARAMS,
-        source_snrs=np.array(snrs),
+        source_snrs=np.array(snrs_aet),
+        source_snrs_ae=np.array(snrs_ae),
+        source_snrs_aet=np.array(snrs_aet),
     )
     print(f"\nSaved injection to {INJECTION_PATH}")
     print(f"  T_obs = {yr / 86400:.1f} days,  dt = {dt:.2f} s,  N = {Nsamp_tot}")

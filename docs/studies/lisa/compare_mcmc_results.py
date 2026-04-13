@@ -14,8 +14,10 @@ Expected input formats:
 from __future__ import annotations
 
 import argparse
+import atexit
 from dataclasses import dataclass
 from pathlib import Path
+import time
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -32,6 +34,15 @@ STUDY_DIR = Path(__file__).resolve().parent
 DEFAULT_OUTPUT_DIR = STUDY_DIR / "compare_mcmc_results_assets"
 DEFAULT_WDM_PATH = STUDY_DIR / "lisa_wdm_mcmc_assets" / "posteriors.npz"
 DEFAULT_FREQ_PATH = STUDY_DIR / "lisa_freq_mcmc_assets" / "posteriors.npz"
+_SCRIPT_START = time.perf_counter()
+
+
+def _print_runtime() -> None:
+	elapsed = time.perf_counter() - _SCRIPT_START
+	print(f"\n[compare_mcmc_results.py] runtime: {elapsed:.2f} s ({elapsed / 60.0:.2f} min)")
+
+
+atexit.register(_print_runtime)
 
 
 @dataclass(frozen=True)

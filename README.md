@@ -32,6 +32,9 @@ uv add wdm-transform
 Useful repository commands from the project root:
 
 ```bash
+# make a new venv for the repo
+uv venv
+
 # install local dev dependencies
 uv sync --extra dev
 

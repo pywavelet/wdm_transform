@@ -2,13 +2,14 @@
 
 Loads the cached ``injection.npz`` from ``data_generation.py``, truncates the
 time series to a length compatible with the WDM tiling, and performs WDM-domain
-Bayesian inference for two Galactic binaries with a diagonal Whittle likelihood.
+Bayesian inference for two Galactic binaries with a diagonal three-channel
+Whittle likelihood.
 
 Workflow:
 1. Load ``injection.npz``.
 2. Build the WDM data representation and analytic noise variance
    S[n,m] = S(f_m) / (2·dt) = S(f_m)·f_Nyquist.
-3. Print per-source SNR (WDM band, A channel).
+3. Print per-source SNR (WDM band, A+E+T channels).
 4. Run independent NumPyro NUTS chains on a narrow WDM band per source.
 5. Print NUTS diagnostics and 90 % CI coverage; save corner plots and posteriors.
 
@@ -26,10 +27,22 @@ are computed.
 
 from __future__ import annotations
 
+import atexit
 import os
+import time
 from dataclasses import dataclass
 
 os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
+
+_SCRIPT_START = time.perf_counter()
+
+
+def _print_runtime() -> None:
+    elapsed = time.perf_counter() - _SCRIPT_START
+    print(f"\n[lisa_wdm_mcmc.py] runtime: {elapsed:.2f} s ({elapsed / 60.0:.2f} min)")
+
+
+atexit.register(_print_runtime)
 
 import jax
 import jax.numpy as jnp
@@ -56,7 +69,7 @@ from lisa_common import (
     wrap_phase,
 )
 from numpyro.infer import MCMC, NUTS, init_to_value
-from wdm_transform import TimeSeries
+from wdm_transform import TimeSeries, WDM
 from wdm_transform.signal_processing import matched_filter_snr_wdm, wdm_noise_variance
 from wdm_transform.transforms import forward_wdm_band
 
@@ -89,7 +102,11 @@ if not INJECTION_PATH.exists():
 _inj = np.load(INJECTION_PATH)
 dt = float(_inj["dt"])
 data_At_full = np.asarray(_inj["data_At"], dtype=float)
-noise_psd_saved = np.asarray(_inj["noise_psd_A"], dtype=float)
+data_Et_full = np.asarray(_inj["data_Et"], dtype=float)
+data_Tt_full = np.asarray(_inj["data_Tt"], dtype=float)
+noise_psd_A_saved = np.asarray(_inj["noise_psd_A"], dtype=float)
+noise_psd_E_saved = np.asarray(_inj["noise_psd_E"], dtype=float)
+noise_psd_T_saved = np.asarray(_inj["noise_psd_T"], dtype=float)
 freqs_saved = np.asarray(_inj["freqs"], dtype=float)
 SOURCE_PARAMS = require_positive_fdot(
     np.asarray(_inj["source_params"], dtype=float),
@@ -100,6 +117,8 @@ _inj.close()
 _lcm = 2 * max(NT, NT_PLOT)
 n_keep = (len(data_At_full) // _lcm) * _lcm
 data_At = data_At_full[:n_keep]
+data_Et = data_Et_full[:n_keep]
+data_Tt = data_Tt_full[:n_keep]
 t_obs = n_keep * dt
 NF = n_keep // NT
 n_freqs = n_keep // 2 + 1
@@ -112,10 +131,14 @@ print(
 
 freq_grid = np.linspace(0.0, 0.5 / dt, NF + 1)
 time_grid = np.arange(NT) * (t_obs / NT)
-_data_rfft = np.fft.rfft(data_At)
+_data_A_rfft = np.fft.rfft(data_At)
+_data_E_rfft = np.fft.rfft(data_Et)
+_data_T_rfft = np.fft.rfft(data_Tt)
 
 probe_plot = TimeSeries(data_At, dt=dt).to_wdm(nt=NT_PLOT)
 data_wdm_plot = np.asarray(probe_plot.coeffs)
+if data_wdm_plot.ndim == 3 and data_wdm_plot.shape[0] == 1:
+    data_wdm_plot = data_wdm_plot[0]
 freq_grid_plot = np.asarray(probe_plot.freq_grid)
 time_grid_plot = np.asarray(probe_plot.time_grid)
 
@@ -137,8 +160,12 @@ class WdmBandData:
     band_rfft_size: int
     src_kmin: int
     src_kmax: int
-    data_band: np.ndarray
-    noise_var_band: np.ndarray
+    data_band_A: np.ndarray
+    data_band_E: np.ndarray
+    data_band_T: np.ndarray
+    noise_var_band_A: np.ndarray
+    noise_var_band_E: np.ndarray
+    noise_var_band_T: np.ndarray
     t_obs: float
     prior_center: np.ndarray
     prior_scale: np.ndarray
@@ -174,9 +201,11 @@ def build_wdm_band(
         prior_A=prior_A,
     )
 
-    x_data_local = jnp.asarray(_data_rfft[kmin_r:kmax_r], dtype=jnp.complex128)
-    data_band = forward_wdm_band(
-        x_data_local,
+    x_data_A_local = jnp.asarray(_data_A_rfft[kmin_r:kmax_r], dtype=jnp.complex128)
+    x_data_E_local = jnp.asarray(_data_E_rfft[kmin_r:kmax_r], dtype=jnp.complex128)
+    x_data_T_local = jnp.asarray(_data_T_rfft[kmin_r:kmax_r], dtype=jnp.complex128)
+    data_band_A = forward_wdm_band(
+        x_data_A_local,
         df=DF_RFFT,
         nfreqs_fourier=n_freqs,
         kmin=kmin_r,
@@ -188,15 +217,55 @@ def build_wdm_band(
         d=D_WDM,
         backend="jax",
     )
-    data_band = np.asarray(data_band)
+    data_band_E = forward_wdm_band(
+        x_data_E_local,
+        df=DF_RFFT,
+        nfreqs_fourier=n_freqs,
+        kmin=kmin_r,
+        nfreqs_wdm=NF,
+        ntimes_wdm=NT,
+        mmin=band_sl.start,
+        nf_sub_wdm=band_sl.stop - band_sl.start,
+        a=A_WDM,
+        d=D_WDM,
+        backend="jax",
+    )
+    data_band_T = forward_wdm_band(
+        x_data_T_local,
+        df=DF_RFFT,
+        nfreqs_fourier=n_freqs,
+        kmin=kmin_r,
+        nfreqs_wdm=NF,
+        ntimes_wdm=NT,
+        mmin=band_sl.start,
+        nf_sub_wdm=band_sl.stop - band_sl.start,
+        a=A_WDM,
+        d=D_WDM,
+        backend="jax",
+    )
+    data_band_A = np.asarray(data_band_A)
+    data_band_E = np.asarray(data_band_E)
+    data_band_T = np.asarray(data_band_T)
 
     band_freqs = freq_grid[band_sl.start:band_sl.stop]
-    noise_psd_band = np.maximum(
-        np.interp(band_freqs, freqs_saved, noise_psd_saved,
-                  left=noise_psd_saved[0], right=noise_psd_saved[-1]),
+    noise_psd_band_A = np.maximum(
+        np.interp(band_freqs, freqs_saved, noise_psd_A_saved,
+                  left=noise_psd_A_saved[0], right=noise_psd_A_saved[-1]),
         1e-60,
     )
-    noise_var_band = wdm_noise_variance(noise_psd_band, nt=NT, dt=dt)
+    noise_psd_band_E = np.maximum(
+        np.interp(band_freqs, freqs_saved, noise_psd_E_saved,
+                  left=noise_psd_E_saved[0], right=noise_psd_E_saved[-1]),
+        1e-60,
+    )
+    noise_psd_band_T = np.maximum(
+        np.interp(band_freqs, freqs_saved, noise_psd_T_saved,
+                  left=noise_psd_T_saved[0], right=noise_psd_T_saved[-1]),
+        1e-60,
+    )
+    noise_var_band_A = wdm_noise_variance(noise_psd_band_A, nt=NT, dt=dt)
+    noise_var_band_E = wdm_noise_variance(noise_psd_band_E, nt=NT, dt=dt)
+    noise_var_band_T = wdm_noise_variance(noise_psd_band_T, nt=NT, dt=dt)
 
     return WdmBandData(
         label=label,
@@ -209,8 +278,12 @@ def build_wdm_band(
         band_rfft_size=kmax_r - kmin_r,
         src_kmin=src_kmin,
         src_kmax=src_kmax,
-        data_band=data_band,
-        noise_var_band=noise_var_band,
+        data_band_A=data_band_A,
+        data_band_E=data_band_E,
+        data_band_T=data_band_T,
+        noise_var_band_A=noise_var_band_A,
+        noise_var_band_E=noise_var_band_E,
+        noise_var_band_T=noise_var_band_T,
         t_obs=t_obs,
         prior_center=prior_info.prior_center,
         prior_scale=prior_info.prior_scale,
@@ -226,7 +299,9 @@ BANDS = [
     for i, src in enumerate(SOURCE_PARAMS)
 ]
 
-del _data_rfft
+del _data_A_rfft
+del _data_E_rfft
+del _data_T_rfft
 
 for wband in BANDS:
     print(
@@ -236,20 +311,32 @@ for wband in BANDS:
     )
 
 
-def generate_a_wdm_for(params: jnp.ndarray, wband: WdmBandData) -> jnp.ndarray:
-    a_loc, _, _ = jgb.sum_tdi(
+def generate_aet_wdm_for(
+    params: jnp.ndarray, wband: WdmBandData
+) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    a_loc, e_loc, t_loc = jgb.sum_tdi(
         jnp.asarray(params, dtype=jnp.float64).reshape(1, -1),
         kmin=wband.src_kmin, kmax=wband.src_kmax, tdi_combination="AET",
     )
     local_start = wband.src_kmin - wband.kmin_rfft
     local_end = wband.src_kmax - wband.kmin_rfft
-    x_local = (
+    x_A_local = (
         jnp.zeros(wband.band_rfft_size, dtype=jnp.complex128)
         .at[local_start:local_end]
         .set(jnp.asarray(a_loc, dtype=jnp.complex128))
     )
-    h_band = forward_wdm_band(
-        x_local,
+    x_E_local = (
+        jnp.zeros(wband.band_rfft_size, dtype=jnp.complex128)
+        .at[local_start:local_end]
+        .set(jnp.asarray(e_loc, dtype=jnp.complex128))
+    )
+    x_T_local = (
+        jnp.zeros(wband.band_rfft_size, dtype=jnp.complex128)
+        .at[local_start:local_end]
+        .set(jnp.asarray(t_loc, dtype=jnp.complex128))
+    )
+    h_A_band = forward_wdm_band(
+        x_A_local,
         df=DF_RFFT,
         nfreqs_fourier=n_freqs,
         kmin=wband.kmin_rfft,
@@ -261,23 +348,56 @@ def generate_a_wdm_for(params: jnp.ndarray, wband: WdmBandData) -> jnp.ndarray:
         d=D_WDM,
         backend="jax",
     )
-    return h_band
+    h_E_band = forward_wdm_band(
+        x_E_local,
+        df=DF_RFFT,
+        nfreqs_fourier=n_freqs,
+        kmin=wband.kmin_rfft,
+        nfreqs_wdm=NF,
+        ntimes_wdm=NT,
+        mmin=wband.band_start,
+        nf_sub_wdm=wband.band_stop - wband.band_start,
+        a=A_WDM,
+        d=D_WDM,
+        backend="jax",
+    )
+    h_T_band = forward_wdm_band(
+        x_T_local,
+        df=DF_RFFT,
+        nfreqs_fourier=n_freqs,
+        kmin=wband.kmin_rfft,
+        nfreqs_wdm=NF,
+        ntimes_wdm=NT,
+        mmin=wband.band_start,
+        nf_sub_wdm=wband.band_stop - wband.band_start,
+        a=A_WDM,
+        d=D_WDM,
+        backend="jax",
+    )
+    return h_A_band, h_E_band, h_T_band
 
 
 snrs_optimal = []
-print("\nPer-source matched-filter SNR (A channel, WDM band):")
+print("\nPer-source matched-filter SNR (A+E+T channels, WDM band):")
 for wband in BANDS:
-    h_band = np.asarray(
-        generate_a_wdm_for(jnp.asarray(wband.fixed_params, dtype=jnp.float64), wband)
+    h_A_band, h_E_band, h_T_band = generate_aet_wdm_for(
+        jnp.asarray(wband.fixed_params, dtype=jnp.float64), wband
     )
-    snr = matched_filter_snr_wdm(h_band, wband.noise_var_band)
+    snr_A = matched_filter_snr_wdm(np.asarray(h_A_band), wband.noise_var_band_A)
+    snr_E = matched_filter_snr_wdm(np.asarray(h_E_band), wband.noise_var_band_E)
+    snr_T = matched_filter_snr_wdm(np.asarray(h_T_band), wband.noise_var_band_T)
+    snr = float(np.sqrt(snr_A**2 + snr_E**2 + snr_T**2))
     snrs_optimal.append(float(snr))
     print(f"  {wband.label}: SNR = {snr:.1f}")
 
 
 def sample_source_wdm(wband: WdmBandData, *, seed: int = 0) -> MCMC:
-    data_j = jnp.asarray(wband.data_band, dtype=jnp.float64)
-    noise_var_j = jnp.asarray(wband.noise_var_band, dtype=jnp.float64)
+    data_A_j = jnp.asarray(wband.data_band_A, dtype=jnp.float64)
+    data_E_j = jnp.asarray(wband.data_band_E, dtype=jnp.float64)
+    data_T_j = jnp.asarray(wband.data_band_T, dtype=jnp.float64)
+    noise_var_A_j = jnp.asarray(wband.noise_var_band_A, dtype=jnp.float64)
+    noise_var_E_j = jnp.asarray(wband.noise_var_band_E, dtype=jnp.float64)
+    noise_var_T_j = jnp.asarray(wband.noise_var_band_T, dtype=jnp.float64)
     fixed_params_j = jnp.asarray(wband.fixed_params, dtype=jnp.float64)
     src_kmin = int(wband.src_kmin)
     src_kmax = int(wband.src_kmax)
@@ -288,20 +408,30 @@ def sample_source_wdm(wband: WdmBandData, *, seed: int = 0) -> MCMC:
     band_stop = int(wband.band_stop)
     kmin_rfft = int(wband.kmin_rfft)
 
-    def generate(params: jnp.ndarray) -> jnp.ndarray:
-        a_loc, _, _ = jgb.sum_tdi(
+    def generate(params: jnp.ndarray) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+        a_loc, e_loc, t_loc = jgb.sum_tdi(
             jnp.asarray(params, dtype=jnp.float64).reshape(1, -1),
             kmin=src_kmin,
             kmax=src_kmax,
             tdi_combination="AET",
         )
-        x_local = (
+        x_A_local = (
             jnp.zeros(band_rfft_size, dtype=jnp.complex128)
             .at[local_start:local_end]
             .set(jnp.asarray(a_loc, dtype=jnp.complex128))
         )
-        h_band = forward_wdm_band(
-            x_local,
+        x_E_local = (
+            jnp.zeros(band_rfft_size, dtype=jnp.complex128)
+            .at[local_start:local_end]
+            .set(jnp.asarray(e_loc, dtype=jnp.complex128))
+        )
+        x_T_local = (
+            jnp.zeros(band_rfft_size, dtype=jnp.complex128)
+            .at[local_start:local_end]
+            .set(jnp.asarray(t_loc, dtype=jnp.complex128))
+        )
+        h_A_band = forward_wdm_band(
+            x_A_local,
             df=DF_RFFT,
             nfreqs_fourier=n_freqs,
             kmin=kmin_rfft,
@@ -313,7 +443,33 @@ def sample_source_wdm(wband: WdmBandData, *, seed: int = 0) -> MCMC:
             d=D_WDM,
             backend="jax",
         )
-        return h_band
+        h_E_band = forward_wdm_band(
+            x_E_local,
+            df=DF_RFFT,
+            nfreqs_fourier=n_freqs,
+            kmin=kmin_rfft,
+            nfreqs_wdm=NF,
+            ntimes_wdm=NT,
+            mmin=band_start,
+            nf_sub_wdm=band_stop - band_start,
+            a=A_WDM,
+            d=D_WDM,
+            backend="jax",
+        )
+        h_T_band = forward_wdm_band(
+            x_T_local,
+            df=DF_RFFT,
+            nfreqs_fourier=n_freqs,
+            kmin=kmin_rfft,
+            nfreqs_wdm=NF,
+            ntimes_wdm=NT,
+            mmin=band_start,
+            nf_sub_wdm=band_stop - band_start,
+            a=A_WDM,
+            d=D_WDM,
+            backend="jax",
+        )
+        return h_A_band, h_E_band, h_T_band
 
     def model():
         del_logf0 = numpyro.sample("del_logf0", dist.Normal(0.0, 1.0))
@@ -355,11 +511,15 @@ def sample_source_wdm(wband: WdmBandData, *, seed: int = 0) -> MCMC:
             .at[2].set(A)
             .at[7].set(phi0)
         )
-        h = generate(params)
-        diff = data_j - h
+        h_A, h_E, h_T = generate(params)
+        diff_A = data_A_j - h_A
+        diff_E = data_E_j - h_E
+        diff_T = data_T_j - h_T
         numpyro.factor(
             "ll",
-            -0.5 * jnp.sum(diff**2 / noise_var_j + jnp.log(2.0 * jnp.pi * noise_var_j)),
+            -0.5 * jnp.sum(diff_A**2 / noise_var_A_j + jnp.log(2.0 * jnp.pi * noise_var_A_j))
+            -0.5 * jnp.sum(diff_E**2 / noise_var_E_j + jnp.log(2.0 * jnp.pi * noise_var_E_j))
+            -0.5 * jnp.sum(diff_T**2 / noise_var_T_j + jnp.log(2.0 * jnp.pi * noise_var_T_j)),
         )
 
     kernel = NUTS(
@@ -411,23 +571,33 @@ for i, wband in enumerate(BANDS):
 
     samples_i_full = build_sampled_source_params(wband.fixed_params, samples_i)
 
-    noise_var_j = jnp.asarray(wband.noise_var_band, dtype=jnp.float64)
+    noise_var_A_j = jnp.asarray(wband.noise_var_band_A, dtype=jnp.float64)
+    noise_var_E_j = jnp.asarray(wband.noise_var_band_E, dtype=jnp.float64)
+    noise_var_T_j = jnp.asarray(wband.noise_var_band_T, dtype=jnp.float64)
 
     @jax.jit
     def _get_snrs(ps, wb=wband):
         def _single_snr(p):
-            a_loc_s, _, _ = jgb.sum_tdi(
+            a_loc_s, e_loc_s, t_loc_s = jgb.sum_tdi(
                 p.reshape(1, -1), kmin=wb.src_kmin, kmax=wb.src_kmax,
                 tdi_combination="AET",
             )
             local_start = wb.src_kmin - wb.kmin_rfft
             local_end = wb.src_kmax - wb.kmin_rfft
-            x_local = (
+            x_A_local = (
                 jnp.zeros(wb.band_rfft_size, dtype=jnp.complex128)
                 .at[local_start:local_end].set(a_loc_s)
             )
-            h_wdm = forward_wdm_band(
-                x_local,
+            x_E_local = (
+                jnp.zeros(wb.band_rfft_size, dtype=jnp.complex128)
+                .at[local_start:local_end].set(e_loc_s)
+            )
+            x_T_local = (
+                jnp.zeros(wb.band_rfft_size, dtype=jnp.complex128)
+                .at[local_start:local_end].set(t_loc_s)
+            )
+            h_A_wdm = forward_wdm_band(
+                x_A_local,
                 df=DF_RFFT,
                 nfreqs_fourier=n_freqs,
                 kmin=wb.kmin_rfft,
@@ -439,7 +609,38 @@ for i, wband in enumerate(BANDS):
                 d=D_WDM,
                 backend="jax",
             )
-            return jnp.sqrt(jnp.sum(h_wdm**2 / noise_var_j))
+            h_E_wdm = forward_wdm_band(
+                x_E_local,
+                df=DF_RFFT,
+                nfreqs_fourier=n_freqs,
+                kmin=wb.kmin_rfft,
+                nfreqs_wdm=NF,
+                ntimes_wdm=NT,
+                mmin=wb.band_start,
+                nf_sub_wdm=wb.band_stop - wb.band_start,
+                a=A_WDM,
+                d=D_WDM,
+                backend="jax",
+            )
+            h_T_wdm = forward_wdm_band(
+                x_T_local,
+                df=DF_RFFT,
+                nfreqs_fourier=n_freqs,
+                kmin=wb.kmin_rfft,
+                nfreqs_wdm=NF,
+                ntimes_wdm=NT,
+                mmin=wb.band_start,
+                nf_sub_wdm=wb.band_stop - wb.band_start,
+                a=A_WDM,
+                d=D_WDM,
+                backend="jax",
+            )
+            snr2 = (
+                jnp.sum(h_A_wdm**2 / noise_var_A_j)
+                + jnp.sum(h_E_wdm**2 / noise_var_E_j)
+                + jnp.sum(h_T_wdm**2 / noise_var_T_j)
+            )
+            return jnp.sqrt(snr2)
         return jax.vmap(_single_snr)(ps)
 
     snr_samples = np.asarray(_get_snrs(jnp.array(samples_i_full)))
@@ -462,9 +663,19 @@ _out_path = save_posterior_archive(
 print(f"\nSaved posteriors to {_out_path}")
 
 fig, ax = plt.subplots(figsize=(12, 4), constrained_layout=True)
-mesh = ax.pcolormesh(
-    time_grid_plot, freq_grid_plot, np.log(data_wdm_plot ** 2 + 1e-30).T,
-    shading="nearest", cmap="viridis",
+overview_wdm = WDM(
+    data_wdm_plot ** 2,
+    dt=probe_plot.dt,
+    a=probe_plot.a,
+    d=probe_plot.d,
+    backend=probe_plot.backend,
+)
+overview_wdm.plot(
+    ax=ax,
+    zscale="log",
+    cmap="viridis",
+    show_gridinfo=False,
+    cbar_label="WDM Local Power",
 )
 for wband in BANDS:
     ax.axhspan(
@@ -472,10 +683,7 @@ for wband in BANDS:
         color="white", alpha=0.10, label=wband.label,
     )
 ax.legend(fontsize=8, loc="upper right")
-ax.set_title("Injected WDM data (A channel)")
-ax.set_xlabel("Time [s]")
-ax.set_ylabel("Frequency [Hz]")
-fig.colorbar(mesh, ax=ax, label="log local power")
+ax.set_title("Injected WDM data (A channel overview)")
 save_figure(fig, FIGURE_OUTPUT_DIR, "wdm_overview")
 
 fig, axes = plt.subplots(
@@ -487,13 +695,12 @@ for row, (wband, samples_i) in enumerate(zip(BANDS, all_samples, strict=True)):
     params_med = wband.fixed_params.copy()
     params_med[[0, 1, 2, 7]] = [theta_med[0], theta_med[1], theta_med[2],
                                   wrap_phase(theta_med[3]) % (2 * np.pi)]
-    map_wdm = np.asarray(
-        generate_a_wdm_for(jnp.array(params_med, dtype=jnp.float64), wband)
-    )
+    map_wdm_A, _, _ = generate_aet_wdm_for(jnp.array(params_med, dtype=jnp.float64), wband)
+    map_wdm_A = np.asarray(map_wdm_A)
     band_freq = freq_grid[wband.band_start:wband.band_stop]
     for ax, coeffs, title in [
-        (axes[row, 0], wband.data_band, f"{wband.label} — data"),
-        (axes[row, 1], map_wdm, f"{wband.label} — posterior median"),
+        (axes[row, 0], wband.data_band_A, f"{wband.label} — data (A)"),
+        (axes[row, 1], map_wdm_A, f"{wband.label} — posterior median (A)"),
     ]:
         mesh = ax.pcolormesh(
             time_grid, band_freq, np.log(coeffs ** 2 + 1e-30).T,

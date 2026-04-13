@@ -2,11 +2,11 @@
 
 Loads the cached ``injection.npz`` from ``data_generation.py`` and performs
 frequency-domain Bayesian inference for two Galactic binaries with a local
-Whittle likelihood.
+three-channel Whittle likelihood.
 
 Workflow:
 1. Load ``injection.npz``.
-2. Print per-source Whittle SNR in the A channel.
+2. Print per-source Whittle SNR in the A+E+T channels.
 3. Run independent NumPyro NUTS chains on a narrow frequency band per source.
 4. Save posterior summaries and diagnostic figures.
 
@@ -16,10 +16,22 @@ The two injected GBs are well-separated in frequency, so each is fit independent
 
 from __future__ import annotations
 
+import atexit
 import os
+import time
 from dataclasses import dataclass
 
 os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
+
+_SCRIPT_START = time.perf_counter()
+
+
+def _print_runtime() -> None:
+    elapsed = time.perf_counter() - _SCRIPT_START
+    print(f"\n[lisa_freq_mcmc.py] runtime: {elapsed:.2f} s ({elapsed / 60.0:.2f} min)")
+
+
+atexit.register(_print_runtime)
 
 import jax
 import jax.numpy as jnp
@@ -67,7 +79,11 @@ _inj = np.load(INJECTION_PATH)
 dt = float(_inj["dt"])
 t_obs_saved = float(_inj["t_obs"])
 data_At_full = np.asarray(_inj["data_At"], dtype=float)
-noise_psd_saved = np.asarray(_inj["noise_psd_A"], dtype=float)
+data_Et_full = np.asarray(_inj["data_Et"], dtype=float)
+data_Tt_full = np.asarray(_inj["data_Tt"], dtype=float)
+noise_psd_A_saved = np.asarray(_inj["noise_psd_A"], dtype=float)
+noise_psd_E_saved = np.asarray(_inj["noise_psd_E"], dtype=float)
+noise_psd_T_saved = np.asarray(_inj["noise_psd_T"], dtype=float)
 freqs_saved = np.asarray(_inj["freqs"], dtype=float)
 SOURCE_PARAMS = require_positive_fdot(
     np.asarray(_inj["source_params"], dtype=float),
@@ -76,20 +92,44 @@ SOURCE_PARAMS = require_positive_fdot(
 _inj.close()
 
 data_At = data_At_full
+data_Et = data_Et_full
+data_Tt = data_Tt_full
 t_obs = t_obs_saved
 df = 1.0 / t_obs
 
 freqs = rfftfreq(len(data_At), dt)
-data_f = rfft(data_At)
+data_Af = rfft(data_At)
+data_Ef = rfft(data_Et)
+data_Tf = rfft(data_Tt)
 n_freq = len(freqs)
 
-noise_psd_full = np.maximum(
+noise_psd_A_full = np.maximum(
     np.interp(
         freqs,
         freqs_saved,
-        noise_psd_saved,
-        left=noise_psd_saved[0],
-        right=noise_psd_saved[-1],
+        noise_psd_A_saved,
+        left=noise_psd_A_saved[0],
+        right=noise_psd_A_saved[-1],
+    ),
+    1e-60,
+)
+noise_psd_E_full = np.maximum(
+    np.interp(
+        freqs,
+        freqs_saved,
+        noise_psd_E_saved,
+        left=noise_psd_E_saved[0],
+        right=noise_psd_E_saved[-1],
+    ),
+    1e-60,
+)
+noise_psd_T_full = np.maximum(
+    np.interp(
+        freqs,
+        freqs_saved,
+        noise_psd_T_saved,
+        left=noise_psd_T_saved[0],
+        right=noise_psd_T_saved[-1],
     ),
     1e-60,
 )
@@ -105,24 +145,34 @@ orbit_model = lisaorbits.EqualArmlengthOrbits()
 jgb = JaxGB(orbit_model, t_obs=t_obs, t0=0.0, n=256)
 
 
-def source_a_band(params: np.ndarray, kmin: int, kmax: int) -> np.ndarray:
-    A, _, _ = jgb.sum_tdi(
+def source_aet_band(params: np.ndarray, kmin: int, kmax: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    A, E, T = jgb.sum_tdi(
         np.asarray(params, dtype=float).reshape(1, -1),
         kmin=int(kmin),
         kmax=int(kmax),
         tdi_combination="AET",
     )
-    return np.asarray(A, dtype=np.complex128).reshape(-1)
+    return (
+        np.asarray(A, dtype=np.complex128).reshape(-1),
+        np.asarray(E, dtype=np.complex128).reshape(-1),
+        np.asarray(T, dtype=np.complex128).reshape(-1),
+    )
 
 
-def source_a_band_jax(params: jnp.ndarray, kmin: int, kmax: int) -> jnp.ndarray:
-    A, _, _ = jgb.sum_tdi(
+def source_aet_band_jax(
+    params: jnp.ndarray, kmin: int, kmax: int
+) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    A, E, T = jgb.sum_tdi(
         jnp.asarray(params, dtype=jnp.float64).reshape(1, -1),
         kmin=int(kmin),
         kmax=int(kmax),
         tdi_combination="AET",
     )
-    return jnp.asarray(A, dtype=jnp.complex128).reshape(-1)
+    return (
+        jnp.asarray(A, dtype=jnp.complex128).reshape(-1),
+        jnp.asarray(E, dtype=jnp.complex128).reshape(-1),
+        jnp.asarray(T, dtype=jnp.complex128).reshape(-1),
+    )
 
 
 # ── Band data ─────────────────────────────────────────────────────────────────
@@ -132,8 +182,12 @@ def source_a_band_jax(params: jnp.ndarray, kmin: int, kmax: int) -> jnp.ndarray:
 class BandData:
     label: str
     freqs: np.ndarray
-    data: np.ndarray
-    noise_psd: np.ndarray
+    data_A: np.ndarray
+    data_E: np.ndarray
+    data_T: np.ndarray
+    noise_psd_A: np.ndarray
+    noise_psd_E: np.ndarray
+    noise_psd_T: np.ndarray
     fixed_params: np.ndarray
     t_obs: float
     band_kmin: int
@@ -158,7 +212,9 @@ def build_band(
     kmax = min(k_center + jgb.n, n_freq)
 
     band_freqs = freqs[kmin:kmax]
-    noise_band = np.maximum(np.interp(band_freqs, freqs, noise_psd_full), 1e-60)
+    noise_band_A = np.maximum(np.interp(band_freqs, freqs, noise_psd_A_full), 1e-60)
+    noise_band_E = np.maximum(np.interp(band_freqs, freqs, noise_psd_E_full), 1e-60)
+    noise_band_T = np.maximum(np.interp(band_freqs, freqs, noise_psd_T_full), 1e-60)
 
     prior_info = build_local_prior_info(
         params,
@@ -171,8 +227,12 @@ def build_band(
     return BandData(
         label=label,
         freqs=band_freqs,
-        data=data_f[kmin:kmax],
-        noise_psd=noise_band,
+        data_A=data_Af[kmin:kmax],
+        data_E=data_Ef[kmin:kmax],
+        data_T=data_Tf[kmin:kmax],
+        noise_psd_A=noise_band_A,
+        noise_psd_E=noise_band_E,
+        noise_psd_T=noise_band_T,
         fixed_params=params.copy(),
         t_obs=t_obs,
         band_kmin=kmin,
@@ -193,24 +253,33 @@ BANDS = [
 
 # ── Per-source SNR ────────────────────────────────────────────────────────────
 snrs_optimal = []
-print("\nPer-source matched-filter SNR (A channel):")
+print("\nPer-source matched-filter SNR (A+E+T channels):")
 for i, src in enumerate(SOURCE_PARAMS):
     k_center = int(np.rint(src[0] * t_obs))
     kmin = max(k_center - jgb.n, 0)
     kmax = min(k_center + jgb.n, n_freq)
     band_freqs = freqs[kmin:kmax]
-    noise_band = np.maximum(np.interp(band_freqs, freqs, noise_psd_full), 1e-60)
+    noise_band_A = np.maximum(np.interp(band_freqs, freqs, noise_psd_A_full), 1e-60)
+    noise_band_E = np.maximum(np.interp(band_freqs, freqs, noise_psd_E_full), 1e-60)
+    noise_band_T = np.maximum(np.interp(band_freqs, freqs, noise_psd_T_full), 1e-60)
 
-    h = source_a_band_jax(jnp.asarray(src, dtype=jnp.float64), int(kmin), int(kmax))
-    snr = matched_filter_snr_rfft(np.asarray(h), noise_band, band_freqs, dt=dt)
+    h_A, h_E, h_T = source_aet_band_jax(jnp.asarray(src, dtype=jnp.float64), int(kmin), int(kmax))
+    snr_A = matched_filter_snr_rfft(np.asarray(h_A), noise_band_A, band_freqs, dt=dt)
+    snr_E = matched_filter_snr_rfft(np.asarray(h_E), noise_band_E, band_freqs, dt=dt)
+    snr_T = matched_filter_snr_rfft(np.asarray(h_T), noise_band_T, band_freqs, dt=dt)
+    snr = float(np.sqrt(snr_A**2 + snr_E**2 + snr_T**2))
     snrs_optimal.append(float(snr))
     print(f"  GB {i + 1}: SNR = {snr:.1f}")
 
 
 def sample_source(band: BandData, *, seed: int = 0) -> MCMC:
     """Run NUTS for one source."""
-    data_j = jnp.asarray(band.data, dtype=jnp.complex128)
-    psd_j = jnp.asarray(band.noise_psd, dtype=jnp.float64)
+    data_A_j = jnp.asarray(band.data_A, dtype=jnp.complex128)
+    data_E_j = jnp.asarray(band.data_E, dtype=jnp.complex128)
+    data_T_j = jnp.asarray(band.data_T, dtype=jnp.complex128)
+    psd_A_j = jnp.asarray(band.noise_psd_A, dtype=jnp.float64)
+    psd_E_j = jnp.asarray(band.noise_psd_E, dtype=jnp.float64)
+    psd_T_j = jnp.asarray(band.noise_psd_T, dtype=jnp.float64)
     dt_j = jnp.asarray(dt, dtype=jnp.float64)
     df_j = jnp.asarray(df, dtype=jnp.float64)
 
@@ -265,12 +334,15 @@ def sample_source(band: BandData, *, seed: int = 0) -> MCMC:
             .at[2].set(A)
             .at[7].set(phi0)
         )
-        h = source_a_band_jax(params, band.band_kmin, band.band_kmax)
-        residual = data_j - h
-        residual_phys = dt_j * residual
+        h_A, h_E, h_T = source_aet_band_jax(params, band.band_kmin, band.band_kmax)
+        residual_A_phys = dt_j * (data_A_j - h_A)
+        residual_E_phys = dt_j * (data_E_j - h_E)
+        residual_T_phys = dt_j * (data_T_j - h_T)
         numpyro.factor(
             "whittle",
-            -jnp.sum(jnp.log(psd_j) + 2.0 * df_j * jnp.abs(residual_phys) ** 2 / psd_j),
+            -jnp.sum(jnp.log(psd_A_j) + 2.0 * df_j * jnp.abs(residual_A_phys) ** 2 / psd_A_j)
+            -jnp.sum(jnp.log(psd_E_j) + 2.0 * df_j * jnp.abs(residual_E_phys) ** 2 / psd_E_j)
+            -jnp.sum(jnp.log(psd_T_j) + 2.0 * df_j * jnp.abs(residual_T_phys) ** 2 / psd_T_j),
         )
 
     kernel = NUTS(
@@ -316,7 +388,9 @@ for i, band in enumerate(BANDS):
 
     samples_i_full = build_sampled_source_params(SOURCE_PARAMS[i], samples_i)
 
-    psd_j = jnp.asarray(band.noise_psd, dtype=jnp.float64)
+    psd_A_j = jnp.asarray(band.noise_psd_A, dtype=jnp.float64)
+    psd_E_j = jnp.asarray(band.noise_psd_E, dtype=jnp.float64)
+    psd_T_j = jnp.asarray(band.noise_psd_T, dtype=jnp.float64)
     df_j = jnp.asarray(df, dtype=jnp.float64)
     kmin_stat = band.band_kmin
     kmax_stat = band.band_kmax
@@ -324,9 +398,15 @@ for i, band in enumerate(BANDS):
     @jax.jit
     def _get_snrs(ps):
         def _single_snr(p):
-            h = source_a_band_jax(p.reshape(1, -1), kmin_stat, kmax_stat)
-            h_tilde = dt * h
-            snr2 = 4.0 * df_j * jnp.sum(jnp.abs(h_tilde)**2 / psd_j)
+            h_A, h_E, h_T = source_aet_band_jax(p.reshape(1, -1), kmin_stat, kmax_stat)
+            h_A_tilde = dt * h_A
+            h_E_tilde = dt * h_E
+            h_T_tilde = dt * h_T
+            snr2 = (
+                4.0 * df_j * jnp.sum(jnp.abs(h_A_tilde) ** 2 / psd_A_j)
+                + 4.0 * df_j * jnp.sum(jnp.abs(h_E_tilde) ** 2 / psd_E_j)
+                + 4.0 * df_j * jnp.sum(jnp.abs(h_T_tilde) ** 2 / psd_T_j)
+            )
             return jnp.sqrt(snr2)
         return jax.vmap(_single_snr)(ps)
 
@@ -342,22 +422,28 @@ for i, (band, samples_i) in enumerate(zip(BANDS, all_samples, strict=True)):
     print_posterior_summary(samples_i, truth_i, PARAM_NAMES)
     check_posterior_coverage(samples_i, truth_i, PARAM_NAMES)
 
-fig, axes = plt.subplots(2, 1, figsize=(11, 7), constrained_layout=True)
-for ax, band, samples in zip(axes, BANDS, all_samples, strict=True):
+fig, axes = plt.subplots(2, 3, figsize=(15, 7), constrained_layout=True, sharex="col")
+for row, (band, samples) in enumerate(zip(BANDS, all_samples, strict=True)):
     theta_med = np.median(samples, axis=0)
     params_med = band.fixed_params.copy()
     params_med[[0, 1, 2, 7]] = [theta_med[0], theta_med[1], theta_med[2],
                                 wrap_phase(theta_med[3]) % (2 * np.pi)]
-    model_med = source_a_band(params_med, band.band_kmin, band.band_kmax)
+    model_A, model_E, model_T = source_aet_band(params_med, band.band_kmin, band.band_kmax)
 
-    ax.plot(band.freqs, np.abs(band.data), lw=1.0, label="Data")
-    ax.plot(band.freqs, np.abs(model_med), lw=1.0, label="Posterior median model")
-    ax.axvline(band.fixed_params[0], color="tab:red", ls="--", lw=1.5, label="True f0")
-    ax.set_title(f"{band.label} local frequency band")
-    ax.set_ylabel(r"$|A(f)|$")
-    ax.set_xlim(band.fixed_params[0] - 6e-6, band.fixed_params[0] + 6e-6)
-    ax.legend(fontsize=8)
-axes[-1].set_xlabel("Frequency [Hz]")
+    for ax, data, model, channel in [
+        (axes[row, 0], band.data_A, model_A, "A"),
+        (axes[row, 1], band.data_E, model_E, "E"),
+        (axes[row, 2], band.data_T, model_T, "T"),
+    ]:
+        ax.plot(band.freqs, np.abs(data), lw=1.0, label="Data")
+        ax.plot(band.freqs, np.abs(model), lw=1.0, label="Posterior median model")
+        ax.axvline(band.fixed_params[0], color="tab:red", ls="--", lw=1.5, label="True f0")
+        ax.set_title(f"{band.label} local frequency band ({channel})")
+        ax.set_ylabel(rf"$|{channel}(f)|$")
+        ax.set_xlim(band.fixed_params[0] - 6e-6, band.fixed_params[0] + 6e-6)
+        ax.legend(fontsize=8)
+for ax in axes[-1]:
+    ax.set_xlabel("Frequency [Hz]")
 save_figure(fig, FIGURE_OUTPUT_DIR, "local_frequency_bands")
 
 corner_labels = [r"$f_0$", r"$\dot{f}$", r"$A$", r"$\phi_0$", "SNR"]
