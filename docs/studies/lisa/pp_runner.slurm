@@ -1,3 +1,4 @@
+#!/bin/sh
 #SBATCH --job-name=lisa_pp
 #SBATCH --output=outdir_lisa/slurm_logs/pp_%A_%a.out
 #SBATCH --error=outdir_lisa/slurm_logs/pp_%A_%a.err
