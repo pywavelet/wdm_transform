@@ -1,6 +1,7 @@
 """Shared constants, paths, PSD models, and utilities for the LISA GB study."""
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -14,24 +15,29 @@ from wdm_transform.signal_processing import (
 )
 
 STUDY_DIR = Path(__file__).resolve().parent
-BACKGROUND_DIR = STUDY_DIR / "outdir_gb_background"
-FREQ_ASSET_DIR = STUDY_DIR / "lisa_freq_mcmc_assets"
-WDM_ASSET_DIR = STUDY_DIR / "lisa_wdm_mcmc_assets"
-
-RESPONSE_TENSOR_PATH = BACKGROUND_DIR / "Rtildeop_tf.npz"
-INJECTION_PATH = BACKGROUND_DIR / "injection.npz"
+OUTDIR_ROOT = STUDY_DIR / "outdir_lisa"
+CACHE_DIR = OUTDIR_ROOT / "_cache"
 
 c = 299792458.0
 L_LISA = 2.5e9
 
-# Canonical injected GB source parameters: [f0, fdot, A, ra, dec, psi, iota, phi0]
-SOURCE_PARAMS = np.array(
+# Reference GB source parameters: [f0, fdot, A, ra, dec, psi, iota, phi0]
+SOURCE_CATALOG = np.array(
     [
         [1.35962e-3, 8.94581279e-19, 1.07345e-22, 2.40, 0.31, 3.56, 0.52, 3.06],
         [1.41220e-3, 2.30000000e-18, 8.20000000e-23, 2.15, 0.18, 1.20, 0.93, 1.40],
     ],
     dtype=float,
 )
+
+F0_GLOBAL_BOUNDS = (
+    float(SOURCE_CATALOG[:, 0].min() - 1.5e-5),
+    float(SOURCE_CATALOG[:, 0].max() + 1.5e-5),
+)
+FDOT_GLOBAL_BOUNDS = (5.0e-19, 4.0e-18)
+LOCAL_F0_HALF_WIDTH = 8.0e-6
+LOCAL_FDOT_HALF_LOG_WIDTH = float(np.log(2.0))
+ANALYSIS_F0_HALF_WIDTH = 2.0e-6
 
 
 # ── Filesystem helpers ────────────────────────────────────────────────────────
@@ -40,6 +46,42 @@ SOURCE_PARAMS = np.array(
 def ensure_output_dir(path: Path) -> Path:
     path.mkdir(parents=True, exist_ok=True)
     return path
+
+
+def lisa_include_galactic() -> bool:
+    return os.getenv("LISA_INCLUDE_GALACTIC", "1").strip().lower() not in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }
+
+
+def lisa_seed() -> int:
+    return int(os.getenv("LISA_SEED", "0"))
+
+
+def lisa_mode_dirname(*, include_galactic: bool | None = None) -> str:
+    if include_galactic is None:
+        include_galactic = lisa_include_galactic()
+    return "galactic_background" if include_galactic else "stationary_noise"
+
+
+def lisa_run_dir(
+    *,
+    seed: int | None = None,
+    include_galactic: bool | None = None,
+) -> Path:
+    if seed is None:
+        seed = lisa_seed()
+    return OUTDIR_ROOT / lisa_mode_dirname(include_galactic=include_galactic) / f"seed_{seed}"
+
+
+RUN_DIR = lisa_run_dir()
+RESPONSE_TENSOR_PATH = CACHE_DIR / "Rtildeop_tf.npz"
+INJECTION_PATH = RUN_DIR / "injection.npz"
+FREQ_POSTERIOR_PATH = RUN_DIR / "freq_posteriors.npz"
+WDM_POSTERIOR_PATH = RUN_DIR / "wdm_posteriors.npz"
 
 
 def save_figure(fig, output_dir: Path, stem: str, *, dpi: int = 160) -> Path:
@@ -66,65 +108,224 @@ def wrap_phase(phi):
 def require_positive_fdot(source_params: np.ndarray, *, context: str) -> np.ndarray:
     """Return *source_params* after validating strictly positive chirps."""
     params = np.asarray(source_params, dtype=float)
-    if np.any(params[:, 1] <= 0.0):
+    params_2d = np.atleast_2d(params)
+    if np.any(params_2d[:, 1] <= 0.0):
         raise ValueError(
             f"{context} contains non-positive fdot values. "
-            "Regenerate docs/studies/lisa/outdir_gb_background/injection.npz "
+            "Regenerate the corresponding docs/studies/lisa/outdir_lisa/.../injection.npz "
             "after updating the injection configuration."
         )
     return params
+
+
+def draw_random_source_params(rng: np.random.Generator) -> np.ndarray:
+    """Draw one resolved GB parameter vector from broad study-scale ranges."""
+    catalog = np.asarray(SOURCE_CATALOG, dtype=float)
+    f0 = float(rng.uniform(catalog[:, 0].min() - 1.5e-5, catalog[:, 0].max() + 1.5e-5))
+    fdot = float(np.exp(rng.uniform(np.log(5.0e-19), np.log(4.0e-18))))
+    A = float(np.exp(rng.uniform(np.log(6.0e-23), np.log(1.6e-22))))
+    ra = float(rng.uniform(0.0, 2.0 * np.pi))
+    dec = float(np.arcsin(rng.uniform(-1.0, 1.0)))
+    psi = float(rng.uniform(0.0, np.pi))
+    iota = float(np.arccos(rng.uniform(-1.0, 1.0)))
+    phi0 = float(rng.uniform(0.0, 2.0 * np.pi))
+    return np.array([f0, fdot, A, ra, dec, psi, iota, phi0], dtype=float)
 
 
 @dataclass(frozen=True)
 class LocalPriorInfo:
     prior_center: np.ndarray
     prior_scale: np.ndarray
-    phase_ref: np.ndarray
     logf0_bounds: tuple[float, float]
     logfdot_bounds: tuple[float, float]
     logA_bounds: tuple[float, float]
 
 
-def default_local_priors(params: np.ndarray) -> tuple[tuple[float, float], ...]:
-    """Default narrow prior box used for the resolved-source local fits."""
-    return (
-        (params[0] - 8e-6, params[0] + 8e-6),
-        (0.25 * params[1], 4.0 * params[1]),
-        (0.3 * params[2], 3.0 * params[2]),
+@dataclass(frozen=True)
+class InjectionData:
+    dt: float
+    t_obs: float
+    seed: int
+    data_At: np.ndarray
+    data_Et: np.ndarray
+    data_Tt: np.ndarray
+    noise_psd_A: np.ndarray
+    noise_psd_E: np.ndarray
+    noise_psd_T: np.ndarray
+    freqs: np.ndarray
+    source_params: np.ndarray
+    prior_f0: tuple[float, float]
+    prior_fdot: tuple[float, float]
+    prior_A: tuple[float, float]
+
+
+def load_injection(path: Path = INJECTION_PATH) -> InjectionData:
+    """Load one seeded LISA injection archive into a typed container."""
+    with np.load(path) as inj:
+        missing_prior_keys = [key for key in ("prior_f0", "prior_fdot", "prior_A") if key not in inj]
+        if missing_prior_keys:
+            raise ValueError(
+                f"{path} is missing shared prior metadata {missing_prior_keys}. "
+                "Regenerate this injection with docs/studies/lisa/data_generation.py."
+            )
+        source_params = require_positive_fdot(
+            np.asarray(inj["source_params"], dtype=float),
+            context=str(path),
+        )
+        return InjectionData(
+            dt=float(inj["dt"]),
+            t_obs=float(inj["t_obs"]),
+            seed=int(np.asarray(inj["seed"]).reshape(-1)[0]) if "seed" in inj else 0,
+            data_At=np.asarray(inj["data_At"], dtype=float),
+            data_Et=np.asarray(inj["data_Et"], dtype=float),
+            data_Tt=np.asarray(inj["data_Tt"], dtype=float),
+            noise_psd_A=np.asarray(inj["noise_psd_A"], dtype=float),
+            noise_psd_E=np.asarray(inj["noise_psd_E"], dtype=float),
+            noise_psd_T=np.asarray(inj["noise_psd_T"], dtype=float),
+            freqs=np.asarray(inj["freqs"], dtype=float),
+            source_params=np.atleast_2d(np.asarray(source_params, dtype=float)),
+            prior_f0=tuple(np.asarray(inj["prior_f0"], dtype=float).reshape(2)),
+            prior_fdot=tuple(np.asarray(inj["prior_fdot"], dtype=float).reshape(2)),
+            prior_A=tuple(np.asarray(inj["prior_A"], dtype=float).reshape(2)),
+        )
+
+
+def _draw_truncated_normal(
+    rng: np.random.Generator,
+    *,
+    loc: float,
+    scale: float,
+    low: float,
+    high: float,
+) -> float:
+    """Sample a scalar truncated normal by rejection."""
+    for _ in range(10_000):
+        value = float(rng.normal(loc=loc, scale=scale))
+        if low <= value <= high:
+            return value
+    raise RuntimeError(
+        f"Failed to draw truncated normal after many attempts: "
+        f"loc={loc}, scale={scale}, low={low}, high={high}"
     )
 
 
+def draw_positive_parameter_from_bounds(
+    rng: np.random.Generator,
+    bounds: tuple[float, float],
+) -> float:
+    """Draw a positive parameter from the shared truncated-normal log prior."""
+    log_low = float(np.log(bounds[0]))
+    log_high = float(np.log(bounds[1]))
+    log_value = _draw_truncated_normal(
+        rng,
+        loc=0.5 * (log_low + log_high),
+        scale=0.25 * (log_high - log_low),
+        low=log_low,
+        high=log_high,
+    )
+    return float(np.exp(log_value))
+
+
 def build_local_prior_info(
-    params: np.ndarray,
     *,
-    t_obs: float,
     prior_f0: tuple[float, float],
     prior_fdot: tuple[float, float],
     prior_A: tuple[float, float],
 ) -> LocalPriorInfo:
     """Shared log-parameter prior metadata for the local frequency/WDM fits."""
-    phi0_ref = float(wrap_phase(params[7]))
-    tc = float(t_obs / 2.0)
-    phi_c_ref = float(
-        wrap_phase(phi0_ref + 2 * np.pi * params[0] * tc + np.pi * params[1] * tc**2)
-    )
     logf0_bounds = (float(np.log(prior_f0[0])), float(np.log(prior_f0[1])))
     logfdot_bounds = (float(np.log(prior_fdot[0])), float(np.log(prior_fdot[1])))
     logA_bounds = (float(np.log(prior_A[0])), float(np.log(prior_A[1])))
 
     return LocalPriorInfo(
-        prior_center=np.array([np.log(params[0]), np.log(params[1]), np.log(params[2])]),
+        prior_center=np.array([
+            0.5 * (logf0_bounds[0] + logf0_bounds[1]),
+            0.5 * (logfdot_bounds[0] + logfdot_bounds[1]),
+            0.5 * (logA_bounds[0] + logA_bounds[1]),
+        ]),
         prior_scale=np.array([
             0.25 * (logf0_bounds[1] - logf0_bounds[0]),
             0.25 * (logfdot_bounds[1] - logfdot_bounds[0]),
             0.25 * (logA_bounds[1] - logA_bounds[0]),
-            np.pi / 4.0,
         ]),
-        phase_ref=np.array([phi0_ref, phi_c_ref]),
         logf0_bounds=logf0_bounds,
         logfdot_bounds=logfdot_bounds,
         logA_bounds=logA_bounds,
     )
+
+
+def draw_source_prior_and_params(
+    rng: np.random.Generator,
+) -> tuple[np.ndarray, tuple[float, float], tuple[float, float]]:
+    """Draw one truth-blind local prior plus source parameters except amplitude."""
+    f0_center = float(
+        rng.uniform(
+            F0_GLOBAL_BOUNDS[0] + LOCAL_F0_HALF_WIDTH,
+            F0_GLOBAL_BOUNDS[1] - LOCAL_F0_HALF_WIDTH,
+        )
+    )
+    prior_f0 = (f0_center - LOCAL_F0_HALF_WIDTH, f0_center + LOCAL_F0_HALF_WIDTH)
+
+    logfdot_center = float(
+        rng.uniform(
+            np.log(FDOT_GLOBAL_BOUNDS[0]) + LOCAL_FDOT_HALF_LOG_WIDTH,
+            np.log(FDOT_GLOBAL_BOUNDS[1]) - LOCAL_FDOT_HALF_LOG_WIDTH,
+        )
+    )
+    prior_fdot = (
+        float(np.exp(logfdot_center - LOCAL_FDOT_HALF_LOG_WIDTH)),
+        float(np.exp(logfdot_center + LOCAL_FDOT_HALF_LOG_WIDTH)),
+    )
+
+    f0 = draw_positive_parameter_from_bounds(rng, prior_f0)
+    fdot = draw_positive_parameter_from_bounds(rng, prior_fdot)
+    ra = float(rng.uniform(0.0, 2.0 * np.pi))
+    dec = float(np.arcsin(rng.uniform(-1.0, 1.0)))
+    psi = float(rng.uniform(0.0, np.pi))
+    iota = float(np.arccos(rng.uniform(-1.0, 1.0)))
+    phi0 = float(rng.uniform(-np.pi, np.pi))
+    source = np.array(
+        [f0, fdot, 1.0, ra, dec, psi, iota, phi0],
+        dtype=float,
+    )
+    return source, prior_f0, prior_fdot
+
+
+def estimate_frequency_peak(
+    freqs: np.ndarray,
+    data_Af: np.ndarray,
+    data_Ef: np.ndarray,
+    data_Tf: np.ndarray,
+    noise_psd_A: np.ndarray,
+    noise_psd_E: np.ndarray,
+    noise_psd_T: np.ndarray,
+    *,
+    prior_f0: tuple[float, float],
+) -> float:
+    """Estimate the carrier frequency from the whitened A+E+T FFT peak."""
+    keep = (freqs >= prior_f0[0]) & (freqs <= prior_f0[1])
+    if not np.any(keep):
+        return 0.5 * (prior_f0[0] + prior_f0[1])
+    score = (
+        np.abs(np.asarray(data_Af)[keep]) ** 2 / np.maximum(np.asarray(noise_psd_A)[keep], 1e-60)
+        + np.abs(np.asarray(data_Ef)[keep]) ** 2 / np.maximum(np.asarray(noise_psd_E)[keep], 1e-60)
+        + np.abs(np.asarray(data_Tf)[keep]) ** 2 / np.maximum(np.asarray(noise_psd_T)[keep], 1e-60)
+    )
+    return float(np.asarray(freqs)[keep][int(np.argmax(score))])
+
+
+def narrowed_f0_prior(
+    *,
+    f0_center: float,
+    original_bounds: tuple[float, float],
+    half_width: float = ANALYSIS_F0_HALF_WIDTH,
+) -> tuple[float, float]:
+    """Return a narrower analysis-only f0 prior clipped to the saved injection prior."""
+    low = max(float(original_bounds[0]), float(f0_center) - float(half_width))
+    high = min(float(original_bounds[1]), float(f0_center) + float(half_width))
+    if not low < high:
+        return tuple(float(x) for x in original_bounds)
+    return (low, high)
 
 
 def build_sampled_source_params(fixed_params: np.ndarray, samples_i: np.ndarray) -> np.ndarray:
@@ -151,23 +352,32 @@ def source_truth_vector(fixed_params: np.ndarray, *, snr: float | None = None) -
 
 
 def save_posterior_archive(
-    output_dir: Path,
+    output_path: Path,
     *,
     source_params: np.ndarray,
     all_samples: list[np.ndarray],
     snr_optimal: list[float],
+    labels: list[str] | None = None,
+    truth: np.ndarray | None = None,
 ) -> Path:
     """Write the shared posterior NPZ layout used by the study scripts."""
-    ensure_output_dir(output_dir)
-    out_path = output_dir / "posteriors.npz"
+    ensure_output_dir(output_path.parent)
+    source_params = np.atleast_2d(np.asarray(source_params, dtype=float))
+    archive_data: dict[str, np.ndarray] = {
+        "source_params": source_params,
+        "snr_optimal": np.asarray(snr_optimal, dtype=float),
+    }
+    if labels is not None:
+        archive_data["labels"] = np.asarray(labels, dtype=str)
+    if truth is not None:
+        archive_data["truth"] = np.asarray(truth, dtype=float)
+    if all_samples:
+        archive_data["samples_source"] = np.asarray(all_samples[0], dtype=float)
     np.savez(
-        out_path,
-        source_params=np.asarray(source_params, dtype=float),
-        samples_gb1=np.asarray(all_samples[0], dtype=float),
-        samples_gb2=np.asarray(all_samples[1], dtype=float),
-        snr_optimal=np.asarray(snr_optimal, dtype=float),
+        output_path,
+        **archive_data,
     )
-    return out_path
+    return output_path
 
 
 def save_corner_plot(
@@ -179,8 +389,11 @@ def save_corner_plot(
     labels: list[str],
 ) -> Path:
     """Render and save one corner plot using the study defaults."""
+    samples = np.asarray(samples, dtype=float)
+    if samples.ndim != 2 or samples.shape[0] <= samples.shape[1]:
+        return output_dir / f"{stem}.png"
     fig = corner.corner(
-        np.asarray(samples, dtype=float),
+        samples,
         labels=labels,
         truths=np.asarray(truth, dtype=float),
         truth_color="tab:red",
@@ -362,3 +575,17 @@ def check_posterior_coverage(
         print(f"  {mark} {name:<22}: true={true_v:+.4e}  [{low:+.4e}, {high:+.4e}]")
     print(f"  {int(covered.sum())}/{len(covered)} parameters covered")
     return covered
+
+
+def print_posterior_report(
+    title: str,
+    samples: np.ndarray,
+    truth: np.ndarray,
+    param_names: list[str],
+    *,
+    ci: float = 0.9,
+) -> np.ndarray:
+    """Print a compact posterior summary plus CI coverage block."""
+    print(f"\n{'═' * 56}  {title}")
+    print_posterior_summary(samples, truth, param_names)
+    return check_posterior_coverage(samples, truth, param_names, ci=ci)

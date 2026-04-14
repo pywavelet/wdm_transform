@@ -3,7 +3,8 @@
 Executable scripts:
 [`data_generation.py`](./data_generation.py),
 [`lisa_freq_mcmc.py`](./lisa_freq_mcmc.py),
-[`lisa_wdm_mcmc.py`](./lisa_wdm_mcmc.py).
+[`lisa_wdm_mcmc.py`](./lisa_wdm_mcmc.py),
+[`pp_plot.py`](./pp_plot.py).
 
 This study is organized as a markdown-first case study backed by three plain Python scripts.
 The markdown page carries the narrative, the math, and the rendered figures. The scripts are
@@ -13,37 +14,67 @@ here.
 ## Study structure
 
 1. `data_generation.py` builds a toy anisotropic Galactic foreground, computes the sky-averaged
-   LISA response, injects two resolved Galactic binaries, and writes
-   `outdir_gb_background/injection.npz`.
-2. `lisa_freq_mcmc.py` loads that cache and performs two independent local frequency-domain fits
-   with a narrow-band Whittle likelihood.
+   LISA response, injects one seeded resolved Galactic binary, and writes
+   `outdir_lisa/<mode>/seed_<LISA_SEED>/injection.npz`.
+2. `lisa_freq_mcmc.py` loads that cache and performs one local frequency-domain fit with a
+   narrow-band Whittle likelihood.
 3. `lisa_wdm_mcmc.py` loads the same cache, transforms the injected data to WDM coefficients, and
-   performs two independent per-source fits on narrow WDM bands (mirroring the frequency-domain
-   approach). Uses $n_t = 32$ by default for inference and $n_t = 128$ for the overview plot.
+   performs one per-source fit on a narrow WDM band (mirroring the frequency-domain
+   approach). Uses $n_t = 32$ by default for inference.
+4. `pp_plot.py` scans the seeded posterior archives for one mode and builds a multi-seed PP plot
+   comparing the WDM and frequency-domain calibration for the sampled parameters
+   $(f_0, \dot{f}, A, \phi_0)$.
 
 ## How To Run
 
 Run the scripts from the repository root:
 
 ```bash
-python docs/studies/lisa/data_generation.py
+LISA_SEED=0 python docs/studies/lisa/data_generation.py
 python docs/studies/lisa/lisa_freq_mcmc.py
 python docs/studies/lisa/lisa_wdm_mcmc.py
+```
+
+To generate an instrument-only stationary-noise injection without the stochastic Galactic foreground:
+
+```bash
+LISA_SEED=0 LISA_INCLUDE_GALACTIC=0 python docs/studies/lisa/data_generation.py
 ```
 
 Useful overrides:
 
 ```bash
+LISA_SEED=3 python docs/studies/lisa/data_generation.py
 LISA_N_WARMUP=400 LISA_N_DRAWS=600 python docs/studies/lisa/lisa_freq_mcmc.py
-LISA_N_WARMUP=400 LISA_N_DRAWS=600 LISA_NT=32 LISA_NT_PLOT=128 python docs/studies/lisa/lisa_wdm_mcmc.py
+LISA_N_WARMUP=400 LISA_N_DRAWS=600 LISA_NT=32 python docs/studies/lisa/lisa_wdm_mcmc.py
+python docs/studies/lisa/pp_plot.py --mode stationary_noise
 ```
 
 `data_generation.py` is the prerequisite step. Both inference scripts read:
 
-- `docs/studies/lisa/outdir_gb_background/injection.npz`
+- `docs/studies/lisa/outdir_lisa/<mode>/seed_<LISA_SEED>/injection.npz`
 
-That cache stores the A/E-channel time series, the PSD grids, the injected source parameters, and
-the per-source SNR summaries needed by the follow-on fits.
+That cache stores the A/E/T time series, the PSD grids, the injected source parameters, the
+generation seed, and the SNR summary needed by the follow-on fits.
+
+All outputs from the three scripts for a given run now live in the same directory:
+
+- `docs/studies/lisa/outdir_lisa/stationary_noise/seed_1/` for `LISA_INCLUDE_GALACTIC=0 LISA_SEED=1`
+- `docs/studies/lisa/outdir_lisa/galactic_background/seed_1/` for `LISA_INCLUDE_GALACTIC=1 LISA_SEED=1`
+
+Typical files are:
+
+- `injection.npz`
+- `freq_posteriors.npz`
+- `wdm_posteriors.npz`
+- `posterior_marginals_compare.png`
+- `posterior_interval_compare.png`
+- `posterior_pp_compare.png`
+- `corner_source_1.png`
+
+The expensive response-tensor cache is now shared across runs:
+
+- `docs/studies/lisa/outdir_lisa/_cache/Rtildeop_tf.npz`
 
 ## Data Generation
 
@@ -52,11 +83,11 @@ the per-source SNR summaries needed by the follow-on fits.
 The A-channel strain is modeled as
 
 $$
-d_A(t) = n_A(t) + h_{\mathrm{gal}}(t) + \sum_{i=1}^{2} h_i(t; \theta_i)
+d_A(t) = n_A(t) + h_{\mathrm{gal}}(t) + h(t; \theta)
 $$
 
 where the instrumental noise term $n_A$, the stochastic Galactic foreground $h_{\mathrm{gal}}$, 
-and the two resolved compact-binary signals $h_i$ are generated with `JaxGB`.
+and the single resolved compact-binary signal $h$ are generated with a seed-controlled draw.
 
 The foreground PSD is built from a sky map and a response tensor:
 
@@ -99,9 +130,8 @@ to mix the anisotropic sky model into the detector channels.
 
 ### Likelihood
 
-For the frequency-domain MCMC, each source is fit in a narrow local band around its injected
-carrier frequency. The two binaries are well separated in frequency, so they are treated as
-independent local problems.
+For the frequency-domain MCMC, the injected source is fit in a narrow local band around its
+carrier frequency.
 
 If $\tilde{d}_k$ is the A-channel FFT and $\tilde{h}_k(\theta)$ is the template restricted to the
 same band, the code uses the Whittle approximation:
@@ -113,7 +143,7 @@ $$
 \right]
 $$
 
-The fitted parameters are $(f_0, \dot{f}, A, \phi_0)$ for each source. Sky position, polarization,
+The fitted parameters are $(f_0, \dot{f}, A, \phi_0)$ for the injected source. Sky position, polarization,
 and inclination stay fixed at their injected values to isolate the likelihood machinery rather than
 perform a full eight-parameter search.
 
@@ -128,18 +158,10 @@ $$
 and then reconstruct $\phi_0$ as a deterministic parameter. This largely removes the strongest
 local $f_0$-$\phi_0$ degeneracy from the HMC coordinates while preserving the same physical model.
 
-### Results
+### Outputs
 
-The local-band view checks that the posterior median template lands on top of the observed power in
-each source neighborhood.
-
-![Local frequency bands](../../_static/lisa_freq_mcmc_assets/local_frequency_bands.png)
-
-The posterior corner plots summarize the recovered local parameters for each binary.
-
-![Frequency-domain GB 1 corner](../../_static/lisa_freq_mcmc_assets/gb1_corner.png)
-
-![Frequency-domain GB 2 corner](../../_static/lisa_freq_mcmc_assets/gb2_corner.png)
+`lisa_freq_mcmc.py` now writes the frequency-domain posterior archive only. Plotting is handled by
+the post-processing step after both inference runs finish.
 
 ### Source Code: `lisa_freq_mcmc.py`
 
@@ -171,8 +193,7 @@ $$
 \right]
 $$
 
-Like the frequency-domain run, each binary is fit independently on a narrow per-source band (the
-two GBs are separated by 52.6 µHz, much wider than either source's bandwidth).
+Like the frequency-domain run, the injected binary is fit on a narrow local band.
 
 ### Fast WDM forward model
 
@@ -214,17 +235,13 @@ for a one-year observation. That is coarse compared to the FFT bin width, but st
 for these narrow local fits once the likelihood normalization and sampler parameterization are set
 up correctly.
 
-`lisa_wdm_mcmc.py` also uses a separate plotting tiling, `LISA_NT_PLOT=128`, so the overview figure
-has a more readable time-frequency mesh without changing the inference grid.
-
 ### What We Fixed
 
 The current WDM script is the result of a few debugging passes. The important fixes were:
 
 1. Keep essentially the full observation time. Earlier versions threw away a large chunk of the
    year when forcing WDM-friendly lengths, which broadened the WDM posterior immediately.
-2. Fit each source on its own narrow local band. The two injected binaries are well separated, so
-   a single shared WDM band only made the problem harder without adding information.
+2. Fit the injected source on its own narrow local band instead of carrying a multi-source loop.
 3. Use the correct diagonal WDM noise variance,
 
    $$
@@ -241,23 +258,10 @@ The current WDM script is the result of a few debugging passes. The important fi
 The final implementation now yields WDM and frequency-domain posteriors that overlap closely in the
 full run.
 
-### Results
+### Outputs
 
-The first plot shows the injected data on the WDM grid (rendered at $n_t = 128$ for readability)
-with the narrow per-source analysis bands highlighted.
-
-![WDM overview](../../_static/lisa_wdm_mcmc_assets/wdm_overview.png)
-
-The band-limited comparison shows the observed WDM coefficients next to the posterior median model
-for each source.
-
-![Band-limited WDM fit](../../_static/lisa_wdm_mcmc_assets/wdm_band_fit.png)
-
-Independent per-source posterior corner plots (one per binary):
-
-![WDM-domain GB 1 corner](../../_static/lisa_wdm_mcmc_assets/gb1_corner.png)
-
-![WDM-domain GB 2 corner](../../_static/lisa_wdm_mcmc_assets/gb2_corner.png)
+`lisa_wdm_mcmc.py` writes the WDM posterior archive only. Plotting is handled centrally by the
+post-processing step after both inference runs finish.
 
 ### Source Code: `lisa_wdm_mcmc.py`
 
@@ -270,22 +274,20 @@ Independent per-source posterior corner plots (one per binary):
 ### Results
 
 To assess the two inference approaches (frequency-domain vs. WDM-domain), the script
-[`compare_mcmc_results.py`](./compare_mcmc_results.py) loads both posterior files and produces
+[`post_proc.py`](./post_proc.py) loads both posterior files and produces
 side-by-side visualizations.
 
 **Marginal posterior histograms:**
 
-![Posterior marginals comparison](../../_static/lisa/posterior_marginals_compare.png)
+![Posterior marginals comparison](../../_static/lisa/outdir_lisa/galactic_background/seed_0/posterior_marginals_compare.png)
 
 **Credible intervals (5th, median, 95th percentiles):**
 
-![Posterior intervals comparison](../../_static/lisa/posterior_interval_compare.png)
+![Posterior intervals comparison](../../_static/lisa/outdir_lisa/galactic_background/seed_0/posterior_interval_compare.png)
 
-**Joint corner plots per source (overlaid runs):**
+**Joint corner plot for the injected source (overlaid runs):**
 
-![Comparison corner GB 1](../../_static/lisa/corner_source_1.png)
-
-![Comparison corner GB 2](../../_static/lisa/corner_source_2.png)
+![Comparison corner GB 1](../../_static/lisa/outdir_lisa/galactic_background/seed_0/corner_source_1.png)
 
 The important final result is that the WDM and frequency-domain posteriors now overlap closely in
 all four fitted source parameters and in the derived SNR. In particular, the earlier dramatic
@@ -295,13 +297,13 @@ WDM representation was intrinsically much less informative for this toy study.
 To generate these figures, run:
 
 ```bash
-python docs/studies/lisa/compare_mcmc_results.py
+python docs/studies/lisa/post_proc.py
 ```
 
 This compares the default WDM and frequency-domain posteriors. You can also pass custom paths:
 
 ```bash
-python docs/studies/lisa/compare_mcmc_results.py \
+python docs/studies/lisa/post_proc.py \
   --run-a path/to/wdm_posteriors.npz --name-a "WDM" \
   --run-b path/to/freq_posteriors.npz --name-b "Frequency"
 ```
@@ -316,5 +318,5 @@ python docs/studies/lisa/compare_mcmc_results.py \
   percent files.
 - The shared helper file `lisa_common.py` now holds the common prior metadata, truth-vector, and
   posterior-output helpers used by both inference scripts.
-- The page above includes the live source for all three scripts, so the docs build exposes the
+- The page above includes the live source for the study scripts, so the docs build exposes the
   exact code used to produce the study outputs.
