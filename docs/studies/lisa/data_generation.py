@@ -626,7 +626,6 @@ def main():
         prior_f0=np.asarray(prior_f0, dtype=float),
         prior_fdot=np.asarray(prior_fdot, dtype=float),
         prior_A=np.asarray(prior_A, dtype=float),
-        source_target_snrs=np.array([target_snr_aet], dtype=float),
         source_snrs=np.array([snr_aet], dtype=float),
         source_snrs_ae=np.array([snr_ae], dtype=float),
         source_snrs_aet=np.array([snr_aet], dtype=float),
