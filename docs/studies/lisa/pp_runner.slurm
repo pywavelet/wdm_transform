@@ -35,9 +35,9 @@ SEED=$((START_SEED + TASK_ID))
 echo "Job ${SLURM_JOB_ID:-manual} task ${TASK_ID}: seed=${SEED}, mode=galactic_background"
 
 echo "=== galactic_background seed ${SEED} ==="
-LISA_SEED="${SEED}" LISA_INCLUDE_GALACTIC="1" "${PYTHON_BIN}" data_generation.py
-LISA_SEED="${SEED}" LISA_INCLUDE_GALACTIC="1" "${PYTHON_BIN}" lisa_freq_mcmc.py
-LISA_SEED="${SEED}" LISA_INCLUDE_GALACTIC="1" "${PYTHON_BIN}" lisa_wdm_mcmc.py
-LISA_SEED="${SEED}" LISA_INCLUDE_GALACTIC="1" "${PYTHON_BIN}" post_proc.py
+LISA_SEED="${SEED}" LISA_INCLUDE_GALACTIC="1" python data_generation.py
+LISA_SEED="${SEED}" LISA_INCLUDE_GALACTIC="1" python lisa_freq_mcmc.py
+LISA_SEED="${SEED}" LISA_INCLUDE_GALACTIC="1" python lisa_wdm_mcmc.py
+LISA_SEED="${SEED}" LISA_INCLUDE_GALACTIC="1" python post_proc.py
 
 echo "Completed seed ${SEED} for mode=galactic_background"
