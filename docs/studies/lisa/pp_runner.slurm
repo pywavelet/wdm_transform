@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/usr/bin/env bash
 #SBATCH --job-name=lisa_pp
 #SBATCH --output=outdir_lisa/slurm_logs/pp_%A_%a.out
 #SBATCH --error=outdir_lisa/slurm_logs/pp_%A_%a.err
@@ -11,6 +11,9 @@ set -euo pipefail
 
 module load gcc/13.3.0 python/3.12.3
 source /fred/oz303/avajpeyi/codes/wdm_transform/.venv/bin/activate
+
+export PYTHONUNBUFFERED=1
+export LISA_PROGRESS_BAR="${LISA_PROGRESS_BAR:-1}"
 
 
 START_SEED="${START_SEED:-0}"
@@ -32,12 +35,21 @@ fi
 SEED=$((START_SEED + TASK_ID))
 
 
+run_stage() {
+	local stage_name="$1"
+	shift
+	echo "[$(date '+%Y-%m-%d %H:%M:%S')] START ${stage_name} seed=${SEED}"
+	"$@"
+	echo "[$(date '+%Y-%m-%d %H:%M:%S')] END   ${stage_name} seed=${SEED}"
+}
+
+
 echo "Job ${SLURM_JOB_ID:-manual} task ${TASK_ID}: seed=${SEED}, mode=galactic_background"
 
 echo "=== galactic_background seed ${SEED} ==="
-LISA_SEED="${SEED}" LISA_INCLUDE_GALACTIC="1" python data_generation.py
-LISA_SEED="${SEED}" LISA_INCLUDE_GALACTIC="1" python lisa_freq_mcmc.py
-LISA_SEED="${SEED}" LISA_INCLUDE_GALACTIC="1" python lisa_wdm_mcmc.py
-LISA_SEED="${SEED}" LISA_INCLUDE_GALACTIC="1" python post_proc.py
+run_stage data_generation env LISA_SEED="${SEED}" LISA_INCLUDE_GALACTIC="1" python data_generation.py
+run_stage lisa_freq_mcmc env LISA_SEED="${SEED}" LISA_INCLUDE_GALACTIC="1" python lisa_freq_mcmc.py
+run_stage lisa_wdm_mcmc env LISA_SEED="${SEED}" LISA_INCLUDE_GALACTIC="1" python lisa_wdm_mcmc.py
+run_stage post_proc env LISA_SEED="${SEED}" LISA_INCLUDE_GALACTIC="1" python post_proc.py
 
 echo "Completed seed ${SEED} for mode=galactic_background"
