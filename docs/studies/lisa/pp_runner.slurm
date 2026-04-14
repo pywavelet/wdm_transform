@@ -3,9 +3,9 @@
 #SBATCH --output=outdir_lisa/slurm_logs/pp_%A_%a.out
 #SBATCH --error=outdir_lisa/slurm_logs/pp_%A_%a.err
 #SBATCH --array=0-99%100
-#SBATCH --time=00:20:00
+#SBATCH --time=00:25:00
 #SBATCH --cpus-per-task=1
-#SBATCH --mem=4G
+#SBATCH --mem=3G
 
 set -euo pipefail
 
