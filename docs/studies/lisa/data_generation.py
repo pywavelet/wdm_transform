@@ -25,7 +25,6 @@ from lisa_common import (
     RUN_DIR,
     build_total_noise_psd,
     c,
-    draw_positive_parameter_from_bounds,
     draw_source_prior_and_params,
     ensure_output_dir,
     freqs_gal,
@@ -55,8 +54,6 @@ INCLUDE_GALACTIC = os.getenv("LISA_INCLUDE_GALACTIC", "1").strip().lower() not i
     "off",
 }
 RNG_SEED = int(os.getenv("LISA_SEED", "0"))
-TARGET_SNR_MIN = 10.0
-TARGET_SNR_MAX = 50.0
 
 
 def _save_plot_once_to_cache(stem: str, draw_plot) -> None:
@@ -547,10 +544,9 @@ def main():
     gb_orbit = lisaorbits.EqualArmlengthOrbits()
     jgb_full = JaxGB(gb_orbit, t_obs=yr, t0=0.0, n=256)
 
-    source_params_row, prior_f0, prior_fdot = draw_source_prior_and_params(rng)
+    source_params_row, prior_f0, prior_fdot, prior_A = draw_source_prior_and_params(rng)
     source_params = source_params_row.reshape(1, -1)
     src = source_params[0]
-    target_snr_aet = float(rng.uniform(TARGET_SNR_MIN, TARGET_SNR_MAX))
 
     def _source_frequency_series(params: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         params_j = jnp.asarray(params, dtype=jnp.float64)
@@ -571,23 +567,15 @@ def main():
     if snr_aet <= 0.0:
         raise ValueError("Generated GB template has non-positive SNR before amplitude rescaling.")
 
-    amplitude_center = float(src[2] * target_snr_aet / snr_aet)
-    prior_A = (0.5 * amplitude_center, 2.0 * amplitude_center)
-    src[2] = draw_positive_parameter_from_bounds(rng, prior_A)
-    source_Af, source_Ef, source_Tf = _source_frequency_series(src)
-    snr_A = matched_filter_snr_rfft(source_Af, psd_A, freqs_all, dt=dt)
-    snr_E = matched_filter_snr_rfft(source_Ef, psd_E, freqs_all, dt=dt)
-    snr_T = matched_filter_snr_rfft(source_Tf, psd_T, freqs_all, dt=dt)
-    snr_ae = float(np.hypot(snr_A, snr_E))
-    snr_aet = float(np.sqrt(snr_A**2 + snr_E**2 + snr_T**2))
-
     print("\nInjecting 1 resolved GB source with JaxGB:")
     print(f"  seed = {RNG_SEED}")
     print(f"  f0 = {src[0]:.5e} Hz")
     print(f"  fdot = {src[1]:.5e} Hz/s")
     print(f"  A = {src[2]:.5e}")
-    print(f"  target SNR (A+E+T) = {target_snr_aet:.1f}")
     print(f"  SNR (A+E+T) = {snr_aet:.1f}")
+    print(f"  fixed prior f0   = [{prior_f0[0]:.5e}, {prior_f0[1]:.5e}] Hz")
+    print(f"  fixed prior fdot = [{prior_fdot[0]:.5e}, {prior_fdot[1]:.5e}] Hz/s")
+    print(f"  fixed prior A    = [{prior_A[0]:.5e}, {prior_A[1]:.5e}]")
 
     data_At = irfft(a_bg_f + source_Af, n=Nsamp_tot)
     data_Et = irfft(e_bg_f + source_Ef, n=Nsamp_tot)

@@ -35,9 +35,9 @@ F0_GLOBAL_BOUNDS = (
     float(SOURCE_CATALOG[:, 0].max() + 1.5e-5),
 )
 FDOT_GLOBAL_BOUNDS = (5.0e-19, 4.0e-18)
-LOCAL_F0_HALF_WIDTH = 8.0e-6
-LOCAL_FDOT_HALF_LOG_WIDTH = float(np.log(2.0))
-ANALYSIS_F0_HALF_WIDTH = 2.0e-6
+FIXED_F0_PRIOR_BOUNDS = F0_GLOBAL_BOUNDS
+FIXED_FDOT_PRIOR_BOUNDS = FDOT_GLOBAL_BOUNDS
+FIXED_A_PRIOR_BOUNDS = (6.0e-24, 1.7e-23)
 
 
 # ── Filesystem helpers ────────────────────────────────────────────────────────
@@ -256,39 +256,25 @@ def build_local_prior_info(
 
 def draw_source_prior_and_params(
     rng: np.random.Generator,
-) -> tuple[np.ndarray, tuple[float, float], tuple[float, float]]:
-    """Draw one truth-blind local prior plus source parameters except amplitude."""
-    f0_center = float(
-        rng.uniform(
-            F0_GLOBAL_BOUNDS[0] + LOCAL_F0_HALF_WIDTH,
-            F0_GLOBAL_BOUNDS[1] - LOCAL_F0_HALF_WIDTH,
-        )
-    )
-    prior_f0 = (f0_center - LOCAL_F0_HALF_WIDTH, f0_center + LOCAL_F0_HALF_WIDTH)
-
-    logfdot_center = float(
-        rng.uniform(
-            np.log(FDOT_GLOBAL_BOUNDS[0]) + LOCAL_FDOT_HALF_LOG_WIDTH,
-            np.log(FDOT_GLOBAL_BOUNDS[1]) - LOCAL_FDOT_HALF_LOG_WIDTH,
-        )
-    )
-    prior_fdot = (
-        float(np.exp(logfdot_center - LOCAL_FDOT_HALF_LOG_WIDTH)),
-        float(np.exp(logfdot_center + LOCAL_FDOT_HALF_LOG_WIDTH)),
-    )
+) -> tuple[np.ndarray, tuple[float, float], tuple[float, float], tuple[float, float]]:
+    """Draw one source from the fixed generation/analysis priors."""
+    prior_f0 = tuple(float(x) for x in FIXED_F0_PRIOR_BOUNDS)
+    prior_fdot = tuple(float(x) for x in FIXED_FDOT_PRIOR_BOUNDS)
+    prior_A = tuple(float(x) for x in FIXED_A_PRIOR_BOUNDS)
 
     f0 = draw_positive_parameter_from_bounds(rng, prior_f0)
     fdot = draw_positive_parameter_from_bounds(rng, prior_fdot)
+    A = draw_positive_parameter_from_bounds(rng, prior_A)
     ra = float(rng.uniform(0.0, 2.0 * np.pi))
     dec = float(np.arcsin(rng.uniform(-1.0, 1.0)))
     psi = float(rng.uniform(0.0, np.pi))
     iota = float(np.arccos(rng.uniform(-1.0, 1.0)))
     phi0 = float(rng.uniform(-np.pi, np.pi))
     source = np.array(
-        [f0, fdot, 1.0, ra, dec, psi, iota, phi0],
+        [f0, fdot, A, ra, dec, psi, iota, phi0],
         dtype=float,
     )
-    return source, prior_f0, prior_fdot
+    return source, prior_f0, prior_fdot, prior_A
 
 
 def estimate_frequency_peak(
@@ -312,20 +298,6 @@ def estimate_frequency_peak(
         + np.abs(np.asarray(data_Tf)[keep]) ** 2 / np.maximum(np.asarray(noise_psd_T)[keep], 1e-60)
     )
     return float(np.asarray(freqs)[keep][int(np.argmax(score))])
-
-
-def narrowed_f0_prior(
-    *,
-    f0_center: float,
-    original_bounds: tuple[float, float],
-    half_width: float = ANALYSIS_F0_HALF_WIDTH,
-) -> tuple[float, float]:
-    """Return a narrower analysis-only f0 prior clipped to the saved injection prior."""
-    low = max(float(original_bounds[0]), float(f0_center) - float(half_width))
-    high = min(float(original_bounds[1]), float(f0_center) + float(half_width))
-    if not low < high:
-        return tuple(float(x) for x in original_bounds)
-    return (low, high)
 
 
 def build_sampled_source_params(fixed_params: np.ndarray, samples_i: np.ndarray) -> np.ndarray:

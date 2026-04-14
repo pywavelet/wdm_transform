@@ -48,11 +48,9 @@ from lisa_common import (
     load_injection,
     save_posterior_archive,
     source_truth_vector,
-    wrap_phase,
 )
 from numpy.fft import rfft, rfftfreq
 from numpyro.infer import MCMC, NUTS, init_to_value
-from numpyro.infer.util import log_density
 from wdm_transform.signal_processing import matched_filter_snr_rfft
 
 jax.config.update("jax_enable_x64", True)
@@ -60,7 +58,7 @@ jax.config.update("jax_enable_x64", True)
 N_WARMUP = int(os.getenv("LISA_N_WARMUP", "800"))
 N_DRAWS = int(os.getenv("LISA_N_DRAWS", "1000"))
 SHOW_PROGRESS = os.getenv("LISA_PROGRESS_BAR", "0").strip().lower() in {"1", "true", "yes", "on"}
-FM_JITTER_SCALE = float(os.getenv("LISA_FM_JITTER_SCALE", "0.5"))
+INIT_JITTER_SCALE = float(os.getenv("LISA_INIT_JITTER_SCALE", "0.15"))
 
 # ── Load and truncate data ────────────────────────────────────────────────────
 if not INJECTION_PATH.exists():
@@ -372,55 +370,40 @@ def sample_source(band: BandData, *, seed: int = 0) -> MCMC:
             "u_phi_c": jnp.clip(point["u_phi_c"], -1.0, 1.0),
         }
 
-    def _log_post(point: dict[str, jnp.ndarray]) -> jnp.ndarray:
-        value, _ = log_density(model, (), {}, _project(point))
-        return value
-
-    def _pack(theta: jnp.ndarray) -> dict[str, jnp.ndarray]:
-        return {
-            "z_logf0": theta[0],
-            "z_logfdot": theta[1],
-            "z_logA": theta[2],
-            "u_phi_c": theta[3],
-        }
-
-    def _flat_log_post(theta: jnp.ndarray) -> jnp.ndarray:
-        return _log_post(_pack(theta))
-
-    phi_c_truth = wrap_phase(
-        float(SOURCE_PARAM[7])
-        + 2.0 * np.pi * float(SOURCE_PARAM[0]) * (band.t_obs / 2.0)
-        + np.pi * float(SOURCE_PARAM[1]) * (band.t_obs / 2.0) ** 2
-    )
-    theta_truth = jnp.asarray(
-        [
-            (np.log(float(SOURCE_PARAM[0])) - band.prior_center[0]) / band.prior_scale[0],
-            (np.log(float(SOURCE_PARAM[1])) - band.prior_center[1]) / band.prior_scale[1],
-            (np.log(float(SOURCE_PARAM[2])) - band.prior_center[2]) / band.prior_scale[2],
-            float(np.clip(phi_c_truth / np.pi, -1.0, 1.0)),
-        ],
-        dtype=jnp.float64,
-    )
-    hessian = np.asarray(jax.hessian(_flat_log_post)(theta_truth), dtype=float)
-    information = -0.5 * (hessian + hessian.T)
-    eigvals, eigvecs = np.linalg.eigh(information)
-    floor = max(1e-8, 1e-6 * float(np.max(np.abs(eigvals))))
-    eigvals = np.clip(eigvals, floor, None)
-    covariance = eigvecs @ np.diag(1.0 / eigvals) @ eigvecs.T
-    sigma = np.sqrt(np.maximum(np.diag(covariance), 0.0))
     rng = np.random.default_rng(seed + 17)
-    theta_init = np.asarray(theta_truth, dtype=float) + FM_JITTER_SCALE * sigma * rng.standard_normal(4)
+    logf0_init = float(np.clip(np.log(band.f0_init), band.logf0_bounds[0], band.logf0_bounds[1]))
+    z_logf0_init = (logf0_init - band.prior_center[0]) / band.prior_scale[0]
     init_values = {
-        key: float(np.asarray(val))
-        for key, val in _project(_pack(jnp.asarray(theta_init, dtype=jnp.float64))).items()
+        "z_logf0": float(np.asarray(jnp.clip(
+            z_logf0_init + INIT_JITTER_SCALE * rng.standard_normal(),
+            z_logf0_bounds[0],
+            z_logf0_bounds[1],
+        ))),
+        "z_logfdot": float(np.asarray(jnp.clip(
+            INIT_JITTER_SCALE * rng.standard_normal(),
+            z_logfdot_bounds[0],
+            z_logfdot_bounds[1],
+        ))),
+        "z_logA": float(np.asarray(jnp.clip(
+            INIT_JITTER_SCALE * rng.standard_normal(),
+            z_logA_bounds[0],
+            z_logA_bounds[1],
+        ))),
+        "u_phi_c": float(np.asarray(jnp.clip(
+            0.25 * rng.standard_normal(),
+            -1.0,
+            1.0,
+        ))),
     }
     init_elapsed = time.perf_counter() - init_start_time
     print(
-        "  FM init:"
-        f" sigmas=[{sigma[0]:.3e}, {sigma[1]:.3e}, {sigma[2]:.3e}, {sigma[3]:.3e}]"
-        f" jitter_scale={FM_JITTER_SCALE:.2f}"
+        "  Init:"
+        f" f0_peak={band.f0_init:.6e}"
+        f" z0=[{init_values['z_logf0']:.3f}, {init_values['z_logfdot']:.3f},"
+        f" {init_values['z_logA']:.3f}, {init_values['u_phi_c']:.3f}]"
+        f" jitter_scale={INIT_JITTER_SCALE:.2f}"
     )
-    print(f"  Timing: FM init {init_elapsed:.2f} s")
+    print(f"  Timing: init proposal {init_elapsed:.2f} s")
 
     def _make_mcmc(init_values: dict[str, float]) -> MCMC:
         kernel = NUTS(
@@ -437,7 +420,7 @@ def sample_source(band: BandData, *, seed: int = 0) -> MCMC:
             progress_bar=SHOW_PROGRESS,
         )
 
-    print("  NUTS init attempt: FM truth-jitter")
+    print("  NUTS init attempt: FFT/prior")
     mcmc = _make_mcmc(init_values)
     mcmc_start_time = time.perf_counter()
     mcmc.run(jax.random.PRNGKey(seed), extra_fields=("diverging",))

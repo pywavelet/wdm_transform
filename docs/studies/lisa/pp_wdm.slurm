@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# WDM-domain MCMC for 100 seeds in parallel.
+# Runtime per seed: ~10 min.  Walltime set to 15 min (1.5x headroom).
+#
+# Submit (from docs/studies/lisa/ or from repo root):
+#   sbatch docs/studies/lisa/pp_wdm.slurm
+#
+# After both freq and WDM jobs complete, run pp_plot.py on the head node:
+#   python pp_plot.py
+
+#SBATCH --job-name=lisa_wdm
+#SBATCH --output=outdir_lisa/slurm_logs/wdm_%A_%a.out
+#SBATCH --error=outdir_lisa/slurm_logs/wdm_%A_%a.err
+#SBATCH --array=0-99%100
+#SBATCH --time=00:15:00
+#SBATCH --cpus-per-task=1
+#SBATCH --mem=3G
+
+set -euo pipefail
+
+cd "${SLURM_SUBMIT_DIR}"
+mkdir -p outdir_lisa/slurm_logs
+
+module load gcc/13.3.0 python/3.12.3
+source /fred/oz303/avajpeyi/codes/wdm_transform/.venv/bin/activate
+
+export PYTHONUNBUFFERED=1
+
+START_SEED="${START_SEED:-0}"
+TASK_ID="${SLURM_ARRAY_TASK_ID:-0}"
+SEED=$((START_SEED + TASK_ID))
+
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] START lisa_wdm_mcmc seed=${SEED}"
+LISA_SEED="${SEED}" LISA_INCLUDE_GALACTIC="1" python lisa_wdm_mcmc.py
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] END   lisa_wdm_mcmc seed=${SEED}"
