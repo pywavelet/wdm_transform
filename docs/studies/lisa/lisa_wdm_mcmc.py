@@ -56,6 +56,7 @@ from lisa_common import (
     build_sampled_source_params,
     estimate_frequency_peak,
     load_injection,
+    save_corner_plot,
     save_posterior_archive,
     source_truth_vector,
     trim_frequency_band,
@@ -622,3 +623,14 @@ _out_path = save_posterior_archive(
     truth=truth_snr,
 )
 print(f"\nSaved posteriors to {_out_path}")
+
+# Generate corner plot (WDM-domain only for now)
+print("\nGenerating corner plot (WDM domain)…")
+corner_path = save_corner_plot(
+    samples_waveform,
+    truth=truth,
+    output_dir=RUN_DIR,
+    stem="corner_wdm",
+    labels=PARAM_NAMES,
+)
+print(f"Saved corner plot to {corner_path}")

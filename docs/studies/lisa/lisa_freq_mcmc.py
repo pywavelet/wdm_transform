@@ -48,6 +48,7 @@ from lisa_common import (
     build_local_prior_info,
     build_sampled_source_params,
     load_injection,
+    save_corner_plot,
     save_posterior_archive,
     source_truth_vector,
 )
@@ -559,3 +560,14 @@ _out_path = save_posterior_archive(
     truth=truth,
 )
 print(f"\nSaved posteriors to {_out_path}")
+
+# Generate corner plot (freq-domain only for now)
+print("\nGenerating corner plot (frequency domain)…")
+corner_path = save_corner_plot(
+    samples_report,
+    truth=truth[:4],  # Only f0, fdot, A, phi0 (no SNR)
+    output_dir=RUN_DIR,
+    stem="corner_freq",
+    labels=PARAM_NAMES[:4],
+)
+print(f"Saved corner plot to {corner_path}")
