@@ -57,6 +57,7 @@ jax.config.update("jax_enable_x64", True)
 N_WARMUP = int(os.getenv("LISA_N_WARMUP", "800"))
 N_DRAWS = int(os.getenv("LISA_N_DRAWS", "1000"))
 SHOW_PROGRESS = os.getenv("LISA_PROGRESS_BAR", "1")
+F0_JITTER_WIDTH = float(os.getenv("LISA_F0_JITTER_WIDTH", "0.001"))  # log-space half-width
 
 
 # ── Load and truncate data ────────────────────────────────────────────────────
@@ -401,16 +402,21 @@ def sample_source(band: BandData, *, seed: int = 0, snr_optimal: float = None) -
         f" f0_peak={band.f0_init:.6e}"
         f" params=[{init_values['logf0']:.3f}, {init_values['logfdot']:.3f},"
         f" {init_values['logA']:.3f}, {init_values['phi0']:.3f}]"
-        " (direct truth)"
+        f" (direct truth, f0 fixed ±{F0_JITTER_WIDTH:.2e})"
     )
     print(f"  Timing: init proposal {init_elapsed:.2f} s")
 
     def log_prob(theta):
-        """Log-posterior: log-prior + log-likelihood."""
-        logf0, logfdot, logA, phi0 = theta
+        """Log-posterior: log-prior + log-likelihood.
 
-        # Priors: truncated normal for log-space, uniform for phase
-        if not (band.logf0_bounds[0] <= logf0 <= band.logf0_bounds[1]):
+        Samples jitter around fixed f0 (matched-filter estimate).
+        theta = (delta_logf0, logfdot, logA, phi0)
+        """
+        delta_logf0, logfdot, logA, phi0 = theta
+        logf0 = init_values["logf0"] + delta_logf0
+
+        # Priors: tight uniform on f0 jitter, bounds on others
+        if not (-F0_JITTER_WIDTH <= delta_logf0 <= F0_JITTER_WIDTH):
             return -np.inf
         if not (band.logfdot_bounds[0] <= logfdot <= band.logfdot_bounds[1]):
             return -np.inf
@@ -419,13 +425,13 @@ def sample_source(band: BandData, *, seed: int = 0, snr_optimal: float = None) -
         if not (-np.pi <= phi0 <= np.pi):
             return -np.inf
 
-        # Log-priors (truncated normal)
-        lp_logf0 = -0.5 * ((logf0 - band.prior_center[0]) / band.prior_scale[0]) ** 2
+        # Log-priors
+        lp_delta_logf0 = 0.0  # Uniform on jitter
         lp_logfdot = -0.5 * ((logfdot - band.prior_center[1]) / band.prior_scale[1]) ** 2
         lp_logA = -0.5 * ((logA - band.prior_center[2]) / band.prior_scale[2]) ** 2
         lp_phi0 = 0.0  # Uniform
 
-        log_prior = lp_logf0 + lp_logfdot + lp_logA + lp_phi0
+        log_prior = lp_delta_logf0 + lp_logfdot + lp_logA + lp_phi0
 
         # Likelihood
         f0 = np.exp(logf0)
@@ -447,7 +453,7 @@ def sample_source(band: BandData, *, seed: int = 0, snr_optimal: float = None) -
         return log_prior + log_like
 
     # Initialize walkers in a small ball around truth
-    # Scale spread based on posterior width (SNR-dependent)
+    # Now sampling delta_logf0 (jitter) instead of logf0 (free)
     n_walkers = 32
     np.random.seed(seed)
 
@@ -457,16 +463,17 @@ def sample_source(band: BandData, *, seed: int = 0, snr_optimal: float = None) -
         # Fallback: conservative tight initialization
         spread = {"logf_logfdot": 1e-9, "logA": 0.001, "phi0": 0.003}
 
+    # delta_logf0 has much tighter init spread since prior is narrow
     p0 = np.array(
         [
-            init_values["logf0"] + np.random.normal(0, spread["logf_logfdot"], n_walkers),
+            np.random.normal(0, F0_JITTER_WIDTH * 0.1, n_walkers),  # delta_logf0: 0.1× prior width
             init_values["logfdot"] + np.random.normal(0, spread["logf_logfdot"], n_walkers),
             init_values["logA"] + np.random.normal(0, spread["logA"], n_walkers),
             init_values["phi0"] + np.random.normal(0, spread["phi0"], n_walkers),
         ]
     ).T
 
-    print(f"  emcee: {n_walkers} walkers")
+    print(f"  emcee: {n_walkers} walkers (f0_jitter: ±{F0_JITTER_WIDTH:.2e})")
     sampler = emcee.EnsembleSampler(n_walkers, 4, log_prob, threads=1)
 
     # Burn-in
@@ -483,8 +490,14 @@ def sample_source(band: BandData, *, seed: int = 0, snr_optimal: float = None) -
 
     # Extract samples
     chain = sampler.get_chain(flat=True)
+
+    # Convert delta_logf0 back to logf0
+    delta_logf0_samples = chain[:, 0]
+    logf0_samples = init_values["logf0"] + delta_logf0_samples
+
     samples_dict = {
-        "logf0": chain[:, 0],
+        "logf0": logf0_samples,
+        "delta_logf0": delta_logf0_samples,  # Also store jitter for diagnostics
         "logfdot": chain[:, 1],
         "logA": chain[:, 2],
         "phi0": chain[:, 3],
