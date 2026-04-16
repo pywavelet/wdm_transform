@@ -60,6 +60,7 @@ def source_aet_band(jgb: JaxGB, params: jnp.ndarray, kmin: int, kmax: int) -> jn
         kmin=kmin,
         kmax=kmax,
         tdi_combination="AET",
+        tdi_generation=1.5,
     )
     return jnp.stack(
         [

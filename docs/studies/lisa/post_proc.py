@@ -640,7 +640,7 @@ def plot_corner(run_a: RunPosterior, run_b: RunPosterior, output_dir: Path) -> N
         framealpha=0.0,
     )
 
-    save_figure(fig, output_dir, "corner_source_1")
+    fig.savefig(output_dir / "corner.pdf", dpi=300, bbox_inches="tight")
 
 
 def build_parser() -> argparse.ArgumentParser:

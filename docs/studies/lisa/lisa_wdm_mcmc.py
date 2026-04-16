@@ -74,6 +74,7 @@ def generate_aet_rfft(
         kmin=kmin,
         kmax=kmax,
         tdi_combination="AET",
+        tdi_generation=1.5,
     )
     return (
         jnp.asarray(a_loc, dtype=jnp.complex128),
@@ -549,7 +550,12 @@ def main() -> None:
     data_a = injection.data_At[:n_keep]
     data_e = injection.data_Et[:n_keep]
     data_t = injection.data_Tt[:n_keep]
-    t_obs = n_keep * injection.dt
+    # Use the full injection baseline for the template (matches data_generation.py).
+    # Truncation of the data array to n_keep is required by the WDM (2*NT) divisibility
+    # constraint; it loses at most a few samples out of millions, so the sub-bin FFT
+    # grid mismatch is negligible compared to the template-baseline bias it would
+    # introduce if we set t_obs = n_keep * dt here.
+    t_obs = injection.t_obs
     nf = n_keep // NT
     n_freqs = n_keep // 2 + 1
     df_rfft = 1.0 / t_obs
