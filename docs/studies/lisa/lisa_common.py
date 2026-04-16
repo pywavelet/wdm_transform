@@ -8,6 +8,17 @@ from pathlib import Path
 import corner
 import jax
 import numpy as np
+from gb_prior import (
+    F0_GLOBAL_BOUNDS,
+    F0_REF,
+    FDOT_GLOBAL_BOUNDS,
+    FIXED_A_PRIOR_BOUNDS,
+    FIXED_FDOT_PRIOR_BOUNDS,
+    SOURCE_CATALOG,
+    build_local_prior_info,
+    draw_source_prior_and_params,
+    lisa_f0_jitter_width,
+)
 from wdm_transform.signal_processing import (
     matched_filter_snr_rfft,
     matched_filter_snr_wdm,
@@ -21,25 +32,6 @@ CACHE_DIR = OUTDIR_ROOT / "_cache"
 
 c = 299792458.0
 L_LISA = 2.5e9
-
-# Reference GB source parameters: [f0, fdot, A, ra, dec, psi, iota, phi0]
-SOURCE_CATALOG = np.array(
-    [
-        [1.35962e-3, 8.94581279e-19, 1.07345e-22, 2.40, 0.31, 3.56, 0.52, 3.06],
-        [1.41220e-3, 2.30000000e-18, 8.20000000e-23, 2.15, 0.18, 1.20, 0.93, 1.40],
-    ],
-    dtype=float,
-)
-
-F0_GLOBAL_BOUNDS = (
-    float(SOURCE_CATALOG[:, 0].min() - 1.5e-5),
-    float(SOURCE_CATALOG[:, 0].max() + 1.5e-5),
-)
-FDOT_GLOBAL_BOUNDS = (5.0e-19, 4.0e-18)
-FIXED_FDOT_PRIOR_BOUNDS = FDOT_GLOBAL_BOUNDS
-FIXED_A_PRIOR_BOUNDS = (6.0e-24, 1.7e-23)
-F0_REF = float(np.mean(SOURCE_CATALOG[:, 0]))
-
 
 # ── Filesystem helpers ────────────────────────────────────────────────────────
 
@@ -60,10 +52,6 @@ def lisa_include_galactic() -> bool:
 
 def lisa_seed() -> int:
     return int(os.getenv("LISA_SEED", "0"))
-
-
-def lisa_f0_jitter_width() -> float:
-    return float(os.getenv("LISA_F0_JITTER_WIDTH", "0.001"))
 
 
 def lisa_mode_dirname(*, include_galactic: bool | None = None) -> str:
@@ -119,6 +107,87 @@ def wrap_phase(phi):
     return (phi + np.pi) % (2.0 * np.pi) - np.pi
 
 
+def is_phase_parameter(label: str) -> bool:
+    """Return whether *label* represents a circular phase-like parameter."""
+    lowered = label.lower()
+    return "phi" in lowered or "phase" in lowered
+
+
+def credible_level(samples: np.ndarray, truth: float) -> float:
+    """Return the posterior CDF rank evaluated at the injected truth."""
+    return float(np.mean(np.asarray(samples, dtype=float) < float(truth)))
+
+
+def circular_credible_level(samples: np.ndarray, truth: float) -> float:
+    """Return a boundary-robust rank for wrapped angular samples.
+
+    The posterior is unwrapped on a cut opposite its circular mean so values
+    concentrated near ±π are ordered consistently before evaluating the rank.
+    """
+    samples_arr = np.asarray(samples, dtype=float).reshape(-1)
+    if samples_arr.size == 0:
+        return float("nan")
+
+    sin_mean = float(np.mean(np.sin(samples_arr)))
+    cos_mean = float(np.mean(np.cos(samples_arr)))
+    mean_angle = float(np.arctan2(sin_mean, cos_mean))
+    cut = float(wrap_phase(mean_angle + np.pi))
+    samples_unwrapped = np.mod(samples_arr - cut, 2.0 * np.pi)
+    truth_unwrapped = float(np.mod(float(truth) - cut, 2.0 * np.pi))
+    return float(np.mean(samples_unwrapped < truth_unwrapped))
+
+
+def build_parameter_diagnostics(
+    samples: np.ndarray,
+    truth: np.ndarray,
+    param_names: list[str],
+    *,
+    ci: float = 0.9,
+) -> list[dict[str, float | bool | None | list[float] | str]]:
+    """Return structured posterior diagnostics for each parameter."""
+    samples_arr = np.asarray(samples, dtype=float)
+    truth_arr = np.asarray(truth, dtype=float).reshape(-1)
+    lo_q = 100.0 * (1.0 - ci) / 2.0
+    hi_q = 100.0 * (1.0 + ci) / 2.0
+
+    med = np.median(samples_arr, axis=0)
+    mean = np.mean(samples_arr, axis=0)
+    std = np.std(samples_arr, axis=0, ddof=0)
+    lo = np.percentile(samples_arr, lo_q, axis=0)
+    hi = np.percentile(samples_arr, hi_q, axis=0)
+    q05 = np.percentile(samples_arr, 5.0, axis=0)
+    q95 = np.percentile(samples_arr, 95.0, axis=0)
+
+    diagnostics: list[dict[str, float | bool | None | list[float] | str]] = []
+    for idx, label in enumerate(param_names):
+        truth_value = float(truth_arr[idx])
+        samples_col = samples_arr[:, idx]
+        std_value = float(std[idx])
+        is_phase = is_phase_parameter(label)
+        circular_rank = circular_credible_level(samples_col, truth_value) if is_phase else None
+        diagnostics.append(
+            {
+                "label": label,
+                "truth": truth_value,
+                "mean": float(mean[idx]),
+                "std": std_value,
+                "median": float(med[idx]),
+                "q05": float(q05[idx]),
+                "q95": float(q95[idx]),
+                "ci": ci,
+                "ci_low": float(lo[idx]),
+                "ci_high": float(hi[idx]),
+                "covered": bool(lo[idx] <= truth_value <= hi[idx]),
+                "credible_level": credible_level(samples_col, truth_value),
+                "circular_credible_level": circular_rank,
+                "standardized_truth_offset": (
+                    float((truth_value - mean[idx]) / std_value) if std_value > 0.0 else None
+                ),
+            }
+        )
+    return diagnostics
+
+
 def require_positive_fdot(source_params: np.ndarray, *, context: str) -> np.ndarray:
     """Return *source_params* after validating strictly positive chirps."""
     params = np.asarray(source_params, dtype=float)
@@ -144,15 +213,6 @@ def draw_random_source_params(rng: np.random.Generator) -> np.ndarray:
     iota = float(np.arccos(rng.uniform(-1.0, 1.0)))
     phi0 = float(rng.uniform(0.0, 2.0 * np.pi))
     return np.array([f0, fdot, A, ra, dec, psi, iota, phi0], dtype=float)
-
-
-@dataclass(frozen=True)
-class LocalPriorInfo:
-    prior_center: np.ndarray
-    prior_scale: np.ndarray
-    logf0_bounds: tuple[float, float]
-    logfdot_bounds: tuple[float, float]
-    logA_bounds: tuple[float, float]
 
 
 @dataclass(frozen=True)
@@ -212,99 +272,6 @@ def load_injection(path: Path = INJECTION_PATH) -> InjectionData:
             prior_fdot=tuple(np.asarray(inj["prior_fdot"], dtype=float).reshape(2)),
             prior_A=tuple(np.asarray(inj["prior_A"], dtype=float).reshape(2)),
         )
-
-
-def _draw_truncated_normal(
-    rng: np.random.Generator,
-    *,
-    loc: float,
-    scale: float,
-    low: float,
-    high: float,
-) -> float:
-    """Sample a scalar truncated normal by rejection."""
-    for _ in range(10_000):
-        value = float(rng.normal(loc=loc, scale=scale))
-        if low <= value <= high:
-            return value
-    raise RuntimeError(
-        f"Failed to draw truncated normal after many attempts: "
-        f"loc={loc}, scale={scale}, low={low}, high={high}"
-    )
-
-
-def draw_positive_parameter_from_bounds(
-    rng: np.random.Generator,
-    bounds: tuple[float, float],
-) -> float:
-    """Draw a positive parameter from the shared truncated-normal log prior."""
-    log_low = float(np.log(bounds[0]))
-    log_high = float(np.log(bounds[1]))
-    log_value = _draw_truncated_normal(
-        rng,
-        loc=0.5 * (log_low + log_high),
-        scale=0.25 * (log_high - log_low),
-        low=log_low,
-        high=log_high,
-    )
-    return float(np.exp(log_value))
-
-
-def build_local_prior_info(
-    *,
-    prior_f0: tuple[float, float],
-    prior_fdot: tuple[float, float],
-    prior_A: tuple[float, float],
-) -> LocalPriorInfo:
-    """Shared log-parameter prior metadata for the local frequency/WDM fits."""
-    logf0_bounds = (float(np.log(prior_f0[0])), float(np.log(prior_f0[1])))
-    logfdot_bounds = (float(np.log(prior_fdot[0])), float(np.log(prior_fdot[1])))
-    logA_bounds = (float(np.log(prior_A[0])), float(np.log(prior_A[1])))
-
-    return LocalPriorInfo(
-        prior_center=np.array([
-            0.5 * (logf0_bounds[0] + logf0_bounds[1]),
-            0.5 * (logfdot_bounds[0] + logfdot_bounds[1]),
-            0.5 * (logA_bounds[0] + logA_bounds[1]),
-        ]),
-        prior_scale=np.array([
-            0.25 * (logf0_bounds[1] - logf0_bounds[0]),
-            0.25 * (logfdot_bounds[1] - logfdot_bounds[0]),
-            0.25 * (logA_bounds[1] - logA_bounds[0]),
-        ]),
-        logf0_bounds=logf0_bounds,
-        logfdot_bounds=logfdot_bounds,
-        logA_bounds=logA_bounds,
-    )
-
-
-def draw_source_prior_and_params(
-    rng: np.random.Generator,
-) -> tuple[np.ndarray, float, float, tuple[float, float], tuple[float, float], tuple[float, float]]:
-    """Draw one source conditioned on a fixed external search reference frequency."""
-    f0_ref = F0_REF
-    f0_jitter_width = lisa_f0_jitter_width()
-    prior_f0 = (
-        float(f0_ref * np.exp(-f0_jitter_width)),
-        float(f0_ref * np.exp(f0_jitter_width)),
-    )
-    prior_fdot = tuple(float(x) for x in FIXED_FDOT_PRIOR_BOUNDS)
-    prior_A = tuple(float(x) for x in FIXED_A_PRIOR_BOUNDS)
-
-    delta_logf0_true = float(rng.uniform(-f0_jitter_width, f0_jitter_width))
-    f0 = float(f0_ref * np.exp(delta_logf0_true))
-    fdot = draw_positive_parameter_from_bounds(rng, prior_fdot)
-    A = draw_positive_parameter_from_bounds(rng, prior_A)
-    ra = float(rng.uniform(0.0, 2.0 * np.pi))
-    dec = float(np.arcsin(rng.uniform(-1.0, 1.0)))
-    psi = float(rng.uniform(0.0, np.pi))
-    iota = float(np.arccos(rng.uniform(-1.0, 1.0)))
-    phi0 = float(rng.uniform(-np.pi, np.pi))
-    source = np.array(
-        [f0, fdot, A, ra, dec, psi, iota, phi0],
-        dtype=float,
-    )
-    return source, f0_ref, delta_logf0_true, prior_f0, prior_fdot, prior_A
 
 
 def estimate_frequency_peak(

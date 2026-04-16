@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import argparse
 import atexit
+import contextlib
+import io
+import json
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -20,8 +23,12 @@ from lisa_common import (
     FREQ_POSTERIOR_PATH,
     RUN_DIR,
     WDM_POSTERIOR_PATH,
+    build_parameter_diagnostics,
+    circular_credible_level,
+    is_phase_parameter,
     print_posterior_report,
     save_figure,
+    wrap_phase,
 )
 
 DEFAULT_OUTPUT_DIR = RUN_DIR
@@ -114,12 +121,13 @@ def load_run(path: Path, name: str) -> RunPosterior:
     if samples.shape[1] != len(labels):
         raise ValueError(f"{path} has {samples.shape[1]} sample columns for {len(labels)} labels.")
 
+    truth_2d = _normalize_phi(truth[None, :], labels)
     return RunPosterior(
         name=name,
         path=path,
         samples=_normalize_phi(samples, labels),
         labels=labels,
-        truth=truth,
+        truth=truth_2d.reshape(-1),
         snr=float(snr_arr[0]) if snr_arr.size else None,
     )
 
@@ -161,7 +169,46 @@ def compare_summary(run_a: RunPosterior, run_b: RunPosterior, labels: list[str])
     med_a = np.median(run_a.samples, axis=0)
     med_b = np.median(run_b.samples, axis=0)
     for idx, label in enumerate(labels):
-        print(f"  {label:24s} delta={med_a[idx] - med_b[idx]:+.6e}")
+        delta = float(med_a[idx] - med_b[idx])
+        if is_phase_parameter(label):
+            delta = float(wrap_phase(delta))
+        print(f"  {label:24s} delta={delta:+.6e}")
+
+
+def build_run_diagnostics(run: RunPosterior) -> dict[str, object]:
+    return {
+        "name": run.name,
+        "path": str(run.path),
+        "snr": run.snr,
+        "parameters": build_parameter_diagnostics(run.samples, run.truth, run.labels),
+    }
+
+
+def build_comparison_diagnostics(
+    run_a: RunPosterior,
+    run_b: RunPosterior,
+    labels: list[str],
+) -> dict[str, object]:
+    med_a = np.median(run_a.samples, axis=0)
+    med_b = np.median(run_b.samples, axis=0)
+    deltas = []
+    for idx, label in enumerate(labels):
+        delta = float(med_a[idx] - med_b[idx])
+        if is_phase_parameter(label):
+            delta = float(wrap_phase(delta))
+        deltas.append(
+            {
+                "label": label,
+                "median_delta": delta,
+                "credible_level_delta": (
+                    float(circular_credible_level(run_a.samples[:, idx], run_a.truth[idx]))
+                    - float(circular_credible_level(run_b.samples[:, idx], run_b.truth[idx]))
+                    if is_phase_parameter(label)
+                    else None
+                ),
+            }
+        )
+    return {"median_deltas": deltas}
 
 
 def plot_corner(run_a: RunPosterior, run_b: RunPosterior, output_dir: Path) -> None:
@@ -226,38 +273,71 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> None:
     args = build_parser().parse_args()
     args.output_dir.mkdir(parents=True, exist_ok=True)
+    text_path = args.output_dir / "posterior_diagnostics.txt"
+    json_path = args.output_dir / "posterior_diagnostics.json"
 
     run_a = load_run_if_exists(args.run_a, args.name_a)
     run_b = load_run_if_exists(args.run_b, args.name_b)
 
-    if run_a is None and run_b is None:
-        print(f"Error: No posterior files found.")
-        print(f"  Expected WDM at: {args.run_a}")
-        print(f"  Expected Freq at: {args.run_b}")
-        return
+    payload: dict[str, object] = {
+        "output_dir": str(args.output_dir),
+        "run_a_path": str(args.run_a),
+        "run_b_path": str(args.run_b),
+    }
+    report_buffer = io.StringIO()
 
-    if run_a is None or run_b is None:
-        # Only one posterior file exists
-        run = run_a if run_a is not None else run_b
-        report_run(run)
-        plot_single_corner(run, args.output_dir)
-        print(f"\nSaved corner plot to {args.output_dir / 'corner_source_1.png'}")
-        return
+    with contextlib.redirect_stdout(report_buffer):
+        if run_a is None and run_b is None:
+            payload["status"] = "missing"
+            print(f"Error: No posterior files found.")
+            print(f"  Expected WDM at: {args.run_a}")
+            print(f"  Expected Freq at: {args.run_b}")
+        elif run_a is None or run_b is None:
+            run = run_a if run_a is not None else run_b
+            assert run is not None
+            payload["status"] = "single_run"
+            payload["runs"] = {run.name: build_run_diagnostics(run)}
+            report_run(run)
+            plot_single_corner(run, args.output_dir)
+            print(f"\nSaved corner plot to {args.output_dir / 'corner_source_1.png'}")
+        else:
+            run_a, run_b, labels = align_common_labels(run_a, run_b)
+            payload["status"] = "paired_runs"
+            payload["runs"] = {
+                run_a.name: build_run_diagnostics(run_a),
+                run_b.name: build_run_diagnostics(run_b),
+            }
+            payload["comparison"] = build_comparison_diagnostics(run_a, run_b, labels)
+            report_run(run_a)
+            report_run(run_b)
+            compare_summary(run_a, run_b, labels)
+            plot_corner(run_a, run_b, args.output_dir)
 
-    # Both runs exist
-    run_a, run_b, labels = align_common_labels(run_a, run_b)
-    report_run(run_a)
-    report_run(run_b)
-    compare_summary(run_a, run_b, labels)
-    plot_corner(run_a, run_b, args.output_dir)
+            print("\nSaved comparison figures:")
+            print(f"  {args.output_dir / 'posterior_marginals_compare.png'}")
+            print(f"  {args.output_dir / 'posterior_interval_compare.png'}")
+            if (args.output_dir / "snr_compare.png").exists():
+                print(f"  {args.output_dir / 'snr_compare.png'}")
+            if (args.output_dir / "corner_source_1.png").exists():
+                print(f"  {args.output_dir / 'corner_source_1.png'}")
 
-    print("\nSaved comparison figures:")
-    print(f"  {args.output_dir / 'posterior_marginals_compare.png'}")
-    print(f"  {args.output_dir / 'posterior_interval_compare.png'}")
-    if (args.output_dir / "snr_compare.png").exists():
-        print(f"  {args.output_dir / 'snr_compare.png'}")
-    if (args.output_dir / "corner_source_1.png").exists():
-        print(f"  {args.output_dir / 'corner_source_1.png'}")
+    report_text = report_buffer.getvalue().rstrip()
+    if report_text:
+        report_text = (
+            f"{report_text}\n\nSaved diagnostics sidecars:\n"
+            f"  {text_path}\n"
+            f"  {json_path}\n"
+        )
+    else:
+        report_text = (
+            "Saved diagnostics sidecars:\n"
+            f"  {text_path}\n"
+            f"  {json_path}\n"
+        )
+
+    print(report_text)
+    text_path.write_text(report_text + ("\n" if not report_text.endswith("\n") else ""), encoding="utf-8")
+    json_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
 if __name__ == "__main__":

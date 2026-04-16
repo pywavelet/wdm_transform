@@ -13,8 +13,9 @@ import jax
 import jax.numpy as jnp
 import lisaorbits
 import numpy as np
+from gb_prior import draw_source_prior_and_params
 from jaxgb.jaxgb import JaxGB
-from lisa_common import INJECTION_PATH, draw_source_prior_and_params, load_injection
+from lisa_common import INJECTION_PATH, load_injection
 from wdm_transform.signal_processing import matched_filter_snr_rfft
 
 jax.config.update("jax_enable_x64", True)

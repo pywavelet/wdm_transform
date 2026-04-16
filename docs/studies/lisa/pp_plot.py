@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import argparse
 import atexit
+import csv
+import json
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -13,7 +15,14 @@ import numpy as np
 import scipy.stats as st
 from matplotlib.lines import Line2D
 
-from lisa_common import OUTDIR_ROOT, lisa_mode_dirname, save_figure
+from lisa_common import (
+    OUTDIR_ROOT,
+    circular_credible_level,
+    credible_level,
+    is_phase_parameter,
+    lisa_mode_dirname,
+    save_figure,
+)
 
 FREQ_FILENAME = "freq_posteriors.npz"
 WDM_FILENAME = "wdm_posteriors.npz"
@@ -39,12 +48,18 @@ class SeedPosterior:
     truth: np.ndarray
 
 
+@dataclass(frozen=True)
+class SkippedSeed:
+    seed: int
+    missing: list[str]
+
+
 def _parse_seed(seed_dir: Path) -> int:
     return int(seed_dir.name.split("_", maxsplit=1)[1])
 
 
 def _normalize_phi(values: np.ndarray, label: str) -> np.ndarray:
-    if "phi" not in label.lower() and "phase" not in label.lower():
+    if not is_phase_parameter(label):
         return np.asarray(values, dtype=float)
     return (np.asarray(values, dtype=float) + np.pi) % (2.0 * np.pi) - np.pi
 
@@ -102,10 +117,14 @@ def discover_seed_dirs(mode_dir: Path) -> list[Path]:
     return seed_dirs
 
 
-def collect_runs(mode_dir: Path, seed_dirs: list[Path]) -> tuple[list[SeedPosterior], list[SeedPosterior], list[int]]:
+def collect_runs(
+    mode_dir: Path,
+    seed_dirs: list[Path],
+) -> tuple[list[SeedPosterior], list[SeedPosterior], list[int], list[SkippedSeed]]:
     freq_runs: list[SeedPosterior] = []
     wdm_runs: list[SeedPosterior] = []
     used_seeds: list[int] = []
+    skipped: list[SkippedSeed] = []
 
     for seed_dir in seed_dirs:
         freq_path = seed_dir / FREQ_FILENAME
@@ -117,7 +136,7 @@ def collect_runs(mode_dir: Path, seed_dirs: list[Path]) -> tuple[list[SeedPoster
                 missing.append(FREQ_FILENAME)
             if not wdm_path.exists():
                 missing.append(WDM_FILENAME)
-            print(f"Skipping seed {seed}: missing {', '.join(missing)}")
+            skipped.append(SkippedSeed(seed=seed, missing=missing))
             continue
 
         freq_runs.append(load_seed_posterior(freq_path))
@@ -127,7 +146,7 @@ def collect_runs(mode_dir: Path, seed_dirs: list[Path]) -> tuple[list[SeedPoster
     if not used_seeds:
         raise FileNotFoundError(f"No seed directories in {mode_dir} contained both posterior archives.")
 
-    return freq_runs, wdm_runs, used_seeds
+    return freq_runs, wdm_runs, used_seeds, skipped
 
 
 def common_labels(runs: list[SeedPosterior]) -> list[str]:
@@ -150,10 +169,18 @@ def align_run(run: SeedPosterior, labels: list[str]) -> SeedPosterior:
     )
 
 
-def calculate_credible_levels(posterior_samples: list[np.ndarray], true_values: list[float]) -> np.ndarray:
+def calculate_credible_levels(
+    posterior_samples: list[np.ndarray],
+    true_values: list[float],
+    *,
+    circular: bool = False,
+) -> np.ndarray:
     credible_levels = []
     for samples, true_value in zip(posterior_samples, true_values, strict=True):
-        credible_levels.append(float(np.mean(np.asarray(samples, dtype=float) < float(true_value))))
+        if circular:
+            credible_levels.append(circular_credible_level(samples, true_value))
+        else:
+            credible_levels.append(credible_level(samples, true_value))
     return np.asarray(credible_levels, dtype=float)
 
 
@@ -163,7 +190,7 @@ def empirical_pp(credible_levels: np.ndarray, x_values: np.ndarray) -> np.ndarra
 
 def build_results(runs: list[SeedPosterior], labels: list[str]) -> dict[str, dict[str, list[np.ndarray] | list[float]]]:
     results: dict[str, dict[str, list[np.ndarray] | list[float]]] = {
-        label: {"posteriors": [], "trues": []}
+        label: {"posteriors": [], "trues": [], "seeds": []}
         for label in labels
     }
     for run in runs:
@@ -171,13 +198,30 @@ def build_results(runs: list[SeedPosterior], labels: list[str]) -> dict[str, dic
         for idx, label in enumerate(labels):
             results[label]["posteriors"].append(aligned.samples[:, idx])
             results[label]["trues"].append(float(aligned.truth[idx]))
+            results[label]["seeds"].append(aligned.seed)
     return results
 
 
-def print_summary(results: dict[str, dict[str, list[np.ndarray] | list[float]]], *, name: str) -> dict[str, np.ndarray]:
-    print(f"\n{name} PP summary")
-    print(f"{'Parameter':<20} {'mean(CL)':>10} {'std(CL)':>10} {'KS p':>12}")
-    print("-" * 56)
+def summarize_credible_levels(credible_levels: np.ndarray) -> dict[str, float | int]:
+    return {
+        "mean_cl": float(credible_levels.mean()),
+        "std_cl": float(credible_levels.std(ddof=0)),
+        "ks_p": float(st.kstest(credible_levels, "uniform").pvalue),
+        "inside_68": int(np.sum((credible_levels >= 0.16) & (credible_levels <= 0.84))),
+        "inside_90": int(np.sum((credible_levels >= 0.05) & (credible_levels <= 0.95))),
+        "inside_95": int(np.sum((credible_levels >= 0.025) & (credible_levels <= 0.975))),
+    }
+
+
+def print_summary(
+    results: dict[str, dict[str, list[np.ndarray] | list[float] | list[int]]],
+    *,
+    name: str,
+    printer=print,
+) -> dict[str, np.ndarray]:
+    printer(f"\n{name} PP summary")
+    printer(f"{'Parameter':<20} {'mean(CL)':>10} {'std(CL)':>10} {'KS p':>12}")
+    printer("-" * 56)
     credible_map: dict[str, np.ndarray] = {}
     p_values = []
     for label, data in results.items():
@@ -186,17 +230,166 @@ def print_summary(results: dict[str, dict[str, list[np.ndarray] | list[float]]],
             data["trues"],       # type: ignore[arg-type]
         )
         credible_map[label] = credible_levels
-        p_value = float(st.kstest(credible_levels, "uniform").pvalue)
+        p_value = float(summarize_credible_levels(credible_levels)["ks_p"])
         p_values.append(p_value)
-        print(
+        printer(
             f"{_short_label(label):<20} "
             f"{credible_levels.mean():>10.3f} "
             f"{credible_levels.std(ddof=0):>10.3f} "
             f"{p_value:>12.3g}"
         )
     combined_p = float(st.combine_pvalues(p_values)[1])
-    print(f"{'combined':<20} {'':>10} {'':>10} {combined_p:>12.3g}")
+    printer(f"{'combined':<20} {'':>10} {'':>10} {combined_p:>12.3g}")
     return credible_map
+
+
+def print_phase_audit(
+    results: dict[str, dict[str, list[np.ndarray] | list[float] | list[int]]],
+    *,
+    name: str,
+    printer=print,
+) -> dict[str, dict[str, np.ndarray]]:
+    audit: dict[str, dict[str, np.ndarray]] = {}
+    phase_labels = [label for label in results if is_phase_parameter(label)]
+    if not phase_labels:
+        return audit
+
+    printer(f"\n{name} phase audit")
+    printer(
+        f"{'Parameter':<20} {'linear std':>12} {'circular std':>14} "
+        f"{'linear KS p':>12} {'circular KS p':>14}"
+    )
+    printer("-" * 76)
+    for label in phase_labels:
+        linear_levels = calculate_credible_levels(
+            results[label]["posteriors"],  # type: ignore[arg-type]
+            results[label]["trues"],       # type: ignore[arg-type]
+        )
+        circular_levels = calculate_credible_levels(
+            results[label]["posteriors"],  # type: ignore[arg-type]
+            results[label]["trues"],       # type: ignore[arg-type]
+            circular=True,
+        )
+        linear_summary = summarize_credible_levels(linear_levels)
+        circular_summary = summarize_credible_levels(circular_levels)
+        audit[label] = {
+            "linear": linear_levels,
+            "circular": circular_levels,
+        }
+        printer(
+            f"{_short_label(label):<20} "
+            f"{float(linear_summary['std_cl']):>12.3f} "
+            f"{float(circular_summary['std_cl']):>14.3f} "
+            f"{float(linear_summary['ks_p']):>12.3g} "
+            f"{float(circular_summary['ks_p']):>14.3g}"
+        )
+    return audit
+
+
+def write_credible_level_table(
+    output_path: Path,
+    *,
+    freq_results: dict[str, dict[str, list[np.ndarray] | list[float] | list[int]]],
+    wdm_results: dict[str, dict[str, list[np.ndarray] | list[float] | list[int]]],
+    labels: list[str],
+) -> None:
+    with output_path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=[
+                "method",
+                "seed",
+                "parameter",
+                "credible_level",
+                "circular_credible_level",
+            ],
+        )
+        writer.writeheader()
+        for method_name, results in (("WDM", wdm_results), ("Frequency", freq_results)):
+            for label in labels:
+                linear_levels = calculate_credible_levels(
+                    results[label]["posteriors"],  # type: ignore[arg-type]
+                    results[label]["trues"],       # type: ignore[arg-type]
+                )
+                circular_levels = (
+                    calculate_credible_levels(
+                        results[label]["posteriors"],  # type: ignore[arg-type]
+                        results[label]["trues"],       # type: ignore[arg-type]
+                        circular=True,
+                    )
+                    if is_phase_parameter(label)
+                    else np.full_like(linear_levels, np.nan)
+                )
+                seeds = results[label]["seeds"]  # type: ignore[assignment]
+                for seed, linear_level, circular_level in zip(
+                    seeds,
+                    linear_levels,
+                    circular_levels,
+                    strict=True,
+                ):
+                    writer.writerow(
+                        {
+                            "method": method_name,
+                            "seed": int(seed),
+                            "parameter": label,
+                            "credible_level": f"{float(linear_level):.12g}",
+                            "circular_credible_level": (
+                                "" if np.isnan(circular_level) else f"{float(circular_level):.12g}"
+                            ),
+                        }
+                    )
+
+
+def build_summary_payload(
+    *,
+    args: argparse.Namespace,
+    used_seeds: list[int],
+    skipped: list[SkippedSeed],
+    freq_results: dict[str, dict[str, list[np.ndarray] | list[float] | list[int]]],
+    wdm_results: dict[str, dict[str, list[np.ndarray] | list[float] | list[int]]],
+    labels: list[str],
+) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "mode": args.mode,
+        "output_dir": str(args.output_dir if args.output_dir is not None else OUTDIR_ROOT / args.mode),
+        "used_seeds": used_seeds,
+        "skipped_seeds": [{"seed": item.seed, "missing": item.missing} for item in skipped],
+        "methods": {},
+    }
+
+    methods = {
+        "WDM": wdm_results,
+        "Frequency": freq_results,
+    }
+    for method_name, results in methods.items():
+        method_payload: dict[str, object] = {"parameters": {}}
+        p_values = []
+        for label in labels:
+            linear_levels = calculate_credible_levels(
+                results[label]["posteriors"],  # type: ignore[arg-type]
+                results[label]["trues"],       # type: ignore[arg-type]
+            )
+            linear_summary = summarize_credible_levels(linear_levels)
+            p_values.append(float(linear_summary["ks_p"]))
+            entry: dict[str, object] = {
+                **linear_summary,
+                "credible_levels": linear_levels.tolist(),
+                "seeds": [int(seed) for seed in results[label]["seeds"]],  # type: ignore[arg-type]
+            }
+            if is_phase_parameter(label):
+                circular_levels = calculate_credible_levels(
+                    results[label]["posteriors"],  # type: ignore[arg-type]
+                    results[label]["trues"],       # type: ignore[arg-type]
+                    circular=True,
+                )
+                entry["circular"] = {
+                    **summarize_credible_levels(circular_levels),
+                    "credible_levels": circular_levels.tolist(),
+                }
+            method_payload["parameters"][label] = entry
+        method_payload["combined_p"] = float(st.combine_pvalues(p_values)[1])
+        payload["methods"][method_name] = method_payload
+    return payload
 
 
 def plot_pp_compare(
@@ -294,15 +487,30 @@ def main() -> None:
     if not seed_dirs:
         raise FileNotFoundError(f"No matching seed directories found in {mode_dir}")
 
-    freq_runs, wdm_runs, used_seeds = collect_runs(mode_dir, seed_dirs)
+    freq_runs, wdm_runs, used_seeds, skipped = collect_runs(mode_dir, seed_dirs)
     labels = common_labels(freq_runs + wdm_runs)
     freq_results = build_results(freq_runs, labels)
     wdm_results = build_results(wdm_runs, labels)
 
-    print(f"Using mode: {args.mode}")
-    print(f"Seeds: {used_seeds}")
-    print_summary(wdm_results, name="WDM")
-    print_summary(freq_results, name="Frequency")
+    log_lines: list[str] = []
+
+    def emit(line: str = "") -> None:
+        print(line)
+        log_lines.append(line)
+
+    emit(f"Using mode: {args.mode}")
+    emit(f"Complete seeds ({len(used_seeds)}): {used_seeds}")
+    if skipped:
+        emit("Skipped seeds:")
+        for item in skipped:
+            emit(f"  seed {item.seed}: missing {', '.join(item.missing)}")
+    else:
+        emit("Skipped seeds: none")
+
+    print_summary(wdm_results, name="WDM", printer=emit)
+    print_summary(freq_results, name="Frequency", printer=emit)
+    print_phase_audit(wdm_results, name="WDM", printer=emit)
+    print_phase_audit(freq_results, name="Frequency", printer=emit)
 
     out_path = plot_pp_compare(
         freq_results=freq_results,
@@ -312,7 +520,34 @@ def main() -> None:
         stem=args.stem,
         title=f"LISA Posterior PP Plot ({args.mode}, N={len(used_seeds)})",
     )
-    print(f"\nSaved PP plot to {out_path}")
+    emit(f"\nSaved PP plot to {out_path}")
+
+    summary_txt = output_dir / f"{args.stem}_summary.txt"
+    summary_json = output_dir / f"{args.stem}_summary.json"
+    credible_csv = output_dir / f"{args.stem}_credible_levels.csv"
+    write_credible_level_table(
+        credible_csv,
+        freq_results=freq_results,
+        wdm_results=wdm_results,
+        labels=labels,
+    )
+    summary_json.write_text(
+        json.dumps(
+            build_summary_payload(
+                args=args,
+                used_seeds=used_seeds,
+                skipped=skipped,
+                freq_results=freq_results,
+                wdm_results=wdm_results,
+                labels=labels,
+            ),
+            indent=2,
+            sort_keys=True,
+        ) + "\n",
+        encoding="utf-8",
+    )
+    emit(f"Saved PP sidecars to {summary_txt}, {summary_json}, and {credible_csv}")
+    summary_txt.write_text("\n".join(log_lines) + "\n", encoding="utf-8")
 
 
 if __name__ == "__main__":

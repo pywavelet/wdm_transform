@@ -17,6 +17,7 @@ from multiprocessing import cpu_count, get_context
 import healpy as hp
 import lisaorbits
 import numpy as np
+from gb_prior import draw_source_prior_and_params, lisa_f0_jitter_width
 from lisa_common import (
     CACHE_DIR,
     INJECTION_PATH,
@@ -25,11 +26,9 @@ from lisa_common import (
     RUN_DIR,
     build_total_noise_psd,
     c,
-    draw_source_prior_and_params,
     ensure_output_dir,
     freqs_gal,
     galactic_psd,
-    lisa_f0_jitter_width,
     noise_tdi15_psd,
     omega_gw,
     place_local_tdi,
