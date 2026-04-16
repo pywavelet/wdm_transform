@@ -634,3 +634,41 @@ corner_path = save_corner_plot(
     labels=PARAM_NAMES,
 )
 print(f"Saved corner plot to {corner_path}")
+
+# If freq posterior exists, create a combined corner plot
+try:
+    import corner as corner_lib
+    from pathlib import Path
+
+    freq_posterior_path = Path(RUN_DIR) / "freq_posteriors.npz"
+    if freq_posterior_path.exists():
+        print("\nLoading frequency posterior for overlay…")
+        with np.load(freq_posterior_path) as freq_data:
+            freq_samples = np.asarray(freq_data["samples_source"], dtype=float)
+            freq_labels = [str(item) for item in np.asarray(freq_data["labels"]).tolist()]
+
+        # Extract matching parameters (f0, fdot, A, phi0) - exclude SNR
+        keep_cols = [i for i, label in enumerate(freq_labels) if any(x in label.lower() for x in ["f0", "fdot", "a [", "phi0"])]
+        if len(keep_cols) == 4:
+            freq_samples_4 = freq_samples[:, keep_cols]
+
+            # Create combined corner plot
+            fig = corner_lib.corner(
+                samples_waveform,
+                labels=PARAM_NAMES,
+                truths=truth,
+                truth_color="tab:red",
+                quantiles=[0.05, 0.5, 0.95],
+                show_titles=True,
+                title_kwargs={"fontsize": 10},
+                color="C0",
+                fill_contours=False,
+                plot_density=False,
+            )
+            corner_lib.overplot_lines(fig, freq_samples_4, color="C1", alpha=0.5)
+
+            from lisa_common import save_figure
+            combined_path = save_figure(fig, RUN_DIR, "corner_wdm_freq_overlay")
+            print(f"Saved combined corner plot to {combined_path}")
+except Exception as e:
+    print(f"Could not create overlay: {e}")

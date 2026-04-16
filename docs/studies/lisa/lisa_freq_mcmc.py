@@ -571,3 +571,41 @@ corner_path = save_corner_plot(
     labels=PARAM_NAMES[:4],
 )
 print(f"Saved corner plot to {corner_path}")
+
+# If WDM posterior exists, create a combined corner plot
+try:
+    import corner as corner_lib
+    from pathlib import Path
+
+    wdm_posterior_path = Path(RUN_DIR) / "wdm_posteriors.npz"
+    if wdm_posterior_path.exists():
+        print("\nLoading WDM posterior for overlay…")
+        with np.load(wdm_posterior_path) as wdm_data:
+            wdm_samples = np.asarray(wdm_data["samples_source"], dtype=float)
+            wdm_labels = [str(item) for item in np.asarray(wdm_data["labels"]).tolist()]
+
+        # Extract matching parameters (f0, fdot, A, phi0)
+        keep_cols = [i for i, label in enumerate(wdm_labels) if any(x in label.lower() for x in ["f0", "fdot", "a [", "phi0"])]
+        if len(keep_cols) == 4:
+            wdm_samples_4 = wdm_samples[:, keep_cols]
+
+            # Create combined corner plot
+            fig = corner_lib.corner(
+                samples_report,
+                labels=PARAM_NAMES[:4],
+                truths=truth[:4],
+                truth_color="tab:red",
+                quantiles=[0.05, 0.5, 0.95],
+                show_titles=True,
+                title_kwargs={"fontsize": 10},
+                color="C0",
+                fill_contours=False,
+                plot_density=False,
+            )
+            corner_lib.overplot_lines(fig, wdm_samples_4, color="C1", alpha=0.5)
+
+            from lisa_common import save_figure
+            combined_path = save_figure(fig, RUN_DIR, "corner_freq_wdm_overlay")
+            print(f"Saved combined corner plot to {combined_path}")
+except Exception as e:
+    print(f"Could not create overlay: {e}")
