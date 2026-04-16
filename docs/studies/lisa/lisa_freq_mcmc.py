@@ -32,33 +32,32 @@ def _print_runtime() -> None:
 
 atexit.register(_print_runtime)
 
+import emcee
 import jax
 import jax.numpy as jnp
 import lisaorbits
+import matplotlib.pyplot as plt
 import numpy as np
-import numpyro
-import numpyro.distributions as dist
 from jaxgb.jaxgb import JaxGB
 from lisa_common import (
     FREQ_POSTERIOR_PATH,
     INJECTION_PATH,
+    RUN_DIR,
     build_local_prior_info,
     build_sampled_source_params,
-    estimate_frequency_peak,
     load_injection,
     save_posterior_archive,
     source_truth_vector,
 )
 from numpy.fft import rfft, rfftfreq
-from numpyro.infer import MCMC, NUTS, init_to_value
 from wdm_transform.signal_processing import matched_filter_snr_rfft
 
 jax.config.update("jax_enable_x64", True)
 
 N_WARMUP = int(os.getenv("LISA_N_WARMUP", "800"))
 N_DRAWS = int(os.getenv("LISA_N_DRAWS", "1000"))
-SHOW_PROGRESS = os.getenv("LISA_PROGRESS_BAR", "0").strip().lower() in {"1", "true", "yes", "on"}
-INIT_JITTER_SCALE = float(os.getenv("LISA_INIT_JITTER_SCALE", "0.15"))
+SHOW_PROGRESS = os.getenv("LISA_PROGRESS_BAR", "1")
+
 
 # ── Load and truncate data ────────────────────────────────────────────────────
 if not INJECTION_PATH.exists():
@@ -71,116 +70,94 @@ inj = load_injection(INJECTION_PATH)
 dt = inj.dt
 t_obs_saved = inj.t_obs
 INJECTION_SEED = inj.seed
-data_At_full = inj.data_At
-data_Et_full = inj.data_Et
-data_Tt_full = inj.data_Tt
-noise_psd_A_saved = inj.noise_psd_A
-noise_psd_E_saved = inj.noise_psd_E
-noise_psd_T_saved = inj.noise_psd_T
+data_aet_full = np.stack([inj.data_At, inj.data_Et, inj.data_Tt], axis=0)
+noise_psd_saved_aet = np.stack(
+    [inj.noise_psd_A, inj.noise_psd_E, inj.noise_psd_T],
+    axis=0,
+)
 freqs_saved = inj.freqs
 SOURCE_PARAMS = inj.source_params
 SOURCE_PARAM = SOURCE_PARAMS[0].copy()
 MCMC_SEED = int(os.getenv("LISA_MCMC_SEED", str(INJECTION_SEED + 10)))
 
-data_At = data_At_full
-data_Et = data_Et_full
-data_Tt = data_Tt_full
+data_aet = data_aet_full
 t_obs = t_obs_saved
 df = 1.0 / t_obs
 
-freqs = rfftfreq(len(data_At), dt)
-data_Af = rfft(data_At)
-data_Ef = rfft(data_Et)
-data_Tf = rfft(data_Tt)
+freqs = rfftfreq(data_aet.shape[1], dt)
+data_aet_f = rfft(data_aet, axis=1)
 n_freq = len(freqs)
 
-noise_psd_A_full = np.maximum(
-    np.interp(
-        freqs,
-        freqs_saved,
-        noise_psd_A_saved,
-        left=noise_psd_A_saved[0],
-        right=noise_psd_A_saved[-1],
-    ),
-    1e-60,
-)
-noise_psd_E_full = np.maximum(
-    np.interp(
-        freqs,
-        freqs_saved,
-        noise_psd_E_saved,
-        left=noise_psd_E_saved[0],
-        right=noise_psd_E_saved[-1],
-    ),
-    1e-60,
-)
-noise_psd_T_full = np.maximum(
-    np.interp(
-        freqs,
-        freqs_saved,
-        noise_psd_T_saved,
-        left=noise_psd_T_saved[0],
-        right=noise_psd_T_saved[-1],
-    ),
-    1e-60,
-)
+
+def _interp_psd_channels(
+    target_freqs: np.ndarray,
+    source_freqs: np.ndarray,
+    source_psd_channels: np.ndarray,
+) -> np.ndarray:
+    return np.maximum(
+        np.stack(
+            [
+                np.interp(
+                    target_freqs,
+                    source_freqs,
+                    psd,
+                    left=psd[0],
+                    right=psd[-1],
+                )
+                for psd in source_psd_channels
+            ],
+            axis=0,
+        ),
+        1e-60,
+    )
+
+
+noise_psd_full_aet = _interp_psd_channels(freqs, freqs_saved, noise_psd_saved_aet)
 
 print(f"Loaded injection from {INJECTION_PATH.name}")
 print(
     f"T_obs = {t_obs / 86400:.1f} days  dt = {dt:.2f} s  "
-    f"N = {len(data_At)}  df = {df:.3e} Hz"
+    f"N = {data_aet.shape[1]}  df = {df:.3e} Hz"
 )
 print(f"Injection seed = {INJECTION_SEED}  MCMC seed = {MCMC_SEED}")
-print(f"Analysis priors match injection priors: f0 in [{inj.prior_f0[0]:.6e}, {inj.prior_f0[1]:.6e}] Hz")
+print(
+    f"Analysis priors match injection priors: "
+    f"f0 in [{inj.prior_f0[0]:.6e}, {inj.prior_f0[1]:.6e}] Hz"
+)
 
 # ── JaxGB generator ───────────────────────────────────────────────────────────
 orbit_model = lisaorbits.EqualArmlengthOrbits()
 jgb = JaxGB(orbit_model, t_obs=t_obs, t0=0.0, n=256)
 
 
-def source_aet_band(params: np.ndarray, kmin: int, kmax: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    A, E, T = jgb.sum_tdi(
-        np.asarray(params, dtype=float).reshape(1, -1),
-        kmin=int(kmin),
-        kmax=int(kmax),
-        tdi_combination="AET",
-    )
-    return (
-        np.asarray(A, dtype=np.complex128).reshape(-1),
-        np.asarray(E, dtype=np.complex128).reshape(-1),
-        np.asarray(T, dtype=np.complex128).reshape(-1),
-    )
-
-
-def source_aet_band_jax(
-    params: jnp.ndarray, kmin: int, kmax: int
-) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+def source_aet_band(
+    params: jnp.ndarray,
+    kmin: int,
+    kmax: int,
+) -> jnp.ndarray:
     A, E, T = jgb.sum_tdi(
         jnp.asarray(params, dtype=jnp.float64).reshape(1, -1),
         kmin=int(kmin),
         kmax=int(kmax),
         tdi_combination="AET",
     )
-    return (
-        jnp.asarray(A, dtype=jnp.complex128).reshape(-1),
-        jnp.asarray(E, dtype=jnp.complex128).reshape(-1),
-        jnp.asarray(T, dtype=jnp.complex128).reshape(-1),
+    return jnp.stack(
+        [
+            jnp.asarray(A, dtype=jnp.complex128).reshape(-1),
+            jnp.asarray(E, dtype=jnp.complex128).reshape(-1),
+            jnp.asarray(T, dtype=jnp.complex128).reshape(-1),
+        ],
+        axis=0,
     )
 
 
 # ── Band data ─────────────────────────────────────────────────────────────────
-
-
 @dataclass(frozen=True)
 class BandData:
     label: str
     freqs: np.ndarray
-    data_A: np.ndarray
-    data_E: np.ndarray
-    data_T: np.ndarray
-    noise_psd_A: np.ndarray
-    noise_psd_E: np.ndarray
-    noise_psd_T: np.ndarray
+    data_aet: np.ndarray
+    noise_psd_aet: np.ndarray
     fixed_params: np.ndarray
     t_obs: float
     band_kmin: int
@@ -200,23 +177,15 @@ def build_band(
     prior_fdot: tuple[float, float],
     prior_A: tuple[float, float],
 ) -> BandData:
-    f0_init = estimate_frequency_peak(
-        freqs,
-        data_Af,
-        data_Ef,
-        data_Tf,
-        noise_psd_A_full,
-        noise_psd_E_full,
-        noise_psd_T_full,
-        prior_f0=prior_f0,
-    )
+    # In this single-injection workflow, use the injected f0 directly as the
+    # near-truth initialization for MCMC.
+    f0_init = float(params[0])
+
     kmin = max(int(np.floor(prior_f0[0] * t_obs)) - jgb.n, 0)
     kmax = min(int(np.ceil(prior_f0[1] * t_obs)) + jgb.n + 1, n_freq)
 
     band_freqs = freqs[kmin:kmax]
-    noise_band_A = np.maximum(np.interp(band_freqs, freqs, noise_psd_A_full), 1e-60)
-    noise_band_E = np.maximum(np.interp(band_freqs, freqs, noise_psd_E_full), 1e-60)
-    noise_band_T = np.maximum(np.interp(band_freqs, freqs, noise_psd_T_full), 1e-60)
+    noise_band_aet = noise_psd_full_aet[:, kmin:kmax].copy()
 
     prior_info = build_local_prior_info(
         prior_f0=prior_f0,
@@ -227,12 +196,8 @@ def build_band(
     return BandData(
         label=label,
         freqs=band_freqs,
-        data_A=data_Af[kmin:kmax],
-        data_E=data_Ef[kmin:kmax],
-        data_T=data_Tf[kmin:kmax],
-        noise_psd_A=noise_band_A,
-        noise_psd_E=noise_band_E,
-        noise_psd_T=noise_band_T,
+        data_aet=data_aet_f[:, kmin:kmax],
+        noise_psd_aet=noise_band_aet,
         fixed_params=params.copy(),
         t_obs=t_obs,
         band_kmin=kmin,
@@ -246,237 +211,351 @@ def build_band(
     )
 
 
-BAND = build_band(SOURCE_PARAM, "Injected GB", inj.prior_f0, inj.prior_fdot, inj.prior_A)
+BAND = build_band(
+    SOURCE_PARAM,
+    "Injected GB",
+    inj.prior_f0,
+    inj.prior_fdot,
+    inj.prior_A,
+)
 
 # ── Per-source SNR ────────────────────────────────────────────────────────────
 print("\nMatched-filter SNR (A+E+T channels):")
-h_A, h_E, h_T = source_aet_band_jax(
+h_aet = source_aet_band(
     jnp.asarray(SOURCE_PARAM, dtype=jnp.float64),
     int(BAND.band_kmin),
     int(BAND.band_kmax),
 )
-snr_A = matched_filter_snr_rfft(np.asarray(h_A), BAND.noise_psd_A, BAND.freqs, dt=dt)
-snr_E = matched_filter_snr_rfft(np.asarray(h_E), BAND.noise_psd_E, BAND.freqs, dt=dt)
-snr_T = matched_filter_snr_rfft(np.asarray(h_T), BAND.noise_psd_T, BAND.freqs, dt=dt)
-snr_optimal = float(np.sqrt(snr_A**2 + snr_E**2 + snr_T**2))
+snr_channels = np.array(
+    [
+        matched_filter_snr_rfft(
+            np.asarray(h_aet[i]),
+            BAND.noise_psd_aet[i],
+            BAND.freqs,
+            dt=dt,
+        )
+        for i in range(3)
+    ],
+    dtype=float,
+)
+snr_optimal = float(np.linalg.norm(snr_channels))
 print(f"  {BAND.label}: SNR = {snr_optimal:.1f}")
 
 
-def sample_source(band: BandData, *, seed: int = 0) -> MCMC:
-    """Run NUTS for one source."""
-    init_start_time = time.perf_counter()
-    data_A_j = jnp.asarray(band.data_A, dtype=jnp.complex128)
-    data_E_j = jnp.asarray(band.data_E, dtype=jnp.complex128)
-    data_T_j = jnp.asarray(band.data_T, dtype=jnp.complex128)
-    psd_A_j = jnp.asarray(band.noise_psd_A, dtype=jnp.float64)
-    psd_E_j = jnp.asarray(band.noise_psd_E, dtype=jnp.float64)
-    psd_T_j = jnp.asarray(band.noise_psd_T, dtype=jnp.float64)
-    dt_j = jnp.asarray(dt, dtype=jnp.float64)
-    df_j = jnp.asarray(df, dtype=jnp.float64)
-    phi_low = jnp.asarray(-jnp.pi, dtype=jnp.float64)
-    phi_high = jnp.asarray(jnp.pi, dtype=jnp.float64)
-    t_c = jnp.asarray(band.t_obs / 2.0, dtype=jnp.float64)
-    normal01 = dist.Normal(0.0, 1.0)
-    z_logf0_bounds = (
-        (band.logf0_bounds[0] - band.prior_center[0]) / band.prior_scale[0],
-        (band.logf0_bounds[1] - band.prior_center[0]) / band.prior_scale[0],
-    )
-    z_logfdot_bounds = (
-        (band.logfdot_bounds[0] - band.prior_center[1]) / band.prior_scale[1],
-        (band.logfdot_bounds[1] - band.prior_center[1]) / band.prior_scale[1],
-    )
-    z_logA_bounds = (
-        (band.logA_bounds[0] - band.prior_center[2]) / band.prior_scale[2],
-        (band.logA_bounds[1] - band.prior_center[2]) / band.prior_scale[2],
-    )
+# ── Diagnostic: data, signal, and priors ──────────────────────────────────
+def make_diagnostic_plots(band: BandData, jgb_obj, true_params: np.ndarray) -> None:
+    """Plot data + true signal + prior samples for sanity check."""
+    print("\nGenerating diagnostic plots…")
 
-    def model():
-        z_logf0 = numpyro.sample("z_logf0", normal01)
-        z_logfdot = numpyro.sample("z_logfdot", normal01)
-        z_logA = numpyro.sample("z_logA", normal01)
-        u_phi_c = numpyro.sample("u_phi_c", dist.Uniform(-1.0, 1.0))
-
-        logf0 = band.prior_center[0] + band.prior_scale[0] * z_logf0
-        logfdot = band.prior_center[1] + band.prior_scale[1] * z_logfdot
-        logA = band.prior_center[2] + band.prior_scale[2] * z_logA
-        phi_c = numpyro.deterministic("phi_c", np.pi * u_phi_c)
-
-        numpyro.factor(
-            "prior_logf0",
-            dist.TruncatedNormal(
-                loc=band.prior_center[0],
-                scale=band.prior_scale[0],
-                low=band.logf0_bounds[0],
-                high=band.logf0_bounds[1],
-            ).log_prob(logf0)
-            + jnp.log(band.prior_scale[0])
-            - normal01.log_prob(z_logf0),
+    def source_aet_band_diag(params, kmin_in, kmax_in):
+        A, E, T = jgb_obj.sum_tdi(
+            jnp.asarray(params, dtype=jnp.float64).reshape(1, -1),
+            kmin=int(kmin_in),
+            kmax=int(kmax_in),
+            tdi_combination="AET",
         )
-        numpyro.factor(
-            "prior_logfdot",
-            dist.TruncatedNormal(
-                loc=band.prior_center[1],
-                scale=band.prior_scale[1],
-                low=band.logfdot_bounds[0],
-                high=band.logfdot_bounds[1],
-            ).log_prob(logfdot)
-            + jnp.log(band.prior_scale[1])
-            - normal01.log_prob(z_logfdot),
-        )
-        numpyro.factor(
-            "prior_logA",
-            dist.TruncatedNormal(
-                loc=band.prior_center[2],
-                scale=band.prior_scale[2],
-                low=band.logA_bounds[0],
-                high=band.logA_bounds[1],
-            ).log_prob(logA)
-            + jnp.log(band.prior_scale[2])
-            - normal01.log_prob(z_logA),
-        )
-        numpyro.factor("prior_phi_c", jnp.log(np.pi))
-
-        f0 = numpyro.deterministic("f0", jnp.exp(logf0))
-        fdot = numpyro.deterministic("fdot", jnp.exp(logfdot))
-        A = numpyro.deterministic("A", jnp.exp(logA))
-        phi0 = numpyro.deterministic(
-            "phi0",
-            (phi_c - 2 * jnp.pi * f0 * t_c - jnp.pi * fdot * t_c**2 + jnp.pi) % (2 * jnp.pi) - jnp.pi,
+        return jnp.stack(
+            [
+                jnp.asarray(A, dtype=jnp.complex128).reshape(-1),
+                jnp.asarray(E, dtype=jnp.complex128).reshape(-1),
+                jnp.asarray(T, dtype=jnp.complex128).reshape(-1),
+            ],
+            axis=0,
         )
 
-        params = (
-            jnp.asarray(band.fixed_params, dtype=jnp.float64)
-            .at[0].set(f0)
-            .at[1].set(fdot)
-            .at[2].set(A)
-            .at[7].set(phi0)
-        )
-        h_A, h_E, h_T = source_aet_band_jax(params, band.band_kmin, band.band_kmax)
-        residual_A_phys = dt_j * (data_A_j - h_A)
-        residual_E_phys = dt_j * (data_E_j - h_E)
-        residual_T_phys = dt_j * (data_T_j - h_T)
-        numpyro.factor(
-            "whittle",
-            -jnp.sum(jnp.log(psd_A_j) + 2.0 * df_j * jnp.abs(residual_A_phys) ** 2 / psd_A_j)
-            -jnp.sum(jnp.log(psd_E_j) + 2.0 * df_j * jnp.abs(residual_E_phys) ** 2 / psd_E_j)
-            -jnp.sum(jnp.log(psd_T_j) + 2.0 * df_j * jnp.abs(residual_T_phys) ** 2 / psd_T_j),
-        )
+    # True signal
+    h_true_aet = np.array(source_aet_band_diag(true_params, band.band_kmin, band.band_kmax))
 
-    def _project(point: dict[str, jnp.ndarray]) -> dict[str, jnp.ndarray]:
-        return {
-            "z_logf0": jnp.clip(point["z_logf0"], z_logf0_bounds[0], z_logf0_bounds[1]),
-            "z_logfdot": jnp.clip(point["z_logfdot"], z_logfdot_bounds[0], z_logfdot_bounds[1]),
-            "z_logA": jnp.clip(point["z_logA"], z_logA_bounds[0], z_logA_bounds[1]),
-            "u_phi_c": jnp.clip(point["u_phi_c"], -1.0, 1.0),
-        }
+    # Prior samples
+    np.random.seed(42)
+    n_prior = 30
+    logf0_prior = np.random.normal(band.prior_center[0], band.prior_scale[0], n_prior)
+    logfdot_prior = np.random.normal(band.prior_center[1], band.prior_scale[1], n_prior)
+    logA_prior = np.random.normal(band.prior_center[2], band.prior_scale[2], n_prior)
+    phi0_prior = np.random.uniform(-np.pi, np.pi, n_prior)
 
-    rng = np.random.default_rng(seed + 17)
-    logf0_init = float(np.clip(np.log(band.f0_init), band.logf0_bounds[0], band.logf0_bounds[1]))
-    z_logf0_init = (logf0_init - band.prior_center[0]) / band.prior_scale[0]
-    init_values = {
-        "z_logf0": float(np.asarray(jnp.clip(
-            z_logf0_init + INIT_JITTER_SCALE * rng.standard_normal(),
-            z_logf0_bounds[0],
-            z_logf0_bounds[1],
-        ))),
-        "z_logfdot": float(np.asarray(jnp.clip(
-            INIT_JITTER_SCALE * rng.standard_normal(),
-            z_logfdot_bounds[0],
-            z_logfdot_bounds[1],
-        ))),
-        "z_logA": float(np.asarray(jnp.clip(
-            INIT_JITTER_SCALE * rng.standard_normal(),
-            z_logA_bounds[0],
-            z_logA_bounds[1],
-        ))),
-        "u_phi_c": float(np.asarray(jnp.clip(
-            0.25 * rng.standard_normal(),
-            -1.0,
-            1.0,
-        ))),
+    # Whittle NLL
+    def nll_channel(logf0, logfdot, logA, phi0, ch_idx):
+        params_eval = band.fixed_params.copy()
+        params_eval[0] = np.exp(logf0)
+        params_eval[1] = np.exp(logfdot)
+        params_eval[2] = np.exp(logA)
+        params_eval[7] = phi0
+
+        h_aet_eval = np.array(source_aet_band_diag(params_eval, band.band_kmin, band.band_kmax))
+        residual = dt * (band.data_aet[ch_idx] - h_aet_eval[ch_idx])
+        nll = np.sum(np.log(band.noise_psd_aet[ch_idx]) + 2.0 * df * np.abs(residual)**2 / band.noise_psd_aet[ch_idx])
+        return nll
+
+    nll_truth = nll_channel(np.log(true_params[0]), np.log(true_params[1]), np.log(true_params[2]), true_params[7], 0)
+    nlls_prior = [nll_channel(logf0_prior[i], logfdot_prior[i], logA_prior[i], phi0_prior[i], 0) for i in range(n_prior)]
+
+    print(f"  NLL at truth: {nll_truth:.1f}")
+    print(f"  NLL at prior samples: mean={np.mean(nlls_prior):.1f}, min={np.min(nlls_prior):.1f}, max={np.max(nlls_prior):.1f}")
+    print(f"  Δ NLL (truth - prior_mean): {nll_truth - np.mean(nlls_prior):.1f}")
+
+    # Plot
+    fig, axes = plt.subplots(3, 2, figsize=(14, 10))
+    ch_names = ["A", "E", "T"]
+
+    for ch in range(3):
+        # Data + true signal
+        ax = axes[ch, 0]
+        power_data = np.abs(band.data_aet[ch])**2
+        power_signal = np.abs(h_true_aet[ch])**2
+        ax.semilogy(band.freqs, power_data, "k.", markersize=2, alpha=0.5, label="Data")
+        ax.semilogy(band.freqs, power_signal, "r-", linewidth=1.5, label="True signal")
+        ax.set_ylabel(f"{ch_names[ch]} power")
+        ax.set_xlim(band.freqs[0], band.freqs[-1])
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+
+        # Prior samples
+        ax = axes[ch, 1]
+        for i in range(n_prior):
+            params_sample = band.fixed_params.copy()
+            params_sample[0] = np.exp(logf0_prior[i])
+            params_sample[1] = np.exp(logfdot_prior[i])
+            params_sample[2] = np.exp(logA_prior[i])
+            params_sample[7] = phi0_prior[i]
+            h_sample = np.array(source_aet_band_diag(params_sample, band.band_kmin, band.band_kmax))
+            ax.semilogy(band.freqs, np.abs(h_sample[ch])**2, "b-", alpha=0.1)
+
+        ax.semilogy(band.freqs, power_signal, "r-", linewidth=2, label="True signal", zorder=10)
+        ax.set_ylabel(f"{ch_names[ch]} power")
+        ax.set_xlim(band.freqs[0], band.freqs[-1])
+        ax.set_title(f"{ch_names[ch]}: {n_prior} prior samples")
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+
+    fig.suptitle(f"LISA GB Diagnostic: SNR={snr_optimal:.1f}, T_obs={band.t_obs/86400:.1f}d", fontsize=12)
+    plt.tight_layout()
+    diagnostic_path = RUN_DIR / "diagnostic_data_signal_priors.png"
+    RUN_DIR.mkdir(parents=True, exist_ok=True)
+    plt.savefig(diagnostic_path, dpi=100, bbox_inches="tight")
+    print(f"  Saved to {diagnostic_path}")
+    plt.close()
+
+
+make_diagnostic_plots(BAND, jgb, SOURCE_PARAM)
+
+
+def estimate_init_spread(snr_optimal: float, t_obs: float, f_center: float = 0.1) -> dict:
+    """Scale emcee walker initialization spread to posterior width.
+
+    Uses Cramér-Rao bounds to estimate posterior std, then scales down by 0.1
+    to ensure walkers initialize in the high-likelihood region.
+
+    Args:
+        snr_optimal: Matched-filter SNR of the signal.
+        t_obs: Observation time in seconds.
+        f_center: Center frequency in Hz (for log-space scaling).
+
+    Returns:
+        Dictionary with initialization spreads for each parameter.
+    """
+    # Posterior width estimates (Cramér-Rao heuristic)
+    sigma_logf = 1.0 / (snr_optimal * t_obs * f_center)
+    sigma_phi = 1.0 / snr_optimal
+
+    return {
+        "logf_logfdot": sigma_logf * 0.1,  # FM params: 0.1× posterior width
+        "logA": 0.001,                      # Amplitude: looser bound
+        "phi0": sigma_phi * 0.1,            # Phase: 0.1× posterior width
     }
+
+
+def sample_source(band: BandData, *, seed: int = 0, snr_optimal: float = None) -> dict:
+    """Run emcee for one source.
+
+    Args:
+        band: BandData with signal, priors, bounds.
+        seed: Random seed for reproducibility.
+        snr_optimal: Matched-filter SNR (used to scale initialization spread).
+                     If None, uses fallback tight values.
+    """
+    init_start_time = time.perf_counter()
+
+    data_aet = np.asarray(band.data_aet, dtype=np.complex128)
+    psd_aet = np.asarray(band.noise_psd_aet, dtype=np.float64)
+
+    dt_val = float(dt)
+    df_val = float(df)
+
+    # Deterministic near-truth initialization
+    f0_true = float(band.fixed_params[0])
+    fdot_true = float(band.fixed_params[1])
+    A_true = float(band.fixed_params[2])
+    phi0_true = float(band.fixed_params[7])
+
+    init_values = {
+        "logf0": float(np.log(f0_true)),
+        "logfdot": float(np.log(fdot_true)),
+        "logA": float(np.log(A_true)),
+        "phi0": float(phi0_true),
+    }
+
     init_elapsed = time.perf_counter() - init_start_time
     print(
         "  Init:"
         f" f0_peak={band.f0_init:.6e}"
-        f" z0=[{init_values['z_logf0']:.3f}, {init_values['z_logfdot']:.3f},"
-        f" {init_values['z_logA']:.3f}, {init_values['u_phi_c']:.3f}]"
-        f" jitter_scale={INIT_JITTER_SCALE:.2f}"
+        f" params=[{init_values['logf0']:.3f}, {init_values['logfdot']:.3f},"
+        f" {init_values['logA']:.3f}, {init_values['phi0']:.3f}]"
+        " (direct truth)"
     )
     print(f"  Timing: init proposal {init_elapsed:.2f} s")
 
-    def _make_mcmc(init_values: dict[str, float]) -> MCMC:
-        kernel = NUTS(
-            model,
-            init_strategy=init_to_value(values=init_values),
-            dense_mass=True,
-            target_accept_prob=0.9,
-        )
-        return MCMC(
-            kernel,
-            num_warmup=N_WARMUP,
-            num_samples=N_DRAWS,
-            num_chains=1,
-            progress_bar=SHOW_PROGRESS,
-        )
+    def log_prob(theta):
+        """Log-posterior: log-prior + log-likelihood."""
+        logf0, logfdot, logA, phi0 = theta
 
-    print("  NUTS init attempt: FFT/prior")
-    mcmc = _make_mcmc(init_values)
+        # Priors: truncated normal for log-space, uniform for phase
+        if not (band.logf0_bounds[0] <= logf0 <= band.logf0_bounds[1]):
+            return -np.inf
+        if not (band.logfdot_bounds[0] <= logfdot <= band.logfdot_bounds[1]):
+            return -np.inf
+        if not (band.logA_bounds[0] <= logA <= band.logA_bounds[1]):
+            return -np.inf
+        if not (-np.pi <= phi0 <= np.pi):
+            return -np.inf
+
+        # Log-priors (truncated normal)
+        lp_logf0 = -0.5 * ((logf0 - band.prior_center[0]) / band.prior_scale[0]) ** 2
+        lp_logfdot = -0.5 * ((logfdot - band.prior_center[1]) / band.prior_scale[1]) ** 2
+        lp_logA = -0.5 * ((logA - band.prior_center[2]) / band.prior_scale[2]) ** 2
+        lp_phi0 = 0.0  # Uniform
+
+        log_prior = lp_logf0 + lp_logfdot + lp_logA + lp_phi0
+
+        # Likelihood
+        f0 = np.exp(logf0)
+        fdot = np.exp(logfdot)
+        A = np.exp(logA)
+
+        params = band.fixed_params.copy()
+        params[0] = f0
+        params[1] = fdot
+        params[2] = A
+        params[7] = phi0
+
+        h_aet = np.array(source_aet_band(params, band.band_kmin, band.band_kmax))
+        residual_phys = dt_val * (data_aet - h_aet)
+
+        # Whittle likelihood
+        log_like = -np.sum(np.log(psd_aet) + 2.0 * df_val * np.abs(residual_phys) ** 2 / psd_aet)
+
+        return log_prior + log_like
+
+    # Initialize walkers in a small ball around truth
+    # Scale spread based on posterior width (SNR-dependent)
+    n_walkers = 32
+    np.random.seed(seed)
+
+    if snr_optimal is not None:
+        spread = estimate_init_spread(snr_optimal, band.t_obs, f_center=band.f0_init)
+    else:
+        # Fallback: conservative tight initialization
+        spread = {"logf_logfdot": 1e-9, "logA": 0.001, "phi0": 0.003}
+
+    p0 = np.array(
+        [
+            init_values["logf0"] + np.random.normal(0, spread["logf_logfdot"], n_walkers),
+            init_values["logfdot"] + np.random.normal(0, spread["logf_logfdot"], n_walkers),
+            init_values["logA"] + np.random.normal(0, spread["logA"], n_walkers),
+            init_values["phi0"] + np.random.normal(0, spread["phi0"], n_walkers),
+        ]
+    ).T
+
+    print(f"  emcee: {n_walkers} walkers")
+    sampler = emcee.EnsembleSampler(n_walkers, 4, log_prob, threads=1)
+
+    # Burn-in
     mcmc_start_time = time.perf_counter()
-    mcmc.run(jax.random.PRNGKey(seed), extra_fields=("diverging",))
+    print(f"  Running {N_WARMUP} warmup steps…")
+    p0, _, _ = sampler.run_mcmc(p0, N_WARMUP, progress=bool(SHOW_PROGRESS))
+
+    # Reset and draw samples
+    sampler.reset()
+    print(f"  Running {N_DRAWS} production steps…")
+    sampler.run_mcmc(p0, N_DRAWS, progress=bool(SHOW_PROGRESS))
     mcmc_elapsed = time.perf_counter() - mcmc_start_time
-    print(f"  Timing: NUTS warmup+sampling {mcmc_elapsed:.2f} s")
-    return mcmc
+    print(f"  Timing: emcee warmup+sampling {mcmc_elapsed:.2f} s")
+
+    # Extract samples
+    chain = sampler.get_chain(flat=True)
+    samples_dict = {
+        "logf0": chain[:, 0],
+        "logfdot": chain[:, 1],
+        "logA": chain[:, 2],
+        "phi0": chain[:, 3],
+        "f0": np.exp(chain[:, 0]),
+        "fdot": np.exp(chain[:, 1]),
+        "A": np.exp(chain[:, 2]),
+    }
+
+    # Return in a format compatible with downstream code
+    return {
+        "samples": samples_dict,
+        "tau": sampler.get_autocorr_time(quiet=True).mean() if hasattr(sampler, 'get_autocorr_time') else np.nan,
+        "acceptance_fraction": sampler.acceptance_fraction,
+    }
 
 
-print("\nRunning NUTS for the injected source…")
+print("\nRunning emcee for the injected source…")
 print(f"\n─── {BAND.label} ───")
-mcmc = sample_source(BAND, seed=MCMC_SEED)
+mcmc_result = sample_source(BAND, seed=MCMC_SEED, snr_optimal=snr_optimal)
 
-n_div = int(mcmc.get_extra_fields()["diverging"].sum())
-print(f"  Divergences: {n_div}")
-if N_DRAWS >= 4:
-    mcmc.print_summary(exclude_deterministic=False)
-else:
-    print("  Skipping NumPyro summary: need at least 4 draws for R-hat diagnostics.")
+print("\nemcee diagnostics:")
+print(f"  Acceptance fraction: {mcmc_result['acceptance_fraction'].mean():.3f}")
+print(f"  Autocorr time: {mcmc_result['tau']:.1f}")
 
-s = mcmc.get_samples()
-samples = np.column_stack([
-    np.asarray(s["f0"]),
-    np.asarray(s["fdot"]),
-    np.asarray(s["A"]),
-    np.asarray(s["phi0"]),
-])
+s = mcmc_result["samples"]
 
-samples_full = build_sampled_source_params(SOURCE_PARAM, samples)
+# Since phi0 is sampled directly, phi0_waveform = phi0
+samples_report = np.column_stack(
+    [
+        np.asarray(s["f0"]),
+        np.asarray(s["fdot"]),
+        np.asarray(s["A"]),
+        np.asarray(s["phi0"]),
+    ]
+)
 
-psd_A_j = jnp.asarray(BAND.noise_psd_A, dtype=jnp.float64)
-psd_E_j = jnp.asarray(BAND.noise_psd_E, dtype=jnp.float64)
-psd_T_j = jnp.asarray(BAND.noise_psd_T, dtype=jnp.float64)
+samples_waveform = np.column_stack(
+    [
+        np.asarray(s["f0"]),
+        np.asarray(s["fdot"]),
+        np.asarray(s["A"]),
+        np.asarray(s["phi0"]),  # Same as phi0 now
+    ]
+)
+
+samples_full = build_sampled_source_params(SOURCE_PARAM, samples_waveform)
+
+psd_aet_j = jnp.asarray(BAND.noise_psd_aet, dtype=jnp.float64)
 df_j = jnp.asarray(df, dtype=jnp.float64)
+dt_j = jnp.asarray(dt, dtype=jnp.float64)
 kmin_stat = BAND.band_kmin
 kmax_stat = BAND.band_kmax
 
+
 @jax.jit
-def _get_snrs(ps):
-    def _single_snr(p):
-        h_A_loc, h_E_loc, h_T_loc = source_aet_band_jax(p.reshape(1, -1), kmin_stat, kmax_stat)
-        h_A_tilde = dt * h_A_loc
-        h_E_tilde = dt * h_E_loc
-        h_T_tilde = dt * h_T_loc
-        snr2 = (
-            4.0 * df_j * jnp.sum(jnp.abs(h_A_tilde) ** 2 / psd_A_j)
-            + 4.0 * df_j * jnp.sum(jnp.abs(h_E_tilde) ** 2 / psd_E_j)
-            + 4.0 * df_j * jnp.sum(jnp.abs(h_T_tilde) ** 2 / psd_T_j)
-        )
+def _get_snrs(ps: jnp.ndarray) -> jnp.ndarray:
+    def _single_snr(p: jnp.ndarray) -> jnp.ndarray:
+        h_aet_loc = source_aet_band(p, kmin_stat, kmax_stat)
+        h_aet_tilde = dt_j * h_aet_loc
+        snr2 = 4.0 * df_j * jnp.sum(jnp.abs(h_aet_tilde) ** 2 / psd_aet_j)
         return jnp.sqrt(snr2)
+
     return jax.vmap(_single_snr)(ps)
 
+
 snr_eval_start = time.perf_counter()
-snr_samples = np.asarray(_get_snrs(jnp.array(samples_full)))
+snr_samples = np.asarray(_get_snrs(jnp.asarray(samples_full, dtype=jnp.float64)))
 snr_eval_elapsed = time.perf_counter() - snr_eval_start
 print(f"  Timing: posterior SNR evaluation {snr_eval_elapsed:.2f} s")
-samples = np.column_stack([samples, snr_samples])
+
+samples_to_save = np.column_stack([samples_report, snr_samples])
 
 PARAM_NAMES = ["f0 [Hz]", "fdot [Hz/s]", "A", "phi0 [rad]", "SNR"]
 truth = source_truth_vector(BAND.fixed_params, snr=snr_optimal)
@@ -484,7 +563,7 @@ truth = source_truth_vector(BAND.fixed_params, snr=snr_optimal)
 _out_path = save_posterior_archive(
     FREQ_POSTERIOR_PATH,
     source_params=SOURCE_PARAMS,
-    all_samples=[samples],
+    all_samples=[samples_to_save],
     snr_optimal=[snr_optimal],
     labels=PARAM_NAMES,
     truth=truth,

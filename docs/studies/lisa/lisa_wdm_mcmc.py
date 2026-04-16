@@ -31,7 +31,6 @@ import os
 import time
 from dataclasses import dataclass
 
-os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
 
 _SCRIPT_START = time.perf_counter()
 
@@ -78,8 +77,11 @@ N_DRAWS = int(os.getenv("LISA_N_DRAWS", "1000"))
 # matching the 512 rfft bins used by the frequency-domain inference and
 # recovering the same f0 precision.
 NT = int(os.getenv("LISA_NT", "32"))
-SHOW_PROGRESS = os.getenv("LISA_PROGRESS_BAR", "0").strip().lower() in {"1", "true", "yes", "on"}
+SHOW_PROGRESS = os.getenv("LISA_PROGRESS_BAR", "1").strip().lower() in {"1", "true", "yes", "on"}
 INIT_JITTER_SCALE = float(os.getenv("LISA_INIT_JITTER_SCALE", "0.15"))
+NUTS_TARGET_ACCEPT = float(os.getenv("LISA_NUTS_TARGET_ACCEPT", "0.85"))
+NUTS_MAX_TREE_DEPTH = int(os.getenv("LISA_NUTS_MAX_TREE_DEPTH", "10"))
+NUTS_DENSE_MASS = os.getenv("LISA_NUTS_DENSE_MASS", "1").strip().lower() in {"1", "true", "yes", "on"}
 A_WDM = 1.0 / 3.0
 D_WDM = 1.0
 
@@ -462,10 +464,14 @@ def sample_source_wdm(wband: WdmBandData, *, seed: int = 0) -> MCMC:
         f0 = numpyro.deterministic("f0", jnp.exp(logf0))
         fdot = numpyro.deterministic("fdot", jnp.exp(logfdot))
         A = numpyro.deterministic("A", jnp.exp(logA))
+        phi0_unwrapped = numpyro.deterministic(
+            "phi0_unwrapped",
+            phi_c - 2 * jnp.pi * f0 * t_c - jnp.pi * fdot * t_c**2,
+        )
 
         phi0 = numpyro.deterministic(
             "phi0",
-            (phi_c - 2 * jnp.pi * f0 * t_c - jnp.pi * fdot * t_c**2 + jnp.pi) % (2 * jnp.pi) - jnp.pi,
+            (phi0_unwrapped + jnp.pi) % (2 * jnp.pi) - jnp.pi,
         )
 
         params = (
@@ -473,7 +479,7 @@ def sample_source_wdm(wband: WdmBandData, *, seed: int = 0) -> MCMC:
             .at[0].set(f0)
             .at[1].set(fdot)
             .at[2].set(A)
-            .at[7].set(phi0)
+            .at[7].set(phi0_unwrapped)
         )
         h_A, h_E, h_T = generate(params)
         diff_A = data_A_j - h_A
@@ -533,8 +539,9 @@ def sample_source_wdm(wband: WdmBandData, *, seed: int = 0) -> MCMC:
         kernel = NUTS(
             model,
             init_strategy=init_to_value(values=init_values),
-            dense_mass=True,
-            target_accept_prob=0.9,
+            dense_mass=NUTS_DENSE_MASS,
+            target_accept_prob=NUTS_TARGET_ACCEPT,
+            max_tree_depth=NUTS_MAX_TREE_DEPTH,
         )
         return MCMC(
             kernel,
