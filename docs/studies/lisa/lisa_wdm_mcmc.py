@@ -32,7 +32,6 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-
 _SCRIPT_START = time.perf_counter()
 
 
@@ -56,9 +55,11 @@ from lisa_common import (
     build_local_prior_info,
     build_sampled_source_params,
     estimate_frequency_peak,
+    interp_psd_channels,
     load_injection,
     save_corner_plot_dual,
     save_posterior_archive,
+    setup_jax_and_matplotlib,
     source_truth_vector,
     trim_frequency_band,
 )
@@ -66,6 +67,7 @@ from numpyro.infer import MCMC, NUTS, init_to_value
 from wdm_transform.signal_processing import matched_filter_snr_wdm, wdm_noise_variance
 from wdm_transform.transforms import forward_wdm_band
 
+setup_jax_and_matplotlib()
 jax.config.update("jax_enable_x64", True)
 
 N_WARMUP = int(os.getenv("LISA_N_WARMUP", "800"))
@@ -130,18 +132,15 @@ time_grid = np.arange(NT) * (t_obs / NT)
 _data_A_rfft = np.fft.rfft(data_At)
 _data_E_rfft = np.fft.rfft(data_Et)
 _data_T_rfft = np.fft.rfft(data_Tt)
-noise_psd_A_rfft_full = np.maximum(
-    np.interp(rfft_freqs, freqs_saved, noise_psd_A_saved, left=noise_psd_A_saved[0], right=noise_psd_A_saved[-1]),
-    1e-60,
+
+noise_psd_rfft_full = interp_psd_channels(
+    rfft_freqs,
+    freqs_saved,
+    np.stack([noise_psd_A_saved, noise_psd_E_saved, noise_psd_T_saved]),
 )
-noise_psd_E_rfft_full = np.maximum(
-    np.interp(rfft_freqs, freqs_saved, noise_psd_E_saved, left=noise_psd_E_saved[0], right=noise_psd_E_saved[-1]),
-    1e-60,
-)
-noise_psd_T_rfft_full = np.maximum(
-    np.interp(rfft_freqs, freqs_saved, noise_psd_T_saved, left=noise_psd_T_saved[0], right=noise_psd_T_saved[-1]),
-    1e-60,
-)
+noise_psd_A_rfft_full = noise_psd_rfft_full[0]
+noise_psd_E_rfft_full = noise_psd_rfft_full[1]
+noise_psd_T_rfft_full = noise_psd_rfft_full[2]
 print(f"Analysis priors match injection priors: f0 in [{inj.prior_f0[0]:.6e}, {inj.prior_f0[1]:.6e}] Hz")
 
 orbit_model = lisaorbits.EqualArmlengthOrbits()

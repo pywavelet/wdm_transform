@@ -20,8 +20,6 @@ import os
 import time
 from dataclasses import dataclass
 
-os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
-
 _SCRIPT_START = time.perf_counter()
 
 
@@ -32,7 +30,6 @@ def _print_runtime() -> None:
 
 atexit.register(_print_runtime)
 
-import emcee
 import jax
 import jax.numpy as jnp
 import lisaorbits
@@ -47,15 +44,18 @@ from lisa_common import (
     RUN_DIR,
     build_local_prior_info,
     build_sampled_source_params,
+    interp_psd_channels,
     load_injection,
     save_corner_plot_dual,
     save_posterior_archive,
+    setup_jax_and_matplotlib,
     source_truth_vector,
 )
 from numpyro.infer import MCMC, NUTS, init_to_value
 from numpy.fft import rfft, rfftfreq
 from wdm_transform.signal_processing import matched_filter_snr_rfft
 
+setup_jax_and_matplotlib()
 jax.config.update("jax_enable_x64", True)
 
 N_WARMUP = int(os.getenv("LISA_N_WARMUP", "800"))
@@ -93,31 +93,7 @@ freqs = rfftfreq(data_aet.shape[1], dt)
 data_aet_f = rfft(data_aet, axis=1)
 n_freq = len(freqs)
 
-
-def _interp_psd_channels(
-    target_freqs: np.ndarray,
-    source_freqs: np.ndarray,
-    source_psd_channels: np.ndarray,
-) -> np.ndarray:
-    return np.maximum(
-        np.stack(
-            [
-                np.interp(
-                    target_freqs,
-                    source_freqs,
-                    psd,
-                    left=psd[0],
-                    right=psd[-1],
-                )
-                for psd in source_psd_channels
-            ],
-            axis=0,
-        ),
-        1e-60,
-    )
-
-
-noise_psd_full_aet = _interp_psd_channels(freqs, freqs_saved, noise_psd_saved_aet)
+noise_psd_full_aet = interp_psd_channels(freqs, freqs_saved, noise_psd_saved_aet)
 
 print(f"Loaded injection from {INJECTION_PATH.name}")
 print(

@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import corner
+import jax
 import numpy as np
 from wdm_transform.signal_processing import (
     matched_filter_snr_rfft,
@@ -82,6 +83,15 @@ RESPONSE_TENSOR_PATH = CACHE_DIR / "Rtildeop_tf.npz"
 INJECTION_PATH = RUN_DIR / "injection.npz"
 FREQ_POSTERIOR_PATH = RUN_DIR / "freq_posteriors.npz"
 WDM_POSTERIOR_PATH = RUN_DIR / "wdm_posteriors.npz"
+
+
+# ── JAX and matplotlib setup ──────────────────────────────────────────────────
+
+
+def setup_jax_and_matplotlib() -> None:
+    """Configure JAX and matplotlib for the study scripts."""
+    os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
+    jax.config.update("jax_enable_x64", True)
 
 
 def save_figure(fig, output_dir: Path, stem: str, *, dpi: int = 160) -> Path:
@@ -448,6 +458,39 @@ def place_local_tdi(segment, kmin: int, n_freqs: int) -> np.ndarray:
 
 
 # ── Frequency-axis models ─────────────────────────────────────────────────────
+
+
+def interp_psd_channels(
+    target_freqs: np.ndarray,
+    source_freqs: np.ndarray,
+    source_psd_channels: np.ndarray,
+) -> np.ndarray:
+    """Interpolate PSD from source to target frequency grid on (n_channels, n_freqs).
+
+    Args:
+        target_freqs: Target frequency grid (1D).
+        source_freqs: Source frequency grid (1D).
+        source_psd_channels: PSD array of shape (n_channels, len(source_freqs)).
+
+    Returns:
+        Interpolated PSD of shape (n_channels, len(target_freqs)), floored at 1e-60.
+    """
+    return np.maximum(
+        np.stack(
+            [
+                np.interp(
+                    target_freqs,
+                    source_freqs,
+                    psd,
+                    left=psd[0],
+                    right=psd[-1],
+                )
+                for psd in source_psd_channels
+            ],
+            axis=0,
+        ),
+        1e-60,
+    )
 
 
 def freqs_gal(
