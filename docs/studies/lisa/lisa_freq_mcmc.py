@@ -267,10 +267,12 @@ def make_diagnostic_plots(band: BandData, jgb_obj, true_params: np.ndarray) -> N
     # True signal
     h_true_aet = np.array(source_aet_band_diag(true_params, band.band_kmin, band.band_kmax))
 
-    # Prior samples
+    # Prior samples with f0_jitter model
     np.random.seed(42)
     n_prior = 30
-    logf0_prior = np.random.normal(band.prior_center[0], band.prior_scale[0], n_prior)
+    logf0_true = np.log(true_params[0])
+    delta_logf0_prior = np.random.uniform(-F0_JITTER_WIDTH, F0_JITTER_WIDTH, n_prior)
+    logf0_prior = logf0_true + delta_logf0_prior  # Jitter around true f0
     logfdot_prior = np.random.normal(band.prior_center[1], band.prior_scale[1], n_prior)
     logA_prior = np.random.normal(band.prior_center[2], band.prior_scale[2], n_prior)
     phi0_prior = np.random.uniform(-np.pi, np.pi, n_prior)
@@ -329,7 +331,11 @@ def make_diagnostic_plots(band: BandData, jgb_obj, true_params: np.ndarray) -> N
         ax.legend()
         ax.grid(True, alpha=0.3)
 
-    fig.suptitle(f"LISA GB Diagnostic: SNR={snr_optimal:.1f}, T_obs={band.t_obs/86400:.1f}d", fontsize=12)
+    fig.suptitle(
+        f"LISA GB Diagnostic: SNR={snr_optimal:.1f}, T_obs={band.t_obs/86400:.1f}d, "
+        f"f0_jitter=±{F0_JITTER_WIDTH:.2e}",
+        fontsize=12,
+    )
     plt.tight_layout()
     diagnostic_path = RUN_DIR / "diagnostic_data_signal_priors.png"
     RUN_DIR.mkdir(parents=True, exist_ok=True)
