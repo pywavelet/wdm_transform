@@ -37,6 +37,8 @@ import jax
 import jax.numpy as jnp
 import lisaorbits
 import matplotlib.pyplot as plt
+import numpyro
+import numpyro.distributions as dist
 import numpy as np
 from jaxgb.jaxgb import JaxGB
 from lisa_common import (
@@ -49,6 +51,7 @@ from lisa_common import (
     save_posterior_archive,
     source_truth_vector,
 )
+from numpyro.infer import MCMC, NUTS, init_to_value
 from numpy.fft import rfft, rfftfreq
 from wdm_transform.signal_processing import matched_filter_snr_rfft
 
@@ -347,47 +350,21 @@ def make_diagnostic_plots(band: BandData, jgb_obj, true_params: np.ndarray) -> N
 make_diagnostic_plots(BAND, jgb, SOURCE_PARAM)
 
 
-def estimate_init_spread(snr_optimal: float, t_obs: float, f_center: float = 0.1) -> dict:
-    """Scale emcee walker initialization spread to posterior width.
-
-    Uses Cramér-Rao bounds to estimate posterior std, then scales down by 0.1
-    to ensure walkers initialize in the high-likelihood region.
-
-    Args:
-        snr_optimal: Matched-filter SNR of the signal.
-        t_obs: Observation time in seconds.
-        f_center: Center frequency in Hz (for log-space scaling).
-
-    Returns:
-        Dictionary with initialization spreads for each parameter.
-    """
-    # Posterior width estimates (Cramér-Rao heuristic)
-    sigma_logf = 1.0 / (snr_optimal * t_obs * f_center)
-    sigma_phi = 1.0 / snr_optimal
-
-    return {
-        "logf_logfdot": sigma_logf * 0.1,  # FM params: 0.1× posterior width
-        "logA": 0.001,                      # Amplitude: looser bound
-        "phi0": sigma_phi * 0.1,            # Phase: 0.1× posterior width
-    }
-
-
-def sample_source(band: BandData, *, seed: int = 0, snr_optimal: float = None) -> dict:
-    """Run emcee for one source.
+def sample_source(band: BandData, *, seed: int = 0, snr_optimal: float = None):
+    """Run NUTS for one source with f0_jitter model.
 
     Args:
         band: BandData with signal, priors, bounds.
         seed: Random seed for reproducibility.
-        snr_optimal: Matched-filter SNR (used to scale initialization spread).
-                     If None, uses fallback tight values.
+        snr_optimal: Matched-filter SNR (for diagnostics).
     """
     init_start_time = time.perf_counter()
 
-    data_aet = np.asarray(band.data_aet, dtype=np.complex128)
-    psd_aet = np.asarray(band.noise_psd_aet, dtype=np.float64)
+    data_aet_j = jnp.asarray(band.data_aet, dtype=jnp.complex128)
+    psd_aet_j = jnp.asarray(band.noise_psd_aet, dtype=jnp.float64)
 
-    dt_val = float(dt)
-    df_val = float(df)
+    dt_j = jnp.asarray(dt, dtype=jnp.float64)
+    df_j = jnp.asarray(df, dtype=jnp.float64)
 
     # Deterministic near-truth initialization
     f0_true = float(band.fixed_params[0])
@@ -412,121 +389,115 @@ def sample_source(band: BandData, *, seed: int = 0, snr_optimal: float = None) -
     )
     print(f"  Timing: init proposal {init_elapsed:.2f} s")
 
-    def log_prob(theta):
-        """Log-posterior: log-prior + log-likelihood.
-
-        Samples jitter around fixed f0 (matched-filter estimate).
-        theta = (delta_logf0, logfdot, logA, phi0)
-        """
-        delta_logf0, logfdot, logA, phi0 = theta
+    def model():
+        """NumPyro generative model with f0_jitter."""
+        # Sample frequency jitter around fixed f0
+        delta_logf0 = numpyro.sample(
+            "delta_logf0",
+            dist.Uniform(-F0_JITTER_WIDTH, F0_JITTER_WIDTH),
+        )
         logf0 = init_values["logf0"] + delta_logf0
 
-        # Priors: tight uniform on f0 jitter, bounds on others
-        if not (-F0_JITTER_WIDTH <= delta_logf0 <= F0_JITTER_WIDTH):
-            return -np.inf
-        if not (band.logfdot_bounds[0] <= logfdot <= band.logfdot_bounds[1]):
-            return -np.inf
-        if not (band.logA_bounds[0] <= logA <= band.logA_bounds[1]):
-            return -np.inf
-        if not (-np.pi <= phi0 <= np.pi):
-            return -np.inf
+        # Sample other parameters with priors
+        logfdot = numpyro.sample(
+            "logfdot",
+            dist.TruncatedNormal(
+                loc=band.prior_center[1],
+                scale=band.prior_scale[1],
+                low=band.logfdot_bounds[0],
+                high=band.logfdot_bounds[1],
+            ),
+        )
+        logA = numpyro.sample(
+            "logA",
+            dist.TruncatedNormal(
+                loc=band.prior_center[2],
+                scale=band.prior_scale[2],
+                low=band.logA_bounds[0],
+                high=band.logA_bounds[1],
+            ),
+        )
+        phi0 = numpyro.sample("phi0", dist.Uniform(-jnp.pi, jnp.pi))
 
-        # Log-priors
-        lp_delta_logf0 = 0.0  # Uniform on jitter
-        lp_logfdot = -0.5 * ((logfdot - band.prior_center[1]) / band.prior_scale[1]) ** 2
-        lp_logA = -0.5 * ((logA - band.prior_center[2]) / band.prior_scale[2]) ** 2
-        lp_phi0 = 0.0  # Uniform
+        # Deterministic transforms
+        f0 = numpyro.deterministic("f0", jnp.exp(logf0))
+        fdot = numpyro.deterministic("fdot", jnp.exp(logfdot))
+        A = numpyro.deterministic("A", jnp.exp(logA))
+        phi0_waveform = numpyro.deterministic("phi0_waveform", phi0)
 
-        log_prior = lp_delta_logf0 + lp_logfdot + lp_logA + lp_phi0
+        # Build parameter vector
+        params = jnp.asarray(band.fixed_params, dtype=jnp.float64)
+        params = params.at[0].set(f0)
+        params = params.at[1].set(fdot)
+        params = params.at[2].set(A)
+        params = params.at[7].set(phi0_waveform)
 
-        # Likelihood
-        f0 = np.exp(logf0)
-        fdot = np.exp(logfdot)
-        A = np.exp(logA)
-
-        params = band.fixed_params.copy()
-        params[0] = f0
-        params[1] = fdot
-        params[2] = A
-        params[7] = phi0
-
-        h_aet = np.array(source_aet_band(params, band.band_kmin, band.band_kmax))
-        residual_phys = dt_val * (data_aet - h_aet)
+        # Waveform
+        h_aet = source_aet_band(params, band.band_kmin, band.band_kmax)
 
         # Whittle likelihood
-        log_like = -np.sum(np.log(psd_aet) + 2.0 * df_val * np.abs(residual_phys) ** 2 / psd_aet)
+        residual_phys = dt_j * (data_aet_j - h_aet)
+        numpyro.factor(
+            "whittle",
+            -jnp.sum(jnp.log(psd_aet_j) + 2.0 * df_j * jnp.abs(residual_phys) ** 2 / psd_aet_j),
+        )
 
-        return log_prior + log_like
+    # Initialize at truth
+    init_strategy = init_to_value(
+        values={
+            "delta_logf0": 0.0,
+            "logfdot": init_values["logfdot"],
+            "logA": init_values["logA"],
+            "phi0": init_values["phi0"],
+        }
+    )
 
-    # Initialize walkers in a small ball around truth
-    # Now sampling delta_logf0 (jitter) instead of logf0 (free)
-    n_walkers = 32
-    np.random.seed(seed)
+    kernel = NUTS(model, init_strategy=init_strategy)
+    mcmc = MCMC(kernel, num_warmup=N_WARMUP, num_samples=N_DRAWS, progress_bar=bool(SHOW_PROGRESS))
 
-    if snr_optimal is not None:
-        spread = estimate_init_spread(snr_optimal, band.t_obs, f_center=band.f0_init)
-    else:
-        # Fallback: conservative tight initialization
-        spread = {"logf_logfdot": 1e-9, "logA": 0.001, "phi0": 0.003}
-
-    # delta_logf0 has much tighter init spread since prior is narrow
-    p0 = np.array(
-        [
-            np.random.normal(0, F0_JITTER_WIDTH * 0.1, n_walkers),  # delta_logf0: 0.1× prior width
-            init_values["logfdot"] + np.random.normal(0, spread["logf_logfdot"], n_walkers),
-            init_values["logA"] + np.random.normal(0, spread["logA"], n_walkers),
-            init_values["phi0"] + np.random.normal(0, spread["phi0"], n_walkers),
-        ]
-    ).T
-
-    print(f"  emcee: {n_walkers} walkers (f0_jitter: ±{F0_JITTER_WIDTH:.2e})")
-    sampler = emcee.EnsembleSampler(n_walkers, 4, log_prob, threads=1)
-
-    # Burn-in
     mcmc_start_time = time.perf_counter()
-    print(f"  Running {N_WARMUP} warmup steps…")
-    p0, _, _ = sampler.run_mcmc(p0, N_WARMUP, progress=bool(SHOW_PROGRESS))
-
-    # Reset and draw samples
-    sampler.reset()
-    print(f"  Running {N_DRAWS} production steps…")
-    sampler.run_mcmc(p0, N_DRAWS, progress=bool(SHOW_PROGRESS))
+    print(f"  Running NUTS ({N_WARMUP} warmup + {N_DRAWS} draws)…")
+    mcmc.run(jax.random.PRNGKey(seed))
     mcmc_elapsed = time.perf_counter() - mcmc_start_time
-    print(f"  Timing: emcee warmup+sampling {mcmc_elapsed:.2f} s")
+    print(f"  Timing: NUTS warmup+sampling {mcmc_elapsed:.2f} s")
 
     # Extract samples
-    chain = sampler.get_chain(flat=True)
+    samples = mcmc.get_samples()
 
     # Convert delta_logf0 back to logf0
-    delta_logf0_samples = chain[:, 0]
+    delta_logf0_samples = np.asarray(samples["delta_logf0"])
     logf0_samples = init_values["logf0"] + delta_logf0_samples
 
     samples_dict = {
         "logf0": logf0_samples,
-        "delta_logf0": delta_logf0_samples,  # Also store jitter for diagnostics
-        "logfdot": chain[:, 1],
-        "logA": chain[:, 2],
-        "phi0": chain[:, 3],
-        "f0": np.exp(chain[:, 0]),
-        "fdot": np.exp(chain[:, 1]),
-        "A": np.exp(chain[:, 2]),
+        "delta_logf0": delta_logf0_samples,
+        "logfdot": np.asarray(samples["logfdot"]),
+        "logA": np.asarray(samples["logA"]),
+        "phi0": np.asarray(samples["phi0"]),
+        "f0": np.asarray(samples["f0"]),
+        "fdot": np.asarray(samples["fdot"]),
+        "A": np.asarray(samples["A"]),
     }
 
-    # Return in a format compatible with downstream code
     return {
         "samples": samples_dict,
-        "tau": sampler.get_autocorr_time(quiet=True).mean() if hasattr(sampler, 'get_autocorr_time') else np.nan,
-        "acceptance_fraction": sampler.acceptance_fraction,
+        "mcmc": mcmc,
     }
 
 
-print("\nRunning emcee for the injected source…")
+print("\nRunning NUTS for the injected source…")
 print(f"\n─── {BAND.label} ───")
 mcmc_result = sample_source(BAND, seed=MCMC_SEED, snr_optimal=snr_optimal)
 
-print("\nemcee diagnostics:")
-print(f"  Acceptance fraction: {mcmc_result['acceptance_fraction'].mean():.3f}")
-print(f"  Autocorr time: {mcmc_result['tau']:.1f}")
+mcmc = mcmc_result["mcmc"]
+print("\nNUTS diagnostics:")
+nuts_extra = mcmc.get_extra_fields()
+n_div = int(nuts_extra.get("diverging", [0]).sum()) if "diverging" in nuts_extra else 0
+print(f"  Divergences: {n_div}")
+if N_DRAWS >= 4:
+    mcmc.print_summary(exclude_deterministic=False)
+else:
+    print("  Skipping summary: need at least 4 draws for R-hat diagnostics.")
 
 s = mcmc_result["samples"]
 
