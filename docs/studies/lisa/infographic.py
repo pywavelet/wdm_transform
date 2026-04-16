@@ -1,17 +1,3 @@
-"""Publication-style infographic for one LISA GB injection.
-
-Shows:
-- A-channel frequency-domain power with the injected GB over the stochastic background
-- Characteristic strain of the injected source against the A-channel sensitivity
-- Whitened WDM map of the injected data with a zoomed source inset
-
-Usage:
-    cd docs/studies/lisa
-    python3 infographic.py
-"""
-
-from __future__ import annotations
-
 from pathlib import Path
 
 import numpy as np
@@ -29,7 +15,14 @@ from lisa_common import (
 
 A_WDM = 1.0 / 3.0
 D_WDM = 1.0
-DEFAULT_NT_WDM = 48
+DEFAULT_NT_WDM = 432
+
+FINSET_SPINE_ = "#434242"
+DATA_COL = "#D8D8D8"
+INJECTION_COL = "#ff7f0e"
+NOISE_PSD = "#172919"
+FULL_PSD = "#172919"
+SECONDS_PER_YEAR = 365.25 * 24 * 3600
 
 
 def setup_plotting():
@@ -51,18 +44,6 @@ def setup_plotting():
         "lines.linewidth": 1.6,
     })
     return matplotlib, plt
-
-
-def compute_characteristic_strains(freqs, psd, data_fft, dt):
-    """Compute characteristic strains for noise and signal."""
-    from wdm_transform.signal_processing import (
-        noise_characteristic_strain,
-        rfft_characteristic_strain,
-    )
-
-    h_c_noise = noise_characteristic_strain(psd, freqs)
-    h_c_signal = rfft_characteristic_strain(data_fft, freqs, dt)
-    return h_c_noise, h_c_signal
 
 
 def one_sided_periodogram_density(rfft_coeffs: np.ndarray, dt: float, n_samples: int) -> np.ndarray:
@@ -118,10 +99,80 @@ def build_wdm_products(
     return total_wdm, source_wdm, whitening
 
 
-def whitened_wdm_image(wdm, whitening: np.ndarray) -> np.ndarray:
-    """Return the absolute whitened WDM coefficient image in display orientation."""
+def wdm_image(wdm, whitening: np.ndarray | None = None) -> np.ndarray:
+    """Return the absolute WDM coefficient image in display orientation."""
     coeffs = np.asarray(wdm.coeffs[0], dtype=float)
-    return np.abs(coeffs / whitening).T
+    if whitening is not None:
+        coeffs = coeffs / whitening
+    return np.abs(coeffs).T
+
+
+def add_frequency_inset(
+    ax,
+    *,
+    freqs: np.ndarray,
+    psd_data: np.ndarray,
+    psd_background: np.ndarray,
+    psd_source: np.ndarray,
+    source_params: np.ndarray,
+):
+    """Add a compact zoom around the injected carrier in the PSD panel."""
+    from mpl_toolkits.axes_grid1.inset_locator import inset_axes, mark_inset
+    from matplotlib.ticker import FixedLocator, FuncFormatter, LogLocator, NullFormatter
+
+    f0 = float(source_params[0])
+    half_width = max(18.0 * (freqs[1] - freqs[0]), 1.8e-5)
+    freq_lo = max(1e-4, f0 - half_width)
+    freq_hi = min(3e-3, f0 + half_width)
+    mask = (freqs >= freq_lo) & (freqs <= freq_hi)
+    if np.count_nonzero(mask) < 8:
+        return
+
+    local_data = np.maximum(psd_data[mask], 1e-60)
+    local_bg = np.maximum(psd_background[mask], 1e-60)
+    local_src = np.maximum(psd_source[mask], 1e-60)
+    local_freqs = freqs[mask]
+
+    inset = inset_axes(
+        ax,
+        width="31%",
+        height="48%",
+        loc="lower left",
+        bbox_to_anchor=(0.055, 0.09, 1.0, 1.0),
+        bbox_transform=ax.transAxes,
+        borderpad=0.0,
+    )
+    inset.set_facecolor("white")
+    inset.loglog(
+        local_freqs,
+        local_src,
+        color=INJECTION_COL,
+        lw=5.0,
+        alpha=0.28,
+        zorder=-10,
+        solid_capstyle="round",
+    )
+    inset.loglog(local_freqs, local_data, color=DATA_COL, lw=1.1, alpha=1, zorder=10)
+    inset.loglog(local_freqs, local_src, color=INJECTION_COL, lw=1.8, alpha=0.95, zorder=4)
+    inset.set_xlim(freq_lo, freq_hi)
+    inset.set_ylim(
+        max(float(np.nanmin(local_bg)) * 0.5, 1e-44),
+        max(float(np.nanmax(np.maximum(local_data, local_src))) * 2.0, 1e-38),
+    )
+    xticks = np.linspace(freq_lo, freq_hi, 5)
+    inset.xaxis.set_major_locator(FixedLocator(xticks))
+    inset.xaxis.set_major_formatter(FuncFormatter(lambda x, _: f"{x * 1e3:.4f}"))
+    inset.xaxis.set_minor_formatter(NullFormatter())
+    inset.yaxis.set_major_locator(LogLocator(base=10.0, numticks=4))
+    inset.yaxis.set_minor_formatter(NullFormatter())
+    inset.tick_params(axis="both", labelsize=7, pad=1, length=3)
+    inset.set_xlabel("Frequency (mHz)", fontsize=7, labelpad=1)
+    inset.set_ylabel(r"$S_h(f)$", fontsize=7, labelpad=1)
+    for spine in inset.spines.values():
+        spine.set_linewidth(1.0)
+        spine.set_edgecolor(FINSET_SPINE_)
+
+    mark_inset(ax, inset, loc1=2, loc2=4, fc="none", ec=FINSET_SPINE_, alpha=0.55)
 
 
 def add_wdm_panel(
@@ -139,15 +190,16 @@ def add_wdm_panel(
     from matplotlib.colors import LogNorm
     from mpl_toolkits.axes_grid1.inset_locator import inset_axes, mark_inset
 
-    total_img = whitened_wdm_image(total_wdm, whitening)
-    source_img = whitened_wdm_image(source_wdm, whitening)
+    total_img = wdm_image(total_wdm, whitening)
+    source_img = wdm_image(source_wdm, whitening)
     time_grid = np.asarray(total_wdm.time_grid, dtype=float)
+    time_years = time_grid / SECONDS_PER_YEAR
     freq_grid = np.asarray(total_wdm.freq_grid, dtype=float)
-    extent = [time_grid[0], time_grid[-1], freq_grid[0], freq_grid[-1]]
+    extent = [time_years[0], time_years[-1], freq_grid[0], freq_grid[-1]]
 
     positive = total_img[total_img > 0.0]
-    vmin = max(float(np.nanpercentile(positive, 35)), 0.3)
-    vmax = max(float(np.nanpercentile(total_img, 99.7)), vmin * 4.0)
+    vmin = max(float(np.nanpercentile(positive, 18)), 0.25)
+    vmax = max(float(np.nanpercentile(total_img, 99.5)), vmin * 6.0)
     norm = LogNorm(vmin=vmin, vmax=vmax)
 
     im = ax.imshow(
@@ -160,42 +212,68 @@ def add_wdm_panel(
         interpolation="nearest",
         rasterized=True,
     )
-    chirp_track = source_params[0] + source_params[1] * time_grid
-    ax.plot(time_grid, chirp_track, color="#7ce2ff", lw=1.6, alpha=0.9, label="Injected source track")
     ax.set_yscale("log")
     ax.set_ylim(1e-4, 3e-3)
     ax.set_ylabel("Frequency (Hz)", fontweight="bold")
-    ax.set_xlabel("Time (s)", fontweight="bold")
-    ax.set_title("(c) A-Channel WDM Map: Galactic Background + Injected GB", fontweight="bold", pad=10)
+    ax.set_xlabel("Time (yr)", fontweight="bold")
     ax.grid(True, which="both", alpha=0.12, linestyle=":")
-    ax.legend(loc="upper left", framealpha=0.92)
+    ax.text(
+        0.01,
+        0.98,
+        "(b)",
+        transform=ax.transAxes,
+        ha="left",
+        va="top",
+        fontweight="bold",
+        color="white",
+    )
+    ax.set_xticks(np.linspace(time_years[0], time_years[-1], 5))
 
     cbar = fig.colorbar(im, ax=ax, pad=0.02)
-    cbar.set_label("Per-pixel WDM amplitude / noise std")
+    cbar.set_label("WDM amplitude / noise std")
 
     delta_f = max(8.0 * total_wdm.delta_f, 1.5e-5)
     freq_lo = max(1e-4, source_params[0] - delta_f)
     freq_hi = min(3e-3, source_params[0] + delta_f)
 
-    inset = inset_axes(ax, width="42%", height="42%", loc="lower left", borderpad=1.2)
+    source_positive = source_img[source_img > 0.0]
+    source_vmin = max(float(np.nanpercentile(source_positive, 20)), 0.35)
+    source_vmax = max(float(np.nanpercentile(source_img, 99.7)), source_vmin * 5.0)
+    source_norm = LogNorm(vmin=source_vmin, vmax=source_vmax)
+
+    inset = inset_axes(
+        ax,
+        width="31%",
+        height="48%",
+        loc="lower left",
+        bbox_to_anchor=(0.055, 0.09, 1.0, 1.0),
+        bbox_transform=ax.transAxes,
+        borderpad=0.0,
+    )
     inset.imshow(
         source_img,
         aspect="auto",
         extent=extent,
         origin="lower",
         cmap="magma",
-        norm=norm,
+        norm=source_norm,
         interpolation="nearest",
         rasterized=True,
     )
-    inset.plot(time_grid, chirp_track, color="white", lw=1.0, alpha=0.85)
     inset.set_yscale("log")
-    inset.set_xlim(time_grid[0], time_grid[-1])
+    inset.set_xlim(time_years[0], time_years[-1])
     inset.set_ylim(freq_lo, freq_hi)
-    inset.set_xticks([])
-    inset.set_yticks([source_params[0]])
-    inset.set_yticklabels([f"{source_params[0]:.4e}"])
-    inset.set_title("Injected source only", fontsize=8, pad=4)
+    inset.tick_params(axis="both", colors="white", labelsize=7, pad=1)
+    year_ticks = np.linspace(time_years[0], time_years[-1], 4)
+    inset.set_xticks(year_ticks)
+    inset.set_xticklabels([f"{tick:.2f}" for tick in year_ticks], color="white")
+    inset.set_xlabel("Time (yr)", color="white", fontsize=7, labelpad=1)
+    inset.set_yticks([freq_lo, source_params[0], freq_hi])
+    inset.set_yticklabels(
+        [f"{freq_lo * 1e3:.3f}", f"{source_params[0] * 1e3:.3f}", f"{freq_hi * 1e3:.3f}"],
+        color="white",
+    )
+    inset.set_ylabel("mHz", color="white", fontsize=7, labelpad=1)
     for spine in inset.spines.values():
         spine.set_edgecolor("white")
         spine.set_linewidth(1.1)
@@ -221,7 +299,6 @@ def create_infographic(
     injection = load_injection(injection_path)
     freqs = injection.freqs
     dt = injection.dt
-    t_obs = injection.t_obs
     source_params = np.asarray(injection.source_params[0], dtype=float)
     source_fft = regenerate_source_rfft(injection)
     data_fft = np.fft.rfft(np.asarray(injection.data_At, dtype=float))
@@ -231,12 +308,8 @@ def create_infographic(
     psd_data = one_sided_periodogram_density(data_fft, dt, len(injection.data_At))
     psd_background = one_sided_periodogram_density(background_fft, dt, len(injection.data_At))
     psd_source = one_sided_periodogram_density(source_fft, dt, len(injection.data_At))
-    inst_psd = np.maximum(noise_tdi15_psd(0, freqs), 1e-60)
     total_psd = np.maximum(np.asarray(injection.noise_psd_A, dtype=float), 1e-60)
-
-    h_c_total, h_c_source = compute_characteristic_strains(freqs, total_psd, source_fft, dt)
-    h_c_inst, _ = compute_characteristic_strains(freqs, inst_psd, source_fft, dt)
-    h_c_data = compute_characteristic_strains(freqs, total_psd, data_fft, dt)[1]
+    inst_psd = np.maximum(noise_tdi15_psd(0, freqs), 1e-60)
 
     total_wdm, source_wdm, whitening = build_wdm_products(
         injection.data_At,
@@ -245,39 +318,34 @@ def create_infographic(
         noise_psd=total_psd,
     )
 
-    fig = plt.figure(figsize=(14, 10))
-    gs = fig.add_gridspec(3, 1, hspace=0.34, height_ratios=[1.0, 0.9, 1.25])
+    fig = plt.figure(figsize=(10, 9.2))
+    gs = fig.add_gridspec(2, 1, hspace=0.28, height_ratios=[1.0, 1.0])
 
     ax1 = fig.add_subplot(gs[0])
-    ax1.loglog(freqs[1:], psd_data[1:], color="#1f77b4", alpha=0.45, lw=1.6, label="A data: background + injection")
-    ax1.loglog(freqs[1:], psd_background[1:], color="#d6cf66", alpha=0.72, lw=1.3, label="A background realization")
-    ax1.loglog(freqs[1:], total_psd[1:], color="#2ca02c", lw=2.0, linestyle=":", label="A total PSD model")
-    ax1.loglog(freqs[1:], inst_psd[1:], color="#4d4d4d", lw=1.4, linestyle="--", label="Instrument PSD")
-    ax1.loglog(freqs[1:], psd_source[1:], color="#ff7f0e", alpha=0.95, lw=1.8, label="Injected GB")
-    ax1.axvline(source_params[0], color="#b22222", lw=1.8, linestyle="--", alpha=0.8)
+    ax1.loglog(freqs[1:], psd_data[1:], color=DATA_COL, alpha=0.9, lw=1.2, label="A data")
+    ax1.loglog(freqs[1:], total_psd[1:], color=NOISE_PSD, lw=2.0, label="Total PSD model")
+    ax1.loglog(freqs[1:], inst_psd[1:], color=FULL_PSD, lw=1.4, linestyle="--", label="Instrument PSD")
+    ax1.loglog([], [], color=INJECTION_COL, lw=1.8, alpha=0.95, label="Injected source")
     ax1.set_xlim(1e-4, 3e-3)
-    ax1.set_ylim(1e-44, max(float(np.nanpercentile(psd_data[1:], 99.9)) * 2.0, 1e-36))
+    ax1.set_ylim(1e-44, 10**-36)
     ax1.set_ylabel(r"$S_h(f)$ [strain$^2$/Hz]", fontweight="bold")
-    ax1.set_title("(a) A-Channel Power: Galactic Background, Noise, and Injected Source", fontweight="bold", pad=10)
     ax1.grid(True, which="both", alpha=0.18, linestyle=":")
-    ax1.legend(loc="upper right", framealpha=0.95)
+    ax1.legend(loc="upper right", frameon=False)
+    ax1.set_xlabel("Frequency (Hz)", fontweight="bold")
+    ax1.text(0.01, 0.98, "(a)", transform=ax1.transAxes, ha="left", va="top", fontweight="bold")
+    add_frequency_inset(
+        ax1,
+        freqs=freqs,
+        psd_data=psd_data,
+        psd_background=psd_background,
+        psd_source=psd_source,
+        source_params=source_params,
+    )
 
     ax2 = fig.add_subplot(gs[1])
-    ax2.loglog(freqs[1:], h_c_inst[1:], color="#4d4d4d", lw=1.4, linestyle="--", label="Instrument noise")
-    ax2.loglog(freqs[1:], h_c_total[1:], color="#2ca02c", lw=2.0, linestyle=":", label="Total A-channel sensitivity")
-    ax2.loglog(freqs[1:], h_c_data[1:], color="#1f77b4", alpha=0.5, lw=1.2, label="Observed A data")
-    ax2.loglog(freqs[1:], h_c_source[1:], color="#ff7f0e", lw=2.3, label="Injected GB")
-    ax2.axvline(source_params[0], color="#b22222", lw=1.8, linestyle="--", alpha=0.8)
-    ax2.set_xlim(1e-4, 3e-3)
-    ax2.set_ylabel(r"$h_c(f)$", fontweight="bold")
-    ax2.set_title("(b) Characteristic Strain: Resolved Signal Above the LISA Foreground", fontweight="bold", pad=10)
-    ax2.grid(True, which="both", alpha=0.18, linestyle=":")
-    ax2.legend(loc="upper right", framealpha=0.95)
-
-    ax3 = fig.add_subplot(gs[2])
     add_wdm_panel(
         fig,
-        ax3,
+        ax2,
         matplotlib=matplotlib,
         plt=plt,
         total_wdm=total_wdm,
@@ -286,37 +354,9 @@ def create_infographic(
         source_params=source_params,
     )
 
-    info_text = (
-        "Seed {seed}  |  f₀ = {f0:.4e} Hz  |  ḟ = {fdot:.3e} Hz/s  |  A = {amp:.3e}\n"
-        "Observation = {years:.1f} year  |  dt = {dt:.1f} s  |  WDM grid = {nt}×{nf}"
-    ).format(
-        seed=seed,
-        f0=source_params[0],
-        fdot=source_params[1],
-        amp=source_params[2],
-        years=t_obs / (365.25 * 24 * 3600),
-        dt=dt,
-        nt=total_wdm.nt,
-        nf=total_wdm.nf + 1,
-    )
-    fig.text(
-        0.5,
-        0.035,
-        info_text,
-        fontsize=9,
-        family="monospace",
-        ha="center",
-        bbox={
-            "boxstyle": "round,pad=0.7",
-            "facecolor": "#f4f4f4",
-            "edgecolor": "#333333",
-            "linewidth": 0.8,
-        },
-    )
-
-    fig.subplots_adjust(top=0.96, bottom=0.12, left=0.08, right=0.96)
-
-    path = save_figure(fig, output_dir, "gb_infographic", dpi=180)
+    # save fig as PDF 
+    path = output_dir / f"lisa_gb_infographic_seed_{seed}.pdf"
+    plt.savefig(path, format="pdf" )
     plt.close(fig)
     return path
 

@@ -228,6 +228,7 @@ def print_summary(
         credible_levels = calculate_credible_levels(
             data["posteriors"],  # type: ignore[arg-type]
             data["trues"],       # type: ignore[arg-type]
+            circular=is_phase_parameter(label),
         )
         credible_map[label] = credible_levels
         p_value = float(summarize_credible_levels(credible_levels)["ks_p"])
@@ -365,26 +366,28 @@ def build_summary_payload(
         method_payload: dict[str, object] = {"parameters": {}}
         p_values = []
         for label in labels:
-            linear_levels = calculate_credible_levels(
+            _is_circular = is_phase_parameter(label)
+            primary_levels = calculate_credible_levels(
                 results[label]["posteriors"],  # type: ignore[arg-type]
                 results[label]["trues"],       # type: ignore[arg-type]
+                circular=_is_circular,
             )
-            linear_summary = summarize_credible_levels(linear_levels)
-            p_values.append(float(linear_summary["ks_p"]))
+            primary_summary = summarize_credible_levels(primary_levels)
+            p_values.append(float(primary_summary["ks_p"]))
             entry: dict[str, object] = {
-                **linear_summary,
-                "credible_levels": linear_levels.tolist(),
+                **primary_summary,
+                "credible_levels": primary_levels.tolist(),
                 "seeds": [int(seed) for seed in results[label]["seeds"]],  # type: ignore[arg-type]
             }
-            if is_phase_parameter(label):
-                circular_levels = calculate_credible_levels(
+            if _is_circular:
+                linear_levels = calculate_credible_levels(
                     results[label]["posteriors"],  # type: ignore[arg-type]
                     results[label]["trues"],       # type: ignore[arg-type]
-                    circular=True,
+                    circular=False,
                 )
-                entry["circular"] = {
-                    **summarize_credible_levels(circular_levels),
-                    "credible_levels": circular_levels.tolist(),
+                entry["linear"] = {
+                    **summarize_credible_levels(linear_levels),
+                    "credible_levels": linear_levels.tolist(),
                 }
             method_payload["parameters"][label] = entry
         method_payload["combined_p"] = float(st.combine_pvalues(p_values)[1])
@@ -423,13 +426,16 @@ def plot_pp_compare(
     wdm_pvalues = []
 
     for color, label in zip(colors, labels, strict=True):
+        is_circular = is_phase_parameter(label)
         freq_cls = calculate_credible_levels(
             freq_results[label]["posteriors"],  # type: ignore[arg-type]
             freq_results[label]["trues"],       # type: ignore[arg-type]
+            circular=is_circular,
         )
         wdm_cls = calculate_credible_levels(
             wdm_results[label]["posteriors"],   # type: ignore[arg-type]
             wdm_results[label]["trues"],        # type: ignore[arg-type]
+            circular=is_circular,
         )
         freq_pvalues.append(float(st.kstest(freq_cls, "uniform").pvalue))
         wdm_pvalues.append(float(st.kstest(wdm_cls, "uniform").pvalue))
@@ -461,6 +467,112 @@ def plot_pp_compare(
     ax.legend(handles=method_handles, loc="upper left", title="Curves", fontsize=9)
 
     return save_figure(fig, output_dir, stem, dpi=200)
+
+
+def plot_pp_per_parameter(
+    *,
+    freq_results: dict[str, dict[str, list[np.ndarray] | list[float]]],
+    wdm_results: dict[str, dict[str, list[np.ndarray] | list[float]]],
+    labels: list[str],
+    output_dir: Path,
+    stem: str,
+    title: str,
+) -> Path:
+    """One PP subplot per parameter so per-parameter calibration is easy to read."""
+    x_values = np.linspace(0.0, 1.0, 201)
+    n_sims = len(next(iter(freq_results.values()))["trues"])
+    ncols = min(len(labels), 3)
+    nrows = (len(labels) + ncols - 1) // ncols
+    fig, axes = plt.subplots(nrows, ncols, figsize=(4.5 * ncols, 4.5 * nrows), constrained_layout=True)
+    axes_flat = np.array(axes).reshape(-1)
+
+    for ax, label in zip(axes_flat, labels, strict=False):
+        for ci in CONFIDENCE_INTERVALS:
+            edge = 0.5 * (1.0 - ci)
+            lower = st.binom.ppf(edge, n_sims, x_values) / n_sims
+            upper = st.binom.ppf(1.0 - edge, n_sims, x_values) / n_sims
+            ax.fill_between(x_values, lower, upper, color="0.7", alpha=0.12)
+
+        is_circular = is_phase_parameter(label)
+        freq_cls = calculate_credible_levels(
+            freq_results[label]["posteriors"],  # type: ignore[arg-type]
+            freq_results[label]["trues"],       # type: ignore[arg-type]
+            circular=is_circular,
+        )
+        wdm_cls = calculate_credible_levels(
+            wdm_results[label]["posteriors"],  # type: ignore[arg-type]
+            wdm_results[label]["trues"],       # type: ignore[arg-type]
+            circular=is_circular,
+        )
+        ax.plot(x_values, empirical_pp(wdm_cls, x_values), color="C0", lw=2.0, label="WDM")
+        ax.plot(x_values, empirical_pp(freq_cls, x_values), color="C1", lw=2.0, ls="--", label="Frequency")
+        ax.plot([0.0, 1.0], [0.0, 1.0], color="k", ls=":", lw=1.0)
+        freq_p = float(st.kstest(freq_cls, "uniform").pvalue)
+        wdm_p = float(st.kstest(wdm_cls, "uniform").pvalue)
+        ax.set_title(f"{_short_label(label)}\nWDM p={wdm_p:.2g}, Freq p={freq_p:.2g}", fontsize=9)
+        ax.set_xlim(0.0, 1.0)
+        ax.set_ylim(0.0, 1.0)
+        ax.set_xlabel("Predicted CL", fontsize=8)
+        ax.set_ylabel("Observed fraction", fontsize=8)
+        ax.legend(fontsize=7)
+
+    for ax in axes_flat[len(labels):]:
+        ax.set_visible(False)
+
+    fig.suptitle(title)
+    return save_figure(fig, output_dir, f"{stem}_per_param", dpi=200)
+
+
+def plot_bias_vs_truth(
+    *,
+    freq_results: dict[str, dict[str, list[np.ndarray] | list[float]]],
+    wdm_results: dict[str, dict[str, list[np.ndarray] | list[float]]],
+    labels: list[str],
+    output_dir: Path,
+    stem: str,
+    title: str,
+) -> Path:
+    """Scatter of standardized bias (posterior_mean - truth) / posterior_std vs truth.
+
+    A horizontal scatter near zero means no systematic offset.  A trend (positive
+    slope or negative slope) indicates the model over/under-shoots depending on where
+    the true value falls — the root cause of an S-curve PP plot.
+    """
+    ncols = min(len(labels), 3)
+    nrows = (len(labels) + ncols - 1) // ncols
+    fig, axes = plt.subplots(nrows, ncols, figsize=(4.5 * ncols, 4.0 * nrows), constrained_layout=True)
+    axes_flat = np.array(axes).reshape(-1)
+
+    for ax, label in zip(axes_flat, labels, strict=False):
+        for method_name, results, color, marker in (
+            ("WDM", wdm_results, "C0", "o"),
+            ("Frequency", freq_results, "C1", "s"),
+        ):
+            posteriors: list[np.ndarray] = results[label]["posteriors"]  # type: ignore[assignment]
+            trues: list[float] = results[label]["trues"]  # type: ignore[assignment]
+            biases, truths = [], []
+            for samples, truth in zip(posteriors, trues, strict=True):
+                arr = np.asarray(samples, dtype=float)
+                std = float(arr.std(ddof=0))
+                if std == 0.0:
+                    continue
+                mean = float(arr.mean())
+                biases.append((mean - truth) / std)
+                truths.append(truth)
+            if truths:
+                ax.scatter(truths, biases, s=12, alpha=0.6, color=color, marker=marker, label=method_name)
+
+        ax.axhline(0.0, color="k", ls=":", lw=1.0)
+        ax.set_title(_short_label(label), fontsize=9)
+        ax.set_xlabel("Truth", fontsize=8)
+        ax.set_ylabel("(mean − truth) / std", fontsize=8)
+        ax.legend(fontsize=7)
+
+    for ax in axes_flat[len(labels):]:
+        ax.set_visible(False)
+
+    fig.suptitle(title)
+    return save_figure(fig, output_dir, f"{stem}_bias_vs_truth", dpi=200)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -512,15 +624,37 @@ def main() -> None:
     print_phase_audit(wdm_results, name="WDM", printer=emit)
     print_phase_audit(freq_results, name="Frequency", printer=emit)
 
+    _plot_title = f"LISA Posterior PP Plot ({args.mode}, N={len(used_seeds)})"
+
     out_path = plot_pp_compare(
         freq_results=freq_results,
         wdm_results=wdm_results,
         labels=labels,
         output_dir=output_dir,
         stem=args.stem,
-        title=f"LISA Posterior PP Plot ({args.mode}, N={len(used_seeds)})",
+        title=_plot_title,
     )
     emit(f"\nSaved PP plot to {out_path}")
+
+    per_param_path = plot_pp_per_parameter(
+        freq_results=freq_results,
+        wdm_results=wdm_results,
+        labels=labels,
+        output_dir=output_dir,
+        stem=args.stem,
+        title=_plot_title,
+    )
+    emit(f"Saved per-parameter PP plot to {per_param_path}")
+
+    bias_path = plot_bias_vs_truth(
+        freq_results=freq_results,
+        wdm_results=wdm_results,
+        labels=labels,
+        output_dir=output_dir,
+        stem=args.stem,
+        title=_plot_title,
+    )
+    emit(f"Saved bias-vs-truth plot to {bias_path}")
 
     summary_txt = output_dir / f"{args.stem}_summary.txt"
     summary_json = output_dir / f"{args.stem}_summary.json"

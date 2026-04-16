@@ -13,6 +13,7 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.ticker import EngFormatter, FuncFormatter, ScalarFormatter
 
 try:
     import corner
@@ -45,6 +46,273 @@ def _print_runtime() -> None:
 atexit.register(_print_runtime)
 
 
+def _setup_matplotlib_style() -> None:
+    """Configure matplotlib for publication-style corner plots."""
+    plt.rcParams.update({
+        "mathtext.fontset": "dejavusans",
+        "font.family": "sans-serif",
+        "font.sans-serif": ["DejaVu Sans", "Helvetica", "Arial"],
+        "font.size": 10,
+        "axes.labelsize": 10,
+        "xtick.labelsize": 9,
+        "ytick.labelsize": 9,
+        "legend.fontsize": 9,
+    })
+
+
+def _format_axis_label(label: str) -> str:
+    """Convert parameter label to formatted version with math symbols."""
+    # Replace common parameter names with clean symbols (no units - corner already adds them)
+    label_map = {
+        "f0": r"$f_0$",
+        "fdot": r"$\dot{f}$",
+        "A": r"$A$",
+        "phi0": r"$\phi_0$",
+        "psi": r"$\psi$",
+        "iota": r"$\iota$",
+        "SNR": r"SNR",
+    }
+    # Try exact match first
+    if label in label_map:
+        return label_map[label]
+    # Try partial match for complex names
+    for key, value in label_map.items():
+        if key in label.lower():
+            return label.replace(key, value)
+    return label
+
+
+def _inject_unit_prefix(ax, label: str, truth_value: float | None = None) -> tuple[str, float, bool]:
+    """
+    Inject unit prefix (mHz, µHz, etc.) into axis label based on data magnitude.
+    Returns modified label, scaling factor for tick conversion, and whether delta formatting was applied.
+    """
+    # Extract the base unit from the label (e.g., "Hz" from "f0 [Hz]")
+    import re
+    match = re.search(r'\[([^\]]+)\]', label)
+    if not match:
+        return label, 1.0, False
+
+    base_unit = match.group(1)
+
+    # Skip unit prefixing for certain parameter types that should stay in their base units
+    if any(param in label.lower() for param in ['phi', 'psi', 'iota', 'phase']):
+        # Phase parameters should stay in radians
+        return label, 1.0, False
+
+    if base_unit.lower() == 'rad':
+        # All radian measurements should stay in radians
+        return label, 1.0, False
+
+    if 'snr' in label.lower():
+        # SNR is dimensionless, don't scale
+        return label, 1.0, False
+
+    # Get axis limits to determine scale
+    try:
+        lim = ax.get_xlim() if hasattr(ax, 'get_xlim') else ax.get_ylim()
+        if not lim or lim[0] == lim[1]:
+            return label, 1.0, False
+    except (AttributeError, ValueError):
+        return label, 1.0, False
+
+    data_range = np.abs(lim[1] - lim[0])
+    data_mag = np.abs(np.mean(lim))
+
+    if data_mag == 0:
+        return label, 1.0, False
+
+    # Special handling for f0: if range is very small compared to magnitude, use delta formatting
+    if 'f0' in label.lower() and data_range / data_mag < 1e-4 and truth_value is not None:
+        # Use delta formatting: show f0_sample - f0_truth
+        param_name = label.split()[0]  # Extract "f0" from "f0 [Hz]"
+        new_label = label.replace(param_name, f'Δ{param_name}')
+        return new_label, 1.0, True
+
+    mag = np.log10(data_mag) if data_mag > 0 else 0
+
+    # Define prefixes: (exponent, symbol, name)
+    prefixes = [
+        (12, "T", "tera"),
+        (9, "G", "giga"),
+        (6, "M", "mega"),
+        (3, "k", "kilo"),
+        (0, "", ""),
+        (-3, "m", "milli"),
+        (-6, "µ", "micro"),
+        (-9, "n", "nano"),
+        (-12, "p", "pico"),
+        (-15, "f", "femto"),
+    ]
+
+    # Find best prefix (closest to data magnitude)
+    best_prefix = ""
+    best_exp = 0
+    for exp, symbol, _ in prefixes:
+        if abs(mag - exp) < abs(mag - best_exp):
+            best_exp = exp
+            best_prefix = symbol
+
+    if best_exp == 0:
+        return label, 1.0, False
+
+    # Replace unit with prefixed unit
+    scale_factor = 10.0 ** best_exp
+    new_unit = f"{best_prefix}{base_unit}"
+    new_label = label.replace(f"[{base_unit}]", f"[{new_unit}]")
+
+    return new_label, scale_factor, False
+
+
+def _apply_offset_tick_scaling(ax, reference: float, scale_factor: float, axis: str = "both") -> None:
+    """Apply offset formatting to tick values (showing difference from reference).
+
+    Parameters
+    ----------
+    ax : matplotlib.axes.Axes
+        The axes to format
+    reference : float
+        The reference value to subtract from tick values
+    scale_factor : float
+        The scale factor to apply after offset
+    axis : str
+        Which axis to format: "x", "y", or "both"
+    """
+    def offset_formatter(val, pos):
+        # Calculate offset from reference
+        offset = val - reference
+        # Apply scaling
+        scaled_offset = offset * scale_factor
+
+        if abs(scaled_offset) < 1e-15:
+            return "0"
+        elif abs(scaled_offset) >= 1e3 or abs(scaled_offset) <= 1e-6:
+            return f"{scaled_offset:.2e}"
+        else:
+            return f"{scaled_offset:.6g}"
+
+    if axis in ("x", "both"):
+        ax.xaxis.set_major_formatter(FuncFormatter(offset_formatter))
+    if axis in ("y", "both"):
+        ax.yaxis.set_major_formatter(FuncFormatter(offset_formatter))
+
+
+def _apply_tick_scaling(ax, scale_factor: float, axis: str = "both") -> None:
+    """Apply scaling to tick values via FuncFormatter.
+
+    Parameters
+    ----------
+    ax : matplotlib.axes.Axes
+        The axes to format
+    scale_factor : float
+        The scale factor to apply
+    axis : str
+        Which axis to format: "x", "y", or "both"
+    """
+    def smart_formatter(x, pos):
+        # More aggressive about showing small values
+        if abs(x) < 1e-15:
+            return "0"
+        elif abs(x) >= 1e4 or abs(x) <= 1e-6:
+            return f"{x:.2e}"
+        else:
+            return f"{x:.5g}"
+
+    if scale_factor == 1.0:
+        # No scaling needed; use smart formatter
+        if axis in ("x", "both"):
+            ax.xaxis.set_major_formatter(FuncFormatter(smart_formatter))
+        if axis in ("y", "both"):
+            ax.yaxis.set_major_formatter(FuncFormatter(smart_formatter))
+        return
+
+    # Create formatters that scale the tick values
+    def x_formatter(x, pos):
+        val = x * scale_factor
+        if abs(val) < 1e-15:
+            return "0"
+        elif abs(val) >= 1e4 or abs(val) <= 1e-6:
+            return f"{val:.2e}"
+        else:
+            return f"{val:.5g}"
+
+    def y_formatter(y, pos):
+        val = y * scale_factor
+        if abs(val) < 1e-15:
+            return "0"
+        elif abs(val) >= 1e4 or abs(val) <= 1e-6:
+            return f"{val:.2e}"
+        else:
+            return f"{val:.5g}"
+
+    if axis in ("x", "both"):
+        ax.xaxis.set_major_formatter(FuncFormatter(x_formatter))
+    if axis in ("y", "both"):
+        ax.yaxis.set_major_formatter(FuncFormatter(y_formatter))
+
+
+def _configure_axes_formatting(fig, ndim: int) -> None:
+    """Apply consistent formatting and positioning to all axes."""
+    for i, ax in enumerate(fig.axes):
+        row = i // ndim
+        col = i % ndim
+
+        # Try to disable offset text display (only works with ScalarFormatter)
+        try:
+            ax.ticklabel_format(style="plain", axis="both")
+        except (AttributeError, ValueError):
+            # Some axes might not support this (e.g., with NullFormatter)
+            pass
+
+        # Handle y-axis labels and formatting
+        if col == 0:  # Leftmost column - show y-labels
+            y_label = ax.get_ylabel()
+            if y_label:
+                new_label, scale = _inject_unit_prefix(ax, y_label)
+                # Check if offset formatting was applied
+                if " - " in new_label:
+                    # Extract reference value and apply offset formatting
+                    import re
+                    match = re.search(r' - ([0-9.e-]+)', new_label)
+                    if match:
+                        reference = float(match.group(1))
+                        ax.set_ylabel(new_label)
+                        _apply_offset_tick_scaling(ax, reference, scale, axis="y")
+                    else:
+                        ax.set_ylabel(new_label)
+                        _apply_tick_scaling(ax, scale, axis="y")
+                else:
+                    ax.set_ylabel(new_label)
+                    _apply_tick_scaling(ax, scale, axis="y")
+        else:  # Not leftmost column - hide y-labels
+            ax.set_yticklabels([])
+
+        # Handle x-axis labels and formatting
+        if row == ndim - 1:  # Bottom row - show x-labels
+            x_label = ax.get_xlabel()
+            if x_label:
+                new_label, scale = _inject_unit_prefix(ax, x_label)
+                # Check if offset formatting was applied
+                if " - " in new_label:
+                    # Extract reference value and apply offset formatting
+                    import re
+                    match = re.search(r' - ([0-9.e-]+)', new_label)
+                    if match:
+                        reference = float(match.group(1))
+                        ax.set_xlabel(new_label)
+                        _apply_offset_tick_scaling(ax, reference, scale, axis="x")
+                    else:
+                        ax.set_xlabel(new_label)
+                        _apply_tick_scaling(ax, scale, axis="x")
+                else:
+                    ax.set_xlabel(new_label)
+                    _apply_tick_scaling(ax, scale, axis="x")
+        else:  # Not bottom row - hide x-labels
+            ax.set_xticklabels([])
+
+        ax.tick_params(axis="both", labelsize=8, pad=3)
+
+
 @dataclass(frozen=True)
 class RunPosterior:
     name: str
@@ -72,10 +340,16 @@ def plot_single_corner(run: RunPosterior, output_dir: Path) -> None:
         print("Skipping corner plot: need more samples than plotted dimensions.")
         return
 
+    _setup_matplotlib_style()
+
+    clean_labels = [label.replace("source 1 ", "") for label in run.labels]
+    latex_labels = [_format_axis_label(lbl) for lbl in clean_labels]
+
     fig = corner.corner(
         run.samples,
-        labels=[label.replace("source 1 ", "") for label in run.labels],
+        labels=latex_labels,
         truths=run.truth,
+        truth_color="black",
         color="tab:blue",
         alpha=0.5,
         plot_datapoints=False,
@@ -86,13 +360,26 @@ def plot_single_corner(run: RunPosterior, output_dir: Path) -> None:
 
     axes = np.asarray(fig.axes).reshape((len(run.labels), len(run.labels)))
     legend_ax = axes[0, -1]
+
+    # Configure all axis formatting consistently
+    _configure_axes_formatting(fig, len(run.labels))
+
     legend_ax.legend(
         handles=[
             Patch(facecolor="tab:blue", alpha=0.5, label=run.name),
-            plt.Line2D([0], [0], color="tab:red", ls="--", label="truth"),
+            plt.Line2D([0], [0], color="black", ls="-", lw=1.5, label="Truth"),
         ],
         loc="upper left",
-        fontsize=8,
+        fontsize=14,
+        frameon=False,
+        fancybox=False,
+        # edgecolor="F",
+        framealpha=0.0,
+        # make big
+        handlelength=1.5,
+        handleheight=1.5,
+        # increase spacing
+        labelspacing=0.3,
     )
     save_figure(fig, output_dir, "corner_source_1")
 
@@ -224,10 +511,16 @@ def plot_corner(run_a: RunPosterior, run_b: RunPosterior, output_dir: Path) -> N
         print("Skipping corner plot: need more samples than plotted dimensions.")
         return
 
+    _setup_matplotlib_style()
+
+    clean_labels = [label.replace("source 1 ", "") for label in run_a.labels]
+    latex_labels = [_format_axis_label(lbl) for lbl in clean_labels]
+
     fig = corner.corner(
         run_a.samples,
-        labels=[label.replace("source 1 ", "") for label in run_a.labels],
+        labels=latex_labels,
         truths=run_a.truth,
+        truth_color="black",
         color="tab:blue",
         alpha=0.5,
         plot_datapoints=False,
@@ -236,7 +529,7 @@ def plot_corner(run_a: RunPosterior, run_b: RunPosterior, output_dir: Path) -> N
     corner.corner(
         run_b.samples,
         fig=fig,
-        labels=[label.replace("source 1 ", "") for label in run_b.labels],
+        labels=latex_labels,
         truths=None,
         color="tab:orange",
         alpha=0.5,
@@ -248,14 +541,22 @@ def plot_corner(run_a: RunPosterior, run_b: RunPosterior, output_dir: Path) -> N
 
     axes = np.asarray(fig.axes).reshape((len(run_a.labels), len(run_a.labels)))
     legend_ax = axes[0, -1]
+
+    # Configure all axis formatting consistently
+    _configure_axes_formatting(fig, len(run_a.labels))
+
     legend_ax.legend(
         handles=[
             Patch(facecolor="tab:blue", alpha=0.5, label=run_a.name),
             Patch(facecolor="tab:orange", alpha=0.5, label=run_b.name),
-            plt.Line2D([0], [0], color="tab:red", ls="--", label="truth"),
+            plt.Line2D([0], [0], color="black", ls="-", lw=1.5, label="Truth"),
         ],
         loc="upper left",
-        fontsize=8,
+        fontsize=14,
+        frameon=False,
+        fancybox=False,
+        # edgecolor="black",
+        framealpha=0.0,
     )
     save_figure(fig, output_dir, "corner_source_1")
 
