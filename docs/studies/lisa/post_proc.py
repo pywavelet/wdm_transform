@@ -10,10 +10,11 @@ import json
 import time
 from dataclasses import dataclass
 from pathlib import Path
+import re
 
 import matplotlib.pyplot as plt
 import numpy as np
-from matplotlib.ticker import EngFormatter, FuncFormatter, ScalarFormatter
+from matplotlib.ticker import FuncFormatter, MaxNLocator, ScalarFormatter
 
 try:
     import corner
@@ -87,8 +88,11 @@ def _inject_unit_prefix(ax, label: str, truth_value: float | None = None) -> tup
     Inject unit prefix (mHz, µHz, etc.) into axis label based on data magnitude.
     Returns modified label, scaling factor for tick conversion, and whether delta formatting was applied.
     """
+    compact_label = re.sub(r"[\s$\\{}]", "", label)
+    if compact_label == "A":
+        return r"$A\ [10^{-23}]$", 1.0e23, False
+
     # Extract the base unit from the label (e.g., "Hz" from "f0 [Hz]")
-    import re
     match = re.search(r'\[([^\]]+)\]', label)
     if not match:
         return label, 1.0, False
@@ -108,6 +112,31 @@ def _inject_unit_prefix(ax, label: str, truth_value: float | None = None) -> tup
         # SNR is dimensionless, don't scale
         return label, 1.0, False
 
+    if "fdot" in label.lower() or r"\dot{f}" in label:
+        # Put the scientific scale in the axis label instead of using Matplotlib's
+        # offset text, which tends to collide with the left-column spines.
+        return r"$\dot{f}\ [10^{-18}\ \mathrm{Hz/s}]$", 1.0e18, False
+
+    # Special handling for f0: always use delta formatting when truth value is available
+    if ('f0' in label.lower() or 'f_0' in label.lower()) and truth_value is not None:
+        try:
+            lim = ax.get_xlim() if hasattr(ax, 'get_xlim') else ax.get_ylim()
+            delta_scale = max(abs(lim[0] - truth_value), abs(lim[1] - truth_value))
+        except (AttributeError, ValueError, TypeError):
+            delta_scale = 0.0
+
+        if delta_scale > 0.0:
+            delta_exp = int(np.floor(np.log10(delta_scale)))
+            # Snap to engineering-style powers for cleaner labels.
+            delta_exp = int(3 * np.floor(delta_exp / 3))
+            scale_factor = 10.0 ** (-delta_exp)
+            unit_label = rf"10^{{{delta_exp}}}"
+        else:
+            scale_factor = 1.0
+            unit_label = "Hz"
+
+        return rf"$\Delta f_0\ [{unit_label}]$ Hz", scale_factor, True
+
     # Get axis limits to determine scale
     try:
         lim = ax.get_xlim() if hasattr(ax, 'get_xlim') else ax.get_ylim()
@@ -121,13 +150,6 @@ def _inject_unit_prefix(ax, label: str, truth_value: float | None = None) -> tup
 
     if data_mag == 0:
         return label, 1.0, False
-
-    # Special handling for f0: if range is very small compared to magnitude, use delta formatting
-    if 'f0' in label.lower() and data_range / data_mag < 1e-4 and truth_value is not None:
-        # Use delta formatting: show f0_sample - f0_truth
-        param_name = label.split()[0]  # Extract "f0" from "f0 [Hz]"
-        new_label = label.replace(param_name, f'Δ{param_name}')
-        return new_label, 1.0, True
 
     mag = np.log10(data_mag) if data_mag > 0 else 0
 
@@ -164,37 +186,80 @@ def _inject_unit_prefix(ax, label: str, truth_value: float | None = None) -> tup
     return new_label, scale_factor, False
 
 
-def _apply_offset_tick_scaling(ax, reference: float, scale_factor: float, axis: str = "both") -> None:
-    """Apply offset formatting to tick values (showing difference from reference).
+def _apply_delta_tick_scaling(ax, truth_value: float, scale_factor: float, axis: str = "both") -> None:
+    """Apply delta formatting to tick values (showing sample - truth).
 
     Parameters
     ----------
     ax : matplotlib.axes.Axes
         The axes to format
-    reference : float
-        The reference value to subtract from tick values
+    truth_value : float
+        The truth value to subtract from tick values
     scale_factor : float
-        The scale factor to apply after offset
+        The scale factor to apply after delta calculation
     axis : str
         Which axis to format: "x", "y", or "both"
     """
-    def offset_formatter(val, pos):
-        # Calculate offset from reference
-        offset = val - reference
+    def delta_formatter(val, pos):
+        # Calculate delta from truth
+        delta = val - truth_value
         # Apply scaling
-        scaled_offset = offset * scale_factor
+        scaled_delta = delta * scale_factor
 
-        if abs(scaled_offset) < 1e-15:
+        if abs(scaled_delta) < 1e-25:  # Even smaller threshold
             return "0"
-        elif abs(scaled_offset) >= 1e3 or abs(scaled_offset) <= 1e-6:
-            return f"{scaled_offset:.2e}"
+        elif abs(scaled_delta) <= 1e-1:  # Much more aggressive scientific notation
+            return f"{scaled_delta:.4e}"  # Even higher precision
         else:
-            return f"{scaled_offset:.6g}"
+            return f"{scaled_delta:.6g}"
 
     if axis in ("x", "both"):
-        ax.xaxis.set_major_formatter(FuncFormatter(offset_formatter))
+        ax.xaxis.set_major_formatter(FuncFormatter(delta_formatter))
+        ax.xaxis.set_major_locator(MaxNLocator(nbins=4))
     if axis in ("y", "both"):
-        ax.yaxis.set_major_formatter(FuncFormatter(offset_formatter))
+        ax.yaxis.set_major_formatter(FuncFormatter(delta_formatter))
+        ax.yaxis.set_major_locator(MaxNLocator(nbins=4))
+
+
+def _make_scalar_formatter() -> ScalarFormatter:
+    """Create a formatter that shows one shared exponent instead of repeating it."""
+    formatter = ScalarFormatter(useMathText=True)
+    formatter.set_scientific(True)
+    formatter.set_powerlimits((-2, 2))
+    formatter.set_useOffset(True)
+    return formatter
+
+
+def _apply_scalar_tick_format(ax, axis: str = "both") -> None:
+    """Use Matplotlib's scientific formatter with shared exponent/offset text."""
+    if axis in ("x", "both"):
+        ax.xaxis.set_major_formatter(_make_scalar_formatter())
+        ax.xaxis.set_major_locator(MaxNLocator(nbins=4))
+    if axis in ("y", "both"):
+        ax.yaxis.set_major_formatter(_make_scalar_formatter())
+        ax.yaxis.set_major_locator(MaxNLocator(nbins=4))
+        ax.yaxis.set_offset_position("left")
+
+
+def _reposition_offset_text(ax, row: int, col: int, ndim: int) -> None:
+    """Move scientific offset text away from spines so it does not overlap ticks."""
+    x_offset = ax.xaxis.get_offset_text()
+    y_offset = ax.yaxis.get_offset_text()
+
+    x_offset.set_size(8)
+    y_offset.set_size(8)
+
+    if row == ndim - 1:
+        x_offset.set_horizontalalignment("right")
+        x_offset.set_verticalalignment("top")
+        x_offset.set_x(1.0)
+        x_offset.set_y(-0.08)
+
+    if col == 0:
+        y_offset.set_horizontalalignment("left")
+        y_offset.set_verticalalignment("bottom")
+        y_offset.set_x(0.0)
+        y_offset.set_y(1.02)
 
 
 def _apply_tick_scaling(ax, scale_factor: float, axis: str = "both") -> None:
@@ -209,57 +274,56 @@ def _apply_tick_scaling(ax, scale_factor: float, axis: str = "both") -> None:
     axis : str
         Which axis to format: "x", "y", or "both"
     """
-    def smart_formatter(x, pos):
-        # More aggressive about showing small values
-        if abs(x) < 1e-15:
-            return "0"
-        elif abs(x) >= 1e4 or abs(x) <= 1e-6:
-            return f"{x:.2e}"
-        else:
-            return f"{x:.5g}"
-
     if scale_factor == 1.0:
-        # No scaling needed; use smart formatter
-        if axis in ("x", "both"):
-            ax.xaxis.set_major_formatter(FuncFormatter(smart_formatter))
-        if axis in ("y", "both"):
-            ax.yaxis.set_major_formatter(FuncFormatter(smart_formatter))
+        _apply_scalar_tick_format(ax, axis=axis)
         return
 
     # Create formatters that scale the tick values
     def x_formatter(x, pos):
         val = x * scale_factor
-        if abs(val) < 1e-15:
+        if abs(val) < 1e-30:
             return "0"
-        elif abs(val) >= 1e4 or abs(val) <= 1e-6:
-            return f"{val:.2e}"
+        elif abs(val) <= 1e-2:
+            return f"{val:.3e}"
         else:
             return f"{val:.5g}"
 
     def y_formatter(y, pos):
         val = y * scale_factor
-        if abs(val) < 1e-15:
+        if abs(val) < 1e-30:
             return "0"
-        elif abs(val) >= 1e4 or abs(val) <= 1e-6:
-            return f"{val:.2e}"
+        elif abs(val) <= 1e-2:
+            return f"{val:.3e}"
         else:
             return f"{val:.5g}"
 
     if axis in ("x", "both"):
+        ax.xaxis.offsetText.set_visible(False)
         ax.xaxis.set_major_formatter(FuncFormatter(x_formatter))
+        ax.xaxis.set_major_locator(MaxNLocator(nbins=4))
     if axis in ("y", "both"):
+        ax.yaxis.offsetText.set_visible(False)
         ax.yaxis.set_major_formatter(FuncFormatter(y_formatter))
+        ax.yaxis.set_major_locator(MaxNLocator(nbins=4))
 
 
-def _configure_axes_formatting(fig, ndim: int) -> None:
-    """Apply consistent formatting and positioning to all axes."""
+def _configure_axes_formatting(fig, ndim: int, truth_values: np.ndarray | None = None) -> dict[str, bool]:
+    """Apply consistent formatting and positioning to all axes.
+
+    Returns
+    -------
+    dict[str, bool]
+        Dictionary indicating which parameters used delta formatting
+    """
+    delta_used = {}
+
     for i, ax in enumerate(fig.axes):
         row = i // ndim
         col = i % ndim
 
         # Try to disable offset text display (only works with ScalarFormatter)
         try:
-            ax.ticklabel_format(style="plain", axis="both")
+            ax.ticklabel_format(style="sci", axis="both", scilimits=(-2, 2), useMathText=True)
         except (AttributeError, ValueError):
             # Some axes might not support this (e.g., with NullFormatter)
             pass
@@ -268,21 +332,19 @@ def _configure_axes_formatting(fig, ndim: int) -> None:
         if col == 0:  # Leftmost column - show y-labels
             y_label = ax.get_ylabel()
             if y_label:
-                new_label, scale = _inject_unit_prefix(ax, y_label)
-                # Check if offset formatting was applied
-                if " - " in new_label:
-                    # Extract reference value and apply offset formatting
-                    import re
-                    match = re.search(r' - ([0-9.e-]+)', new_label)
-                    if match:
-                        reference = float(match.group(1))
-                        ax.set_ylabel(new_label)
-                        _apply_offset_tick_scaling(ax, reference, scale, axis="y")
+                truth_val = truth_values[row] if truth_values is not None else None
+                new_label, scale, is_delta = _inject_unit_prefix(ax, y_label, truth_val)
+                ax.set_ylabel(new_label)
+
+                if is_delta and truth_val is not None:
+                    # Extract parameter name from LaTeX or regular format
+                    if '$f_0$' in y_label:
+                        param_name = 'f0'
                     else:
-                        ax.set_ylabel(new_label)
-                        _apply_tick_scaling(ax, scale, axis="y")
+                        param_name = y_label.split()[0].strip('$')
+                    delta_used[param_name] = True
+                    _apply_delta_tick_scaling(ax, truth_val, scale, axis="y")
                 else:
-                    ax.set_ylabel(new_label)
                     _apply_tick_scaling(ax, scale, axis="y")
         else:  # Not leftmost column - hide y-labels
             ax.set_yticklabels([])
@@ -291,26 +353,27 @@ def _configure_axes_formatting(fig, ndim: int) -> None:
         if row == ndim - 1:  # Bottom row - show x-labels
             x_label = ax.get_xlabel()
             if x_label:
-                new_label, scale = _inject_unit_prefix(ax, x_label)
-                # Check if offset formatting was applied
-                if " - " in new_label:
-                    # Extract reference value and apply offset formatting
-                    import re
-                    match = re.search(r' - ([0-9.e-]+)', new_label)
-                    if match:
-                        reference = float(match.group(1))
-                        ax.set_xlabel(new_label)
-                        _apply_offset_tick_scaling(ax, reference, scale, axis="x")
+                truth_val = truth_values[col] if truth_values is not None else None
+                new_label, scale, is_delta = _inject_unit_prefix(ax, x_label, truth_val)
+                ax.set_xlabel(new_label)
+
+                if is_delta and truth_val is not None:
+                    # Extract parameter name from LaTeX or regular format
+                    if '$f_0$' in x_label:
+                        param_name = 'f0'
                     else:
-                        ax.set_xlabel(new_label)
-                        _apply_tick_scaling(ax, scale, axis="x")
+                        param_name = x_label.split()[0].strip('$')
+                    delta_used[param_name] = True
+                    _apply_delta_tick_scaling(ax, truth_val, scale, axis="x")
                 else:
-                    ax.set_xlabel(new_label)
                     _apply_tick_scaling(ax, scale, axis="x")
         else:  # Not bottom row - hide x-labels
             ax.set_xticklabels([])
 
         ax.tick_params(axis="both", labelsize=8, pad=3)
+        _reposition_offset_text(ax, row, col, ndim)
+
+    return delta_used
 
 
 @dataclass(frozen=True)
@@ -331,8 +394,28 @@ def _normalize_phi(samples: np.ndarray, labels: list[str]) -> np.ndarray:
     return wrapped
 
 
+def _corner_run(run: RunPosterior) -> RunPosterior:
+    """Return a plotting-only view of the run without SNR parameters."""
+    keep = [idx for idx, label in enumerate(run.labels) if "snr" not in label.lower()]
+    return RunPosterior(
+        name=run.name,
+        path=run.path,
+        samples=run.samples[:, keep],
+        labels=[run.labels[idx] for idx in keep],
+        truth=run.truth[keep],
+        snr=run.snr,
+    )
+
+
+def _legend_run_label(run: RunPosterior) -> str:
+    if run.snr is None:
+        return run.name
+    return f"{run.name} ($\\rho={run.snr:.2f}$)"
+
+
 def plot_single_corner(run: RunPosterior, output_dir: Path) -> None:
     """Plot a single corner plot when only one posterior is available."""
+    run = _corner_run(run)
     if corner is None:
         print("corner package not installed; skipping corner plot.")
         return
@@ -361,24 +444,21 @@ def plot_single_corner(run: RunPosterior, output_dir: Path) -> None:
     axes = np.asarray(fig.axes).reshape((len(run.labels), len(run.labels)))
     legend_ax = axes[0, -1]
 
-    # Configure all axis formatting consistently
-    _configure_axes_formatting(fig, len(run.labels))
+    # Configure all axis formatting consistently and get delta info
+    delta_used = _configure_axes_formatting(fig, len(run.labels), run.truth)
 
     legend_ax.legend(
         handles=[
-            Patch(facecolor="tab:blue", alpha=0.5, label=run.name),
+            Patch(facecolor="tab:blue", alpha=0.5, label=_legend_run_label(run)),
             plt.Line2D([0], [0], color="black", ls="-", lw=1.5, label="Truth"),
         ],
         loc="upper left",
         fontsize=14,
         frameon=False,
         fancybox=False,
-        # edgecolor="F",
         framealpha=0.0,
-        # make big
         handlelength=1.5,
         handleheight=1.5,
-        # increase spacing
         labelspacing=0.3,
     )
     save_figure(fig, output_dir, "corner_source_1")
@@ -499,6 +579,8 @@ def build_comparison_diagnostics(
 
 
 def plot_corner(run_a: RunPosterior, run_b: RunPosterior, output_dir: Path) -> None:
+    run_a = _corner_run(run_a)
+    run_b = _corner_run(run_b)
     if corner is None:
         print("corner package not installed; skipping corner plot.")
         return
@@ -542,22 +624,22 @@ def plot_corner(run_a: RunPosterior, run_b: RunPosterior, output_dir: Path) -> N
     axes = np.asarray(fig.axes).reshape((len(run_a.labels), len(run_a.labels)))
     legend_ax = axes[0, -1]
 
-    # Configure all axis formatting consistently
-    _configure_axes_formatting(fig, len(run_a.labels))
+    # Configure all axis formatting consistently and get delta info
+    delta_used = _configure_axes_formatting(fig, len(run_a.labels), run_a.truth)
 
     legend_ax.legend(
         handles=[
-            Patch(facecolor="tab:blue", alpha=0.5, label=run_a.name),
-            Patch(facecolor="tab:orange", alpha=0.5, label=run_b.name),
+            Patch(facecolor="tab:blue", alpha=0.5, label=_legend_run_label(run_a)),
+            Patch(facecolor="tab:orange", alpha=0.5, label=_legend_run_label(run_b)),
             plt.Line2D([0], [0], color="black", ls="-", lw=1.5, label="Truth"),
         ],
         loc="upper left",
         fontsize=14,
         frameon=False,
         fancybox=False,
-        # edgecolor="black",
         framealpha=0.0,
     )
+
     save_figure(fig, output_dir, "corner_source_1")
 
 
