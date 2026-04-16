@@ -368,12 +368,68 @@ def save_corner_plot(
         samples,
         labels=labels,
         truths=np.asarray(truth, dtype=float),
-        truth_color="tab:red",
+        truth_color="black",
         quantiles=[0.05, 0.5, 0.95],
         show_titles=True,
         title_kwargs={"fontsize": 10},
     )
     return save_figure(fig, output_dir, stem)
+
+
+def save_corner_plot_dual(
+    samples_primary: np.ndarray,
+    samples_secondary: np.ndarray | None,
+    *,
+    truth: np.ndarray,
+    output_dir: Path,
+    primary_name: str,
+    secondary_name: str,
+    labels: list[str],
+) -> Path:
+    """Render corner plot with unified colors: freq (blue), WDM (orange).
+
+    Args:
+        samples_primary: Primary posterior samples (freq if freq is running, else WDM)
+        samples_secondary: Secondary posterior samples (WDM if freq is running, else freq)
+        truth: Injected truth vector
+        output_dir: Output directory
+        primary_name: Name of primary domain ("freq" or "wdm")
+        secondary_name: Name of secondary domain ("wdm" or "freq")
+        labels: Parameter labels
+
+    Returns:
+        Path to saved corner.png
+    """
+    samples_primary = np.asarray(samples_primary, dtype=float)
+    if samples_primary.ndim != 2 or samples_primary.shape[0] <= samples_primary.shape[1]:
+        return output_dir / "corner.png"
+
+    # Color scheme: freq=blue (C0), wdm=orange (C1)
+    primary_color = "C0" if primary_name == "freq" else "C1"
+
+    # Create corner plot with primary posterior
+    fig = corner.corner(
+        samples_primary,
+        labels=labels,
+        truths=np.asarray(truth, dtype=float),
+        truth_color="black",
+        truth_linewidth=2,
+        quantiles=[0.05, 0.5, 0.95],
+        show_titles=True,
+        title_kwargs={"fontsize": 10},
+        color=primary_color,
+        fill_contours=False,
+        plot_density=False,
+    )
+
+    # Overlay secondary if available
+    if samples_secondary is not None:
+        samples_secondary = np.asarray(samples_secondary, dtype=float)
+        if samples_secondary.ndim == 2 and samples_secondary.shape[0] > samples_secondary.shape[1]:
+            secondary_color = "C0" if secondary_name == "freq" else "C1"
+            corner.overplot_lines(fig, samples_secondary, color=secondary_color, alpha=0.5, linewidth=1.5)
+
+    return save_figure(fig, output_dir, "corner")
 
 
 def floor_pow2(n: int) -> int:
