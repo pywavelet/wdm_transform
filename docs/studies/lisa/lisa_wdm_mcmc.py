@@ -78,6 +78,7 @@ N_DRAWS = int(os.getenv("LISA_N_DRAWS", "1000"))
 # recovering the same f0 precision.
 NT = int(os.getenv("LISA_NT", "32"))
 SHOW_PROGRESS = os.getenv("LISA_PROGRESS_BAR", "1").strip().lower() in {"1", "true", "yes", "on"}
+F0_JITTER_WIDTH = float(os.getenv("LISA_F0_JITTER_WIDTH", "0.001"))  # log-space half-width
 INIT_JITTER_SCALE = float(os.getenv("LISA_INIT_JITTER_SCALE", "0.15"))
 NUTS_TARGET_ACCEPT = float(os.getenv("LISA_NUTS_TARGET_ACCEPT", "0.85"))
 NUTS_MAX_TREE_DEPTH = int(os.getenv("LISA_NUTS_MAX_TREE_DEPTH", "10"))
@@ -165,6 +166,7 @@ class WdmBandData:
     noise_var_band_T: np.ndarray
     t_obs: float
     f0_init: float
+    logf0_init: float  # Log of f0_init for f0_jitter model
     prior_center: np.ndarray
     prior_scale: np.ndarray
     logf0_bounds: tuple[float, float]
@@ -292,6 +294,7 @@ def build_wdm_band(
         noise_var_band_T=noise_var_band_T,
         t_obs=t_obs,
         f0_init=f0_init,
+        logf0_init=float(np.log(f0_init)),
         prior_center=prior_info.prior_center,
         prior_scale=prior_info.prior_scale,
         logf0_bounds=prior_info.logf0_bounds,
@@ -416,27 +419,24 @@ def sample_source_wdm(wband: WdmBandData, *, seed: int = 0) -> MCMC:
         )
 
     def model():
-        z_logf0 = numpyro.sample("z_logf0", normal01)
+        # Sample frequency jitter around fixed f0 (matched-filter estimate)
+        delta_logf0 = numpyro.sample(
+            "delta_logf0",
+            dist.Uniform(-F0_JITTER_WIDTH, F0_JITTER_WIDTH),
+        )
+        logf0 = wband.logf0_init + delta_logf0
+
         z_logfdot = numpyro.sample("z_logfdot", normal01)
         z_logA = numpyro.sample("z_logA", normal01)
         u_phi_c = numpyro.sample("u_phi_c", dist.Uniform(-1.0, 1.0))
 
-        logf0 = wband.prior_center[0] + wband.prior_scale[0] * z_logf0
         logfdot = wband.prior_center[1] + wband.prior_scale[1] * z_logfdot
         logA = wband.prior_center[2] + wband.prior_scale[2] * z_logA
         phi_c = numpyro.deterministic("phi_c", np.pi * u_phi_c)
 
-        numpyro.factor(
-            "prior_logf0",
-            dist.TruncatedNormal(
-                loc=wband.prior_center[0],
-                scale=wband.prior_scale[0],
-                low=wband.logf0_bounds[0],
-                high=wband.logf0_bounds[1],
-            ).log_prob(logf0)
-            + jnp.log(wband.prior_scale[0])
-            - normal01.log_prob(z_logf0),
-        )
+        # Prior on f0_jitter (uniform)
+        numpyro.factor("prior_delta_logf0", jnp.log(1.0 / (2.0 * F0_JITTER_WIDTH)))
+
         numpyro.factor(
             "prior_logfdot",
             dist.TruncatedNormal(
@@ -494,21 +494,16 @@ def sample_source_wdm(wband: WdmBandData, *, seed: int = 0) -> MCMC:
 
     def _project(point: dict[str, jnp.ndarray]) -> dict[str, jnp.ndarray]:
         return {
-            "z_logf0": jnp.clip(point["z_logf0"], z_logf0_bounds[0], z_logf0_bounds[1]),
+            "delta_logf0": jnp.clip(point["delta_logf0"], -F0_JITTER_WIDTH, F0_JITTER_WIDTH),
             "z_logfdot": jnp.clip(point["z_logfdot"], z_logfdot_bounds[0], z_logfdot_bounds[1]),
             "z_logA": jnp.clip(point["z_logA"], z_logA_bounds[0], z_logA_bounds[1]),
             "u_phi_c": jnp.clip(point["u_phi_c"], -1.0, 1.0),
         }
 
     rng = np.random.default_rng(seed + 17)
-    logf0_init = float(np.clip(np.log(wband.f0_init), wband.logf0_bounds[0], wband.logf0_bounds[1]))
-    z_logf0_init = (logf0_init - wband.prior_center[0]) / wband.prior_scale[0]
+    logf0_init = float(wband.logf0_init)
     init_values = {
-        "z_logf0": float(np.asarray(jnp.clip(
-            z_logf0_init + INIT_JITTER_SCALE * rng.standard_normal(),
-            z_logf0_bounds[0],
-            z_logf0_bounds[1],
-        ))),
+        "delta_logf0": 0.0,  # Start at zero jitter
         "z_logfdot": float(np.asarray(jnp.clip(
             INIT_JITTER_SCALE * rng.standard_normal(),
             z_logfdot_bounds[0],
@@ -529,9 +524,9 @@ def sample_source_wdm(wband: WdmBandData, *, seed: int = 0) -> MCMC:
     print(
         "  Init:"
         f" f0_peak={wband.f0_init:.6e}"
-        f" z0=[{init_values['z_logf0']:.3f}, {init_values['z_logfdot']:.3f},"
+        f" z0=[delta_logf0=0.0, {init_values['z_logfdot']:.3f},"
         f" {init_values['z_logA']:.3f}, {init_values['u_phi_c']:.3f}]"
-        f" jitter_scale={INIT_JITTER_SCALE:.2f}"
+        f" f0_jitter=±{F0_JITTER_WIDTH:.2e}"
     )
     print(f"  Timing: init proposal {init_elapsed:.2f} s")
 
