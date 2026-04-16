@@ -56,6 +56,47 @@ def _normalize_phi(samples: np.ndarray, labels: list[str]) -> np.ndarray:
     return wrapped
 
 
+def plot_single_corner(run: RunPosterior, output_dir: Path) -> None:
+    """Plot a single corner plot when only one posterior is available."""
+    if corner is None:
+        print("corner package not installed; skipping corner plot.")
+        return
+    if run.samples.ndim != 2 or run.samples.shape[0] <= run.samples.shape[1]:
+        print("Skipping corner plot: need more samples than plotted dimensions.")
+        return
+
+    fig = corner.corner(
+        run.samples,
+        labels=[label.replace("source 1 ", "") for label in run.labels],
+        truths=run.truth,
+        color="tab:blue",
+        alpha=0.5,
+        plot_datapoints=False,
+        smooth=1.0,
+    )
+
+    from matplotlib.patches import Patch
+
+    axes = np.asarray(fig.axes).reshape((len(run.labels), len(run.labels)))
+    legend_ax = axes[0, -1]
+    legend_ax.legend(
+        handles=[
+            Patch(facecolor="tab:blue", alpha=0.5, label=run.name),
+            plt.Line2D([0], [0], color="tab:red", ls="--", label="truth"),
+        ],
+        loc="upper left",
+        fontsize=8,
+    )
+    save_figure(fig, output_dir, "corner_source_1")
+
+
+def load_run_if_exists(path: Path, name: str) -> RunPosterior | None:
+    """Load a run if the file exists, otherwise return None."""
+    if not path.exists():
+        return None
+    return load_run(path, name)
+
+
 def load_run(path: Path, name: str) -> RunPosterior:
     if not path.exists():
         raise FileNotFoundError(f"Posterior file not found: {path}")
@@ -186,14 +227,28 @@ def main() -> None:
     args = build_parser().parse_args()
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
-    run_a = load_run(args.run_a, args.name_a)
-    run_b = load_run(args.run_b, args.name_b)
-    run_a, run_b, labels = align_common_labels(run_a, run_b)
+    run_a = load_run_if_exists(args.run_a, args.name_a)
+    run_b = load_run_if_exists(args.run_b, args.name_b)
 
+    if run_a is None and run_b is None:
+        print(f"Error: No posterior files found.")
+        print(f"  Expected WDM at: {args.run_a}")
+        print(f"  Expected Freq at: {args.run_b}")
+        return
+
+    if run_a is None or run_b is None:
+        # Only one posterior file exists
+        run = run_a if run_a is not None else run_b
+        report_run(run)
+        plot_single_corner(run, args.output_dir)
+        print(f"\nSaved corner plot to {args.output_dir / 'corner_source_1.png'}")
+        return
+
+    # Both runs exist
+    run_a, run_b, labels = align_common_labels(run_a, run_b)
     report_run(run_a)
     report_run(run_b)
     compare_summary(run_a, run_b, labels)
-
     plot_corner(run_a, run_b, args.output_dir)
 
     print("\nSaved comparison figures:")

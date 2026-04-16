@@ -61,8 +61,10 @@ def main() -> None:
 
     snrs = []
     samples = []
+    f0_ref = None
+    prior_f0 = prior_fdot = prior_A = None
     for _ in range(args.n):
-        source, prior_f0, prior_fdot, prior_A = draw_source_prior_and_params(rng)
+        source, f0_ref, _, prior_f0, prior_fdot, prior_A = draw_source_prior_and_params(rng)
         source_Af, source_Ef, source_Tf = source_frequency_series(source)
         snr_A = matched_filter_snr_rfft(source_Af, psd_A, freqs, dt=inj.dt)
         snr_E = matched_filter_snr_rfft(source_Ef, psd_E, freqs, dt=inj.dt)
@@ -92,6 +94,7 @@ def main() -> None:
         f" A=[{samples[:, 2].min():.6e}, {samples[:, 2].max():.6e}]"
     )
     print("Saved prior bounds used for every draw:")
+    print(f"  f_ref = {f0_ref:.6e} Hz")
     print(f"  f0   = [{prior_f0[0]:.6e}, {prior_f0[1]:.6e}] Hz")
     print(f"  fdot = [{prior_fdot[0]:.6e}, {prior_fdot[1]:.6e}] Hz/s")
     print(f"  A    = [{prior_A[0]:.6e}, {prior_A[1]:.6e}]")

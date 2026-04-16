@@ -29,6 +29,7 @@ from lisa_common import (
     ensure_output_dir,
     freqs_gal,
     galactic_psd,
+    lisa_f0_jitter_width,
     noise_tdi15_psd,
     omega_gw,
     place_local_tdi,
@@ -65,14 +66,12 @@ def _save_plot_once_to_cache(stem: str, draw_plot) -> None:
         if not run_path.exists():
             ensure_output_dir(run_path.parent)
             shutil.copy2(cache_path, run_path)
-        print(f"Reusing cached plot: {cache_path}")
         return
 
     draw_plot()
     save_figure(plt.gcf(), CACHE_DIR, stem)
     ensure_output_dir(run_path.parent)
     shutil.copy2(cache_path, run_path)
-    print(f"Saved cached plot: {cache_path}")
 
 
 def _print_runtime() -> None:
@@ -346,8 +345,7 @@ def main():
         if INCLUDE_GALACTIC
         else "stationary instrument noise"
     )
-    print(f"Generating injection mode: {mode_label}")
-    print(f"Using LISA_SEED = {RNG_SEED}")
+    print(f"Generating {mode_label} (seed={RNG_SEED})")
 
     # ── 1. Frequency grid and galactic PSD ────────────────────────────────────
     frequencies = freqs_gal()
@@ -406,7 +404,6 @@ def main():
     if INCLUDE_GALACTIC:
         # ── 3. Spacecraft orbits ──────────────────────────────────────────────
         times = np.linspace(0, TS, 365)
-        print("Using lisaorbits.EqualArmlengthOrbits() for constellation geometry")
         x_all = lisaorbits_positions(times)
 
         # Vectorised arm unit vectors: shape (3, 3, ntimes, 3)
@@ -419,14 +416,12 @@ def main():
         rtildeop_path = RESPONSE_TENSOR_PATH
         ensure_output_dir(rtildeop_path.parent)
         if rtildeop_path.exists():
-            print(f"Loading cached response tensor from {rtildeop_path}")
             Rtildeop_tf_times_H = np.load(rtildeop_path)["Rtildeop_tf"]
             assert Rtildeop_tf_times_H.shape[2] == NTIMES_RESPONSE, (
                 f"Cached tensor has ntimes={Rtildeop_tf_times_H.shape[2]}, "
                 f"expected {NTIMES_RESPONSE}.  Delete the cache and rerun."
             )
         else:
-            print("Cache not found — computing response tensor (slow)…")
             Rtildeijtf = np.zeros((3, 3, NTIMES_RESPONSE, len(frequencies)), dtype=np.complex128)
             with get_process_pool() as pool:
                 for fi, res in tqdm(
@@ -445,7 +440,6 @@ def main():
             )
             Rtildeop_tf_times_H = np.einsum("oi,pj,ijtf->optf", cmat, cmat, Rtildeijtf)
             np.savez(rtildeop_path, Rtildeop_tf=Rtildeop_tf_times_H)
-            print(f"Saved response tensor to {rtildeop_path}")
 
         ntimes = Rtildeop_tf_times_H.shape[2]
 
@@ -544,7 +538,7 @@ def main():
     gb_orbit = lisaorbits.EqualArmlengthOrbits()
     jgb_full = JaxGB(gb_orbit, t_obs=yr, t0=0.0, n=256)
 
-    source_params_row, prior_f0, prior_fdot, prior_A = draw_source_prior_and_params(rng)
+    source_params_row, f0_ref, delta_logf0_true, prior_f0, prior_fdot, prior_A = draw_source_prior_and_params(rng)
     source_params = source_params_row.reshape(1, -1)
     src = source_params[0]
 
@@ -567,15 +561,14 @@ def main():
     if snr_aet <= 0.0:
         raise ValueError("Generated GB template has non-positive SNR before amplitude rescaling.")
 
-    print("\nInjecting 1 resolved GB source with JaxGB:")
-    print(f"  seed = {RNG_SEED}")
-    print(f"  f0 = {src[0]:.5e} Hz")
-    print(f"  fdot = {src[1]:.5e} Hz/s")
-    print(f"  A = {src[2]:.5e}")
-    print(f"  SNR (A+E+T) = {snr_aet:.1f}")
-    print(f"  fixed prior f0   = [{prior_f0[0]:.5e}, {prior_f0[1]:.5e}] Hz")
-    print(f"  fixed prior fdot = [{prior_fdot[0]:.5e}, {prior_fdot[1]:.5e}] Hz/s")
-    print(f"  fixed prior A    = [{prior_A[0]:.5e}, {prior_A[1]:.5e}]")
+    print(
+        "Injected GB:"
+        f" f_ref={f0_ref:.5e} Hz"
+        f" f0={src[0]:.5e} Hz"
+        f" fdot={src[1]:.5e} Hz/s"
+        f" A={src[2]:.5e}"
+        f" SNR={snr_aet:.1f}"
+    )
 
     data_At = irfft(a_bg_f + source_Af, n=Nsamp_tot)
     data_Et = irfft(e_bg_f + source_Ef, n=Nsamp_tot)
@@ -623,6 +616,9 @@ def main():
         data_Et=data_Et,
         data_Tt=data_Tt,
         source_params=source_params,
+        f0_ref=np.array(f0_ref, dtype=float),
+        f0_jitter_width=np.array(lisa_f0_jitter_width(), dtype=float),
+        delta_logf0_true=np.array(delta_logf0_true, dtype=float),
         prior_f0=np.asarray(prior_f0, dtype=float),
         prior_fdot=np.asarray(prior_fdot, dtype=float),
         prior_A=np.asarray(prior_A, dtype=float),
@@ -631,9 +627,7 @@ def main():
         source_snrs_aet=np.array([snr_aet], dtype=float),
         include_galactic=np.array(int(INCLUDE_GALACTIC)),
     )
-    print(f"\nSaved injection to {INJECTION_PATH}")
-    print(f"  T_obs = {yr / 86400:.1f} days,  dt = {dt:.2f} s,  N = {Nsamp_tot}")
-    print(f"  mode = {mode_label}")
+    print(f"Saved injection to {INJECTION_PATH}")
 
 
 if __name__ == "__main__":

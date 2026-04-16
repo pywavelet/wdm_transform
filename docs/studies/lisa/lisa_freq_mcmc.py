@@ -46,7 +46,6 @@ from lisa_common import (
     build_sampled_source_params,
     interp_psd_channels,
     load_injection,
-    save_corner_plot_dual,
     save_posterior_archive,
     setup_jax_and_matplotlib,
     source_truth_vector,
@@ -61,7 +60,6 @@ jax.config.update("jax_enable_x64", True)
 N_WARMUP = int(os.getenv("LISA_N_WARMUP", "800"))
 N_DRAWS = int(os.getenv("LISA_N_DRAWS", "1000"))
 SHOW_PROGRESS = os.getenv("LISA_PROGRESS_BAR", "1")
-F0_JITTER_WIDTH = float(os.getenv("LISA_F0_JITTER_WIDTH", "0.001"))  # log-space half-width
 
 
 # ── Load and truncate data ────────────────────────────────────────────────────
@@ -76,13 +74,12 @@ dt = inj.dt
 t_obs_saved = inj.t_obs
 INJECTION_SEED = inj.seed
 data_aet_full = np.stack([inj.data_At, inj.data_Et, inj.data_Tt], axis=0)
-noise_psd_saved_aet = np.stack(
-    [inj.noise_psd_A, inj.noise_psd_E, inj.noise_psd_T],
-    axis=0,
-)
+noise_psd_saved_aet = np.stack([inj.noise_psd_A, inj.noise_psd_E, inj.noise_psd_T], axis=0,)
 freqs_saved = inj.freqs
 SOURCE_PARAMS = inj.source_params
 SOURCE_PARAM = SOURCE_PARAMS[0].copy()
+F0_REF = inj.f0_ref
+F0_JITTER_WIDTH = inj.f0_jitter_width
 MCMC_SEED = int(os.getenv("LISA_MCMC_SEED", str(INJECTION_SEED + 10)))
 
 data_aet = data_aet_full
@@ -95,15 +92,9 @@ n_freq = len(freqs)
 
 noise_psd_full_aet = interp_psd_channels(freqs, freqs_saved, noise_psd_saved_aet)
 
-print(f"Loaded injection from {INJECTION_PATH.name}")
 print(
-    f"T_obs = {t_obs / 86400:.1f} days  dt = {dt:.2f} s  "
-    f"N = {data_aet.shape[1]}  df = {df:.3e} Hz"
-)
-print(f"Injection seed = {INJECTION_SEED}  MCMC seed = {MCMC_SEED}")
-print(
-    f"Analysis priors match injection priors: "
-    f"f0 in [{inj.prior_f0[0]:.6e}, {inj.prior_f0[1]:.6e}] Hz"
+    f"T_obs={t_obs/86400:.1f}d, N={data_aet.shape[1]}, "
+    f"seed={INJECTION_SEED}, MCMC_seed={MCMC_SEED}"
 )
 
 # ── JaxGB generator ───────────────────────────────────────────────────────────
@@ -121,6 +112,7 @@ def source_aet_band(
         kmin=int(kmin),
         kmax=int(kmax),
         tdi_combination="AET",
+        # should we specify TDI 1.5 for get_tdi_kwargs?
     )
     return jnp.stack(
         [
@@ -144,6 +136,7 @@ class BandData:
     band_kmin: int
     band_kmax: int
     f0_init: float
+    logf0_ref: float
     prior_center: np.ndarray
     prior_scale: np.ndarray
     logf0_bounds: tuple[float, float]
@@ -154,13 +147,12 @@ class BandData:
 def build_band(
     params: np.ndarray,
     label: str,
+    f0_ref: float,
     prior_f0: tuple[float, float],
     prior_fdot: tuple[float, float],
     prior_A: tuple[float, float],
 ) -> BandData:
-    # In this single-injection workflow, use the injected f0 directly as the
-    # near-truth initialization for MCMC.
-    f0_init = float(params[0])
+    f0_init = float(f0_ref)
 
     kmin = max(int(np.floor(prior_f0[0] * t_obs)) - jgb.n, 0)
     kmax = min(int(np.ceil(prior_f0[1] * t_obs)) + jgb.n + 1, n_freq)
@@ -184,6 +176,7 @@ def build_band(
         band_kmin=kmin,
         band_kmax=kmax,
         f0_init=f0_init,
+        logf0_ref=float(np.log(f0_ref)),
         prior_center=prior_info.prior_center,
         prior_scale=prior_info.prior_scale,
         logf0_bounds=prior_info.logf0_bounds,
@@ -195,13 +188,12 @@ def build_band(
 BAND = build_band(
     SOURCE_PARAM,
     "Injected GB",
+    F0_REF,
     inj.prior_f0,
     inj.prior_fdot,
     inj.prior_A,
 )
 
-# ── Per-source SNR ────────────────────────────────────────────────────────────
-print("\nMatched-filter SNR (A+E+T channels):")
 h_aet = source_aet_band(
     jnp.asarray(SOURCE_PARAM, dtype=jnp.float64),
     int(BAND.band_kmin),
@@ -220,13 +212,12 @@ snr_channels = np.array(
     dtype=float,
 )
 snr_optimal = float(np.linalg.norm(snr_channels))
-print(f"  {BAND.label}: SNR = {snr_optimal:.1f}")
+print(f"Frequency band SNR={snr_optimal:.1f}")
 
 
 # ── Diagnostic: data, signal, and priors ──────────────────────────────────
 def make_diagnostic_plots(band: BandData, jgb_obj, true_params: np.ndarray) -> None:
     """Plot data + true signal + prior samples for sanity check."""
-    print("\nGenerating diagnostic plots…")
 
     def source_aet_band_diag(params, kmin_in, kmax_in):
         A, E, T = jgb_obj.sum_tdi(
@@ -249,10 +240,10 @@ def make_diagnostic_plots(band: BandData, jgb_obj, true_params: np.ndarray) -> N
 
     # Prior samples with f0_jitter model
     np.random.seed(42)
-    n_prior = 30
-    logf0_true = np.log(true_params[0])
+    n_prior = 100
+    logf0_true = np.log(band.f0_init)
     delta_logf0_prior = np.random.uniform(-F0_JITTER_WIDTH, F0_JITTER_WIDTH, n_prior)
-    logf0_prior = logf0_true + delta_logf0_prior  # Jitter around true f0
+    logf0_prior = logf0_true + delta_logf0_prior  # Jitter around fixed f_ref
     logfdot_prior = np.random.normal(band.prior_center[1], band.prior_scale[1], n_prior)
     logA_prior = np.random.normal(band.prior_center[2], band.prior_scale[2], n_prior)
     phi0_prior = np.random.uniform(-np.pi, np.pi, n_prior)
@@ -272,11 +263,6 @@ def make_diagnostic_plots(band: BandData, jgb_obj, true_params: np.ndarray) -> N
 
     nll_truth = nll_channel(np.log(true_params[0]), np.log(true_params[1]), np.log(true_params[2]), true_params[7], 0)
     nlls_prior = [nll_channel(logf0_prior[i], logfdot_prior[i], logA_prior[i], phi0_prior[i], 0) for i in range(n_prior)]
-
-    print(f"  NLL at truth: {nll_truth:.1f}")
-    print(f"  NLL at prior samples: mean={np.mean(nlls_prior):.1f}, min={np.min(nlls_prior):.1f}, max={np.max(nlls_prior):.1f}")
-    print(f"  Δ NLL (truth - prior_mean): {nll_truth - np.mean(nlls_prior):.1f}")
-
     # Plot
     fig, axes = plt.subplots(3, 2, figsize=(14, 10))
     ch_names = ["A", "E", "T"]
@@ -320,7 +306,6 @@ def make_diagnostic_plots(band: BandData, jgb_obj, true_params: np.ndarray) -> N
     diagnostic_path = RUN_DIR / "diagnostic_data_signal_priors.png"
     RUN_DIR.mkdir(parents=True, exist_ok=True)
     plt.savefig(diagnostic_path, dpi=100, bbox_inches="tight")
-    print(f"  Saved to {diagnostic_path}")
     plt.close()
 
 
@@ -342,40 +327,24 @@ def sample_source(band: BandData, *, seed: int = 0, snr_optimal: float = None):
 
     dt_j = jnp.asarray(dt, dtype=jnp.float64)
     df_j = jnp.asarray(df, dtype=jnp.float64)
-
-    # Deterministic near-truth initialization
-    f0_true = float(band.fixed_params[0])
-    fdot_true = float(band.fixed_params[1])
-    A_true = float(band.fixed_params[2])
-    phi0_true = float(band.fixed_params[7])
-
+    init_clip_eps = 1e-6
+    fixed_params_j = jnp.asarray(band.fixed_params, dtype=jnp.float64)
+    delta_logf0_true = float(np.log(band.fixed_params[0]) - band.logf0_ref)
+    phi0_true = float(np.clip(band.fixed_params[7], -np.pi + init_clip_eps, np.pi - init_clip_eps))
     init_values = {
-        "logf0": float(np.log(f0_true)),
-        "logfdot": float(np.log(fdot_true)),
-        "logA": float(np.log(A_true)),
-        "phi0": float(phi0_true),
+        "delta_logf0": float(np.clip(delta_logf0_true, -F0_JITTER_WIDTH + init_clip_eps, F0_JITTER_WIDTH - init_clip_eps)),
+        "logfdot": float(np.clip(np.log(band.fixed_params[1]), band.logfdot_bounds[0] + init_clip_eps, band.logfdot_bounds[1] - init_clip_eps)),
+        "logA": float(np.clip(np.log(band.fixed_params[2]), band.logA_bounds[0] + init_clip_eps, band.logA_bounds[1] - init_clip_eps)),
+        "phi0": phi0_true,
     }
-
-    init_elapsed = time.perf_counter() - init_start_time
-    print(
-        "  Init:"
-        f" f0_peak={band.f0_init:.6e}"
-        f" params=[{init_values['logf0']:.3f}, {init_values['logfdot']:.3f},"
-        f" {init_values['logA']:.3f}, {init_values['phi0']:.3f}]"
-        f" (direct truth, f0 fixed ±{F0_JITTER_WIDTH:.2e})"
-    )
-    print(f"  Timing: init proposal {init_elapsed:.2f} s")
 
     def model():
         """NumPyro generative model with f0_jitter."""
-        # Sample frequency jitter around fixed f0
         delta_logf0 = numpyro.sample(
             "delta_logf0",
             dist.Uniform(-F0_JITTER_WIDTH, F0_JITTER_WIDTH),
         )
-        logf0 = init_values["logf0"] + delta_logf0
-
-        # Sample other parameters with priors
+        logf0 = band.logf0_ref + delta_logf0
         logfdot = numpyro.sample(
             "logfdot",
             dist.TruncatedNormal(
@@ -396,54 +365,37 @@ def sample_source(band: BandData, *, seed: int = 0, snr_optimal: float = None):
         )
         phi0 = numpyro.sample("phi0", dist.Uniform(-jnp.pi, jnp.pi))
 
-        # Deterministic transforms
         f0 = numpyro.deterministic("f0", jnp.exp(logf0))
         fdot = numpyro.deterministic("fdot", jnp.exp(logfdot))
         A = numpyro.deterministic("A", jnp.exp(logA))
-        phi0_waveform = numpyro.deterministic("phi0_waveform", phi0)
 
-        # Build parameter vector
-        params = jnp.asarray(band.fixed_params, dtype=jnp.float64)
-        params = params.at[0].set(f0)
-        params = params.at[1].set(fdot)
-        params = params.at[2].set(A)
-        params = params.at[7].set(phi0_waveform)
+        params = fixed_params_j.at[0].set(f0).at[1].set(fdot).at[2].set(A).at[7].set(phi0)
 
-        # Waveform
         h_aet = source_aet_band(params, band.band_kmin, band.band_kmax)
 
-        # Whittle likelihood
         residual_phys = dt_j * (data_aet_j - h_aet)
         numpyro.factor(
             "whittle",
             -jnp.sum(jnp.log(psd_aet_j) + 2.0 * df_j * jnp.abs(residual_phys) ** 2 / psd_aet_j),
         )
 
-    # Initialize at truth
     init_strategy = init_to_value(
-        values={
-            "delta_logf0": 0.0,
-            "logfdot": init_values["logfdot"],
-            "logA": init_values["logA"],
-            "phi0": init_values["phi0"],
-        }
+        values=init_values
     )
 
     kernel = NUTS(model, init_strategy=init_strategy)
     mcmc = MCMC(kernel, num_warmup=N_WARMUP, num_samples=N_DRAWS, progress_bar=bool(SHOW_PROGRESS))
 
     mcmc_start_time = time.perf_counter()
-    print(f"  Running NUTS ({N_WARMUP} warmup + {N_DRAWS} draws)…")
     mcmc.run(jax.random.PRNGKey(seed))
     mcmc_elapsed = time.perf_counter() - mcmc_start_time
-    print(f"  Timing: NUTS warmup+sampling {mcmc_elapsed:.2f} s")
 
     # Extract samples
     samples = mcmc.get_samples()
 
-    # Convert delta_logf0 back to logf0
+    # Convert delta_logf0 back to logf0 around the fixed study reference.
     delta_logf0_samples = np.asarray(samples["delta_logf0"])
-    logf0_samples = init_values["logf0"] + delta_logf0_samples
+    logf0_samples = band.logf0_ref + delta_logf0_samples
 
     samples_dict = {
         "logf0": logf0_samples,
@@ -462,19 +414,13 @@ def sample_source(band: BandData, *, seed: int = 0, snr_optimal: float = None):
     }
 
 
-print("\nRunning NUTS for the injected source…")
-print(f"\n─── {BAND.label} ───")
 mcmc_result = sample_source(BAND, seed=MCMC_SEED, snr_optimal=snr_optimal)
 
 mcmc = mcmc_result["mcmc"]
-print("\nNUTS diagnostics:")
 nuts_extra = mcmc.get_extra_fields()
 n_div = int(nuts_extra.get("diverging", [0]).sum()) if "diverging" in nuts_extra else 0
-print(f"  Divergences: {n_div}")
-if N_DRAWS >= 4:
-    mcmc.print_summary(exclude_deterministic=False)
-else:
-    print("  Skipping summary: need at least 4 draws for R-hat diagnostics.")
+if n_div > 0:
+    print(f"WARNING: {n_div} divergences")
 
 s = mcmc_result["samples"]
 
@@ -520,7 +466,6 @@ def _get_snrs(ps: jnp.ndarray) -> jnp.ndarray:
 snr_eval_start = time.perf_counter()
 snr_samples = np.asarray(_get_snrs(jnp.asarray(samples_full, dtype=jnp.float64)))
 snr_eval_elapsed = time.perf_counter() - snr_eval_start
-print(f"  Timing: posterior SNR evaluation {snr_eval_elapsed:.2f} s")
 
 samples_to_save = np.column_stack([samples_report, snr_samples])
 
@@ -535,33 +480,4 @@ _out_path = save_posterior_archive(
     labels=PARAM_NAMES,
     truth=truth,
 )
-print(f"\nSaved posteriors to {_out_path}")
-
-# Generate corner plot with unified colors and overlays
-print("\nGenerating corner plot…")
-try:
-    wdm_posterior_path = RUN_DIR / "wdm_posteriors.npz"
-    wdm_samples_overlay = None
-    if wdm_posterior_path.exists():
-        print("  Loading WDM posterior for overlay…")
-        with np.load(wdm_posterior_path) as wdm_data:
-            wdm_samples = np.asarray(wdm_data["samples_source"], dtype=float)
-            wdm_labels = [str(item) for item in np.asarray(wdm_data["labels"]).tolist()]
-
-        # Extract matching parameters (f0, fdot, A, phi0)
-        keep_cols = [i for i, label in enumerate(wdm_labels) if any(x in label.lower() for x in ["f0", "fdot", "a [", "phi0"])]
-        if len(keep_cols) == 4:
-            wdm_samples_overlay = wdm_samples[:, keep_cols]
-
-    corner_path = save_corner_plot_dual(
-        samples_report,
-        wdm_samples_overlay,
-        truth=truth[:4],
-        output_dir=RUN_DIR,
-        primary_name="freq",
-        secondary_name="wdm",
-        labels=PARAM_NAMES[:4],
-    )
-    print(f"Saved corner plot to {corner_path}")
-except Exception as e:
-    print(f"Could not generate corner plot: {e}")
+print(f"Saved frequency posteriors to {_out_path}")

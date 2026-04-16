@@ -36,9 +36,9 @@ F0_GLOBAL_BOUNDS = (
     float(SOURCE_CATALOG[:, 0].max() + 1.5e-5),
 )
 FDOT_GLOBAL_BOUNDS = (5.0e-19, 4.0e-18)
-FIXED_F0_PRIOR_BOUNDS = F0_GLOBAL_BOUNDS
 FIXED_FDOT_PRIOR_BOUNDS = FDOT_GLOBAL_BOUNDS
 FIXED_A_PRIOR_BOUNDS = (6.0e-24, 1.7e-23)
+F0_REF = float(np.mean(SOURCE_CATALOG[:, 0]))
 
 
 # ── Filesystem helpers ────────────────────────────────────────────────────────
@@ -60,6 +60,10 @@ def lisa_include_galactic() -> bool:
 
 def lisa_seed() -> int:
     return int(os.getenv("LISA_SEED", "0"))
+
+
+def lisa_f0_jitter_width() -> float:
+    return float(os.getenv("LISA_F0_JITTER_WIDTH", "0.001"))
 
 
 def lisa_mode_dirname(*, include_galactic: bool | None = None) -> str:
@@ -164,6 +168,9 @@ class InjectionData:
     noise_psd_T: np.ndarray
     freqs: np.ndarray
     source_params: np.ndarray
+    f0_ref: float
+    f0_jitter_width: float
+    delta_logf0_true: float
     prior_f0: tuple[float, float]
     prior_fdot: tuple[float, float]
     prior_A: tuple[float, float]
@@ -172,10 +179,14 @@ class InjectionData:
 def load_injection(path: Path = INJECTION_PATH) -> InjectionData:
     """Load one seeded LISA injection archive into a typed container."""
     with np.load(path) as inj:
-        missing_prior_keys = [key for key in ("prior_f0", "prior_fdot", "prior_A") if key not in inj]
+        missing_prior_keys = [
+            key
+            for key in ("prior_f0", "prior_fdot", "prior_A", "f0_ref", "f0_jitter_width", "delta_logf0_true")
+            if key not in inj
+        ]
         if missing_prior_keys:
             raise ValueError(
-                f"{path} is missing shared prior metadata {missing_prior_keys}. "
+                f"{path} is missing shared injection metadata {missing_prior_keys}. "
                 "Regenerate this injection with docs/studies/lisa/data_generation.py."
             )
         source_params = require_positive_fdot(
@@ -194,6 +205,9 @@ def load_injection(path: Path = INJECTION_PATH) -> InjectionData:
             noise_psd_T=np.asarray(inj["noise_psd_T"], dtype=float),
             freqs=np.asarray(inj["freqs"], dtype=float),
             source_params=np.atleast_2d(np.asarray(source_params, dtype=float)),
+            f0_ref=float(np.asarray(inj["f0_ref"]).reshape(-1)[0]),
+            f0_jitter_width=float(np.asarray(inj["f0_jitter_width"]).reshape(-1)[0]),
+            delta_logf0_true=float(np.asarray(inj["delta_logf0_true"]).reshape(-1)[0]),
             prior_f0=tuple(np.asarray(inj["prior_f0"], dtype=float).reshape(2)),
             prior_fdot=tuple(np.asarray(inj["prior_fdot"], dtype=float).reshape(2)),
             prior_A=tuple(np.asarray(inj["prior_A"], dtype=float).reshape(2)),
@@ -266,13 +280,19 @@ def build_local_prior_info(
 
 def draw_source_prior_and_params(
     rng: np.random.Generator,
-) -> tuple[np.ndarray, tuple[float, float], tuple[float, float], tuple[float, float]]:
-    """Draw one source from the fixed generation/analysis priors."""
-    prior_f0 = tuple(float(x) for x in FIXED_F0_PRIOR_BOUNDS)
+) -> tuple[np.ndarray, float, float, tuple[float, float], tuple[float, float], tuple[float, float]]:
+    """Draw one source conditioned on a fixed external search reference frequency."""
+    f0_ref = F0_REF
+    f0_jitter_width = lisa_f0_jitter_width()
+    prior_f0 = (
+        float(f0_ref * np.exp(-f0_jitter_width)),
+        float(f0_ref * np.exp(f0_jitter_width)),
+    )
     prior_fdot = tuple(float(x) for x in FIXED_FDOT_PRIOR_BOUNDS)
     prior_A = tuple(float(x) for x in FIXED_A_PRIOR_BOUNDS)
 
-    f0 = draw_positive_parameter_from_bounds(rng, prior_f0)
+    delta_logf0_true = float(rng.uniform(-f0_jitter_width, f0_jitter_width))
+    f0 = float(f0_ref * np.exp(delta_logf0_true))
     fdot = draw_positive_parameter_from_bounds(rng, prior_fdot)
     A = draw_positive_parameter_from_bounds(rng, prior_A)
     ra = float(rng.uniform(0.0, 2.0 * np.pi))
@@ -284,7 +304,7 @@ def draw_source_prior_and_params(
         [f0, fdot, A, ra, dec, psi, iota, phi0],
         dtype=float,
     )
-    return source, prior_f0, prior_fdot, prior_A
+    return source, f0_ref, delta_logf0_true, prior_f0, prior_fdot, prior_A
 
 
 def estimate_frequency_peak(
@@ -362,84 +382,73 @@ def save_posterior_archive(
     return output_path
 
 
-def save_corner_plot(
-    samples: np.ndarray,
+def load_posterior_samples_source(path: Path) -> np.ndarray:
+    """Load the primary sampled source array from a study posterior archive."""
+    with np.load(path) as archive:
+        if "samples_source" not in archive:
+            raise KeyError(f"{path} does not contain 'samples_source'.")
+        return np.asarray(archive["samples_source"], dtype=float)
+
+
+def print_cross_domain_diagnostics(
     *,
-    truth: np.ndarray,
-    output_dir: Path,
-    stem: str,
     labels: list[str],
-) -> Path:
-    """Render and save one corner plot using the study defaults."""
-    samples = np.asarray(samples, dtype=float)
-    if samples.ndim != 2 or samples.shape[0] <= samples.shape[1]:
-        return output_dir / f"{stem}.png"
-    fig = corner.corner(
-        samples,
-        labels=labels,
-        truths=np.asarray(truth, dtype=float),
-        truth_color="black",
-        quantiles=[0.05, 0.5, 0.95],
-        show_titles=True,
-        title_kwargs={"fontsize": 10},
-    )
-    return save_figure(fig, output_dir, stem)
-
-
-def save_corner_plot_dual(
-    samples_primary: np.ndarray,
-    samples_secondary: np.ndarray | None,
-    *,
     truth: np.ndarray,
-    output_dir: Path,
-    primary_name: str,
-    secondary_name: str,
-    labels: list[str],
-) -> Path:
-    """Render corner plot with unified colors: freq (blue), WDM (orange).
+    wdm_mean: np.ndarray,
+    freq_mean: np.ndarray | None = None,
+    truth_snr_frequency: float | None = None,
+    truth_snr_wdm: float | None = None,
+    wdm_loglike_truth: float | None = None,
+    wdm_loglike_posterior_mean: float | None = None,
+) -> None:
+    """Print a compact WDM vs frequency comparison report for one source."""
+    print("\nCross-domain diagnostics:")
 
-    Args:
-        samples_primary: Primary posterior samples (freq if freq is running, else WDM)
-        samples_secondary: Secondary posterior samples (WDM if freq is running, else freq)
-        truth: Injected truth vector
-        output_dir: Output directory
-        primary_name: Name of primary domain ("freq" or "wdm")
-        secondary_name: Name of secondary domain ("wdm" or "freq")
-        labels: Parameter labels
+    if truth_snr_frequency is not None and truth_snr_wdm is not None:
+        delta = float(truth_snr_wdm - truth_snr_frequency)
+        print(
+            "  Truth SNR: "
+            f"Frequency={truth_snr_frequency:.6f}, "
+            f"WDM={truth_snr_wdm:.6f}, "
+            f"delta={delta:+.3e}"
+        )
 
-    Returns:
-        Path to saved corner.png
-    """
-    samples_primary = np.asarray(samples_primary, dtype=float)
-    if samples_primary.ndim != 2 or samples_primary.shape[0] <= samples_primary.shape[1]:
-        return output_dir / "corner.png"
+    if wdm_loglike_truth is not None and wdm_loglike_posterior_mean is not None:
+        delta = float(wdm_loglike_truth - wdm_loglike_posterior_mean)
+        print(
+            "  WDM log-likelihood: "
+            f"truth={wdm_loglike_truth:.6f}, "
+            f"posterior_mean={wdm_loglike_posterior_mean:.6f}, "
+            f"truth_minus_mean={delta:+.6f}"
+        )
 
-    # Color scheme: freq=blue (C0), wdm=orange (C1)
-    primary_color = "C0" if primary_name == "freq" else "C1"
+    if freq_mean is not None:
+        print("  Posterior-mean deltas (WDM - Frequency):")
+        for label, wdm_value, freq_value in zip(labels, wdm_mean, freq_mean):
+            delta = float(wdm_value - freq_value)
+            if "phi0" in label:
+                delta = float(wrap_phase(delta))
+            print(
+                f"    {label}: "
+                f"WDM={float(wdm_value):.6e}, "
+                f"Frequency={float(freq_value):.6e}, "
+                f"delta={delta:+.6e}"
+            )
 
-    # Create corner plot with primary posterior
-    fig = corner.corner(
-        samples_primary,
-        labels=labels,
-        truths=np.asarray(truth, dtype=float),
-        truth_color="black",
-        truth_linewidth=2,
-        quantiles=[0.05, 0.5, 0.95],
-        show_titles=True,
-        title_kwargs={"fontsize": 10},
-        color=primary_color,
-        fill_contours=False,
-        plot_density=False,
-    )
+    truth_compare = truth[: len(wdm_mean)]
+    print("  Posterior-mean deltas (WDM - Truth):")
+    for label, wdm_value, truth_value in zip(labels, wdm_mean, truth_compare):
+        delta = float(wdm_value - truth_value)
+        if "phi0" in label:
+            delta = float(wrap_phase(delta))
+        print(
+            f"    {label}: "
+            f"WDM={float(wdm_value):.6e}, "
+            f"Truth={float(truth_value):.6e}, "
+            f"delta={delta:+.6e}"
+        )
 
-    # Overlay secondary if available
-    if samples_secondary is not None:
-        samples_secondary = np.asarray(samples_secondary, dtype=float)
-        if samples_secondary.ndim == 2 and samples_secondary.shape[0] > samples_secondary.shape[1]:
-            secondary_color = "C0" if secondary_name == "freq" else "C1"
-            corner.overplot_lines(fig, samples_secondary, color=secondary_color, alpha=0.5, linewidth=1.5)
 
-    return save_figure(fig, output_dir, "corner")
 
 
 def floor_pow2(n: int) -> int:

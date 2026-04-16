@@ -14,7 +14,8 @@ here.
 ## Study structure
 
 1. `data_generation.py` builds a toy anisotropic Galactic foreground, computes the sky-averaged
-   LISA response, injects one seeded resolved Galactic binary, and writes
+   LISA response, injects one seeded resolved Galactic binary with true frequency drawn from a
+   small jitter around a fixed external reference frequency `f_ref`, and writes
    `outdir_lisa/<mode>/seed_<LISA_SEED>/injection.npz`.
 2. `lisa_freq_mcmc.py` loads that cache and performs one local frequency-domain fit with a
    narrow-band Whittle likelihood.
@@ -54,8 +55,9 @@ python docs/studies/lisa/pp_plot.py --mode stationary_noise
 
 - `docs/studies/lisa/outdir_lisa/<mode>/seed_<LISA_SEED>/injection.npz`
 
-That cache stores the A/E/T time series, the PSD grids, the injected source parameters, the
-generation seed, and the SNR summary needed by the follow-on fits.
+That cache stores the A/E/T time series, the PSD grids, the injected source parameters, the fixed
+reference frequency `f_ref`, the injected `delta_logf0_true`, the local follow-up prior bounds,
+the generation seed, and the SNR summary needed by the follow-on fits.
 
 All outputs from the three scripts for a given run now live in the same directory:
 
@@ -88,6 +90,19 @@ $$
 
 where the instrumental noise term $n_A$, the stochastic Galactic foreground $h_{\mathrm{gal}}$, 
 and the single resolved compact-binary signal $h$ are generated with a seed-controlled draw.
+
+This is a conditional local-follow-up study, not a discovery search over broad carrier frequency.
+The scripts assume an external matched-filter stage has already localized the source near a fixed
+reference frequency $f_{\rm ref}$, and the injected true carrier is drawn as a small log-jitter
+around that reference:
+
+$$
+f_0 = f_{\rm ref} \exp(\delta \log f_0),
+\qquad
+\delta \log f_0 \sim \mathrm{Uniform}[-w, +w].
+$$
+
+The same jitter width is then used in both the frequency-domain and WDM-domain posteriors.
 
 The foreground PSD is built from a sky map and a response tensor:
 
@@ -143,20 +158,20 @@ $$
 \right]
 $$
 
-The fitted parameters are $(f_0, \dot{f}, A, \phi_0)$ for the injected source. Sky position, polarization,
-and inclination stay fixed at their injected values to isolate the likelihood machinery rather than
-perform a full eight-parameter search.
+The fitted parameters are $(f_0, \dot{f}, A, \phi_0)$ for the injected source. Sky position,
+polarization, and inclination stay fixed at their injected values to isolate the local likelihood
+machinery rather than perform a full eight-parameter search. In both inference scripts, `f0` is
+represented internally as a jitter around the fixed external reference `f_ref`.
 
-To improve the sampler geometry, the scripts actually sample
-$(\log f_0, \log \dot{f}, \log A, \phi_c)$ where
+To improve the sampler geometry, both scripts sample the phase at mid-observation time,
+$(\log f_0, \log \dot{f}, \log A, \phi_c)$ with
 
 $$
 \phi_c \equiv \phi_0 + 2 \pi f_0 t_c + \pi \dot{f} t_c^2,
 \qquad t_c = T_{\rm obs}/2,
 $$
 
-and then reconstruct $\phi_0$ as a deterministic parameter. This largely removes the strongest
-local $f_0$-$\phi_0$ degeneracy from the HMC coordinates while preserving the same physical model.
+and then reconstruct the waveform phase $\phi_0$ as a deterministic parameter.
 
 ### Outputs
 
@@ -193,7 +208,8 @@ $$
 \right]
 $$
 
-Like the frequency-domain run, the injected binary is fit on a narrow local band.
+Like the frequency-domain run, the injected binary is fit on a narrow local band around the fixed
+external reference `f_ref`.
 
 ### Fast WDM forward model
 
@@ -249,14 +265,16 @@ The current WDM script is the result of a few debugging passes. The important fi
    $$
 
    not a naive `PSD × Δf_wdm` estimate.
-4. Reparameterize the phase with $\phi_c$ at mid-observation time, exactly as in the frequency
-   script.
-5. Most importantly, use a straightforward model-based NumPyro path for the WDM sampler. Earlier
-   WDM sampler variants produced prior-width $f_0$ and $\phi_0$ posteriors even when the underlying
-   WDM likelihood agreed with the frequency-domain likelihood.
+4. Condition the local `f0` coordinate on the same fixed external reference frequency used by the
+   frequency-domain script instead of re-estimating it from the data.
+5. Most importantly, sample the waveform phase directly as `phi0` in the same convention used by
+   the frequency-domain script. Earlier WDM sampler variants used a midpoint-phase
+   reparameterization that could settle into visibly offset $A$, $\phi_0$, and SNR posteriors even
+   when the underlying WDM likelihood normalization was correct.
 
-The final implementation now yields WDM and frequency-domain posteriors that overlap closely in the
-full run.
+Checked-in study artifacts should be treated as snapshots rather than guaranteed current truth: if
+you change the sampler or diagnostics, regenerate the WDM and frequency outputs before relying on
+the comparison figures below.
 
 ### Outputs
 
@@ -289,10 +307,10 @@ side-by-side visualizations.
 
 ![Comparison corner GB 1](../../_static/lisa/outdir_lisa/galactic_background/seed_0/corner_source_1.png)
 
-The important final result is that the WDM and frequency-domain posteriors now overlap closely in
-all four fitted source parameters and in the derived SNR. In particular, the earlier dramatic
-WDM-only broadening in $f_0$ and $\phi_0$ was an implementation problem, not evidence that the
-WDM representation was intrinsically much less informative for this toy study.
+The intended result is that the WDM and frequency-domain posteriors overlap closely in all four
+fitted source parameters and in the derived SNR. If the checked-in figures do not show that
+behavior, treat them as stale outputs and rerun the study scripts before drawing conclusions about
+the WDM representation.
 
 To generate these figures, run:
 
