@@ -26,8 +26,18 @@ FIXED_A_PRIOR_BOUNDS = (6.0e-24, 1.7e-23)
 F0_REF = float(np.mean(SOURCE_CATALOG[:, 0]))
 
 
+def lisa_delta_f0_prior_half_width() -> float:
+    return float(os.getenv("LISA_DELTA_F0_PRIOR_HALF_WIDTH", "1e-7"))
+
+
 def lisa_f0_jitter_width() -> float:
-    return float(os.getenv("LISA_F0_JITTER_WIDTH", "0.001"))
+    delta_f0_half_width = lisa_delta_f0_prior_half_width()
+    if not 0.0 < delta_f0_half_width < F0_REF:
+        raise ValueError(
+            "Expected 0 < LISA_DELTA_F0_PRIOR_HALF_WIDTH < F0_REF; "
+            f"got {delta_f0_half_width:.6e} with F0_REF={F0_REF:.6e}"
+        )
+    return float(np.log1p(delta_f0_half_width / F0_REF))
 
 
 @dataclass(frozen=True)
@@ -104,16 +114,17 @@ def draw_source_prior_and_params(
     rng: np.random.Generator,
 ) -> tuple[np.ndarray, float, float, tuple[float, float], tuple[float, float], tuple[float, float]]:
     f0_ref = F0_REF
-    f0_jitter_width = lisa_f0_jitter_width()
+    delta_f0_half_width = lisa_delta_f0_prior_half_width()
     prior_f0 = (
-        float(f0_ref * np.exp(-f0_jitter_width)),
-        float(f0_ref * np.exp(f0_jitter_width)),
+        float(f0_ref - delta_f0_half_width),
+        float(f0_ref + delta_f0_half_width),
     )
     prior_fdot = tuple(float(x) for x in FIXED_FDOT_PRIOR_BOUNDS)
     prior_A = tuple(float(x) for x in FIXED_A_PRIOR_BOUNDS)
 
-    delta_logf0_true = float(rng.uniform(-f0_jitter_width, f0_jitter_width))
-    f0 = float(f0_ref * np.exp(delta_logf0_true))
+    delta_f0_true = float(rng.uniform(-delta_f0_half_width, delta_f0_half_width))
+    f0 = float(f0_ref + delta_f0_true)
+    delta_logf0_true = float(np.log(f0) - np.log(f0_ref))
     fdot = draw_positive_parameter_from_bounds(rng, prior_fdot)
     A = draw_positive_parameter_from_bounds(rng, prior_A)
     ra = float(rng.uniform(0.0, 2.0 * np.pi))

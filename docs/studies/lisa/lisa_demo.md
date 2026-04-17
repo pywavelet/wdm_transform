@@ -161,22 +161,19 @@ $$
 The fitted parameters are $(f_0, \dot{f}, A, \phi_0)$ for the injected source. Sky position,
 polarization, and inclination stay fixed at their injected values to isolate the local likelihood
 machinery rather than perform a full eight-parameter search. In both inference scripts, `f0` is
-represented internally as a jitter around the fixed external reference `f_ref`.
+represented internally as a local offset around the fixed external reference `f_ref`. The current
+study default uses a narrow absolute prior width of `delta_f0 = f0 - f_ref ∈ [-1e-7, 1e-7] Hz`
+via `LISA_DELTA_F0_PRIOR_HALF_WIDTH`.
 
-To improve the sampler geometry, both scripts sample the phase at mid-observation time,
-$(\log f_0, \log \dot{f}, \log A, \phi_c)$ with
-
-$$
-\phi_c \equiv \phi_0 + 2 \pi f_0 t_c + \pi \dot{f} t_c^2,
-\qquad t_c = T_{\rm obs}/2,
-$$
-
-and then reconstruct the waveform phase $\phi_0$ as a deterministic parameter.
+The current local samplers work directly with a narrow frequency offset plus physical source
+parameters, using `(delta_f0, logfdot, logA, phi0)` in the frequency-domain run and
+`(delta_logf0, logfdot, logA, phi0)` in the WDM-domain run.
 
 ### Outputs
 
-`lisa_freq_mcmc.py` now writes the frequency-domain posterior archive only. Plotting is handled by
-the post-processing step after both inference runs finish.
+`lisa_freq_mcmc.py` writes only the frequency-domain posterior archive and sampler diagnostics.
+Exploratory likelihood plots now live in `lisa_freq_diagnostics.py`, which can regenerate the
+prior/data plot plus 1D or 2D local likelihood scans without touching the main inference run.
 
 ### Source Code: `lisa_freq_mcmc.py`
 
