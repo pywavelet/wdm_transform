@@ -47,9 +47,9 @@ run_stage() {
 echo "Job ${SLURM_JOB_ID:-manual} task ${TASK_ID}: seed=${SEED}, mode=galactic_background"
 
 echo "=== galactic_background seed ${SEED} ==="
-run_stage data_generation env LISA_SEED="${SEED}" LISA_INCLUDE_GALACTIC="1" python data_generation.py
-run_stage lisa_freq_mcmc env LISA_SEED="${SEED}" LISA_INCLUDE_GALACTIC="1" python lisa_freq_mcmc.py
-run_stage lisa_wdm_mcmc env LISA_SEED="${SEED}" LISA_INCLUDE_GALACTIC="1" python lisa_wdm_mcmc.py
-run_stage post_proc env LISA_SEED="${SEED}" LISA_INCLUDE_GALACTIC="1" python post_proc.py
+run_stage data_generation env LISA_SEED="${SEED}" LISA_INCLUDE_GALACTIC="0" python data_generation.py
+run_stage lisa_freq_mcmc env LISA_SEED="${SEED}" LISA_INCLUDE_GALACTIC="0" python lisa_freq_mcmc.py
+run_stage lisa_wdm_mcmc env LISA_SEED="${SEED}" LISA_INCLUDE_GALACTIC="0" python lisa_wdm_mcmc.py
+run_stage post_proc env LISA_SEED="${SEED}" LISA_INCLUDE_GALACTIC="0" python post_proc.py
 
 echo "Completed seed ${SEED} for mode=galactic_background"

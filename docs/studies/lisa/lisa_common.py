@@ -234,6 +234,9 @@ class InjectionData:
     prior_f0: tuple[float, float]
     prior_fdot: tuple[float, float]
     prior_A: tuple[float, float]
+    source_Af: np.ndarray | None = None
+    source_Ef: np.ndarray | None = None
+    source_Tf: np.ndarray | None = None
 
 
 def load_injection(path: Path = INJECTION_PATH) -> InjectionData:
@@ -271,6 +274,9 @@ def load_injection(path: Path = INJECTION_PATH) -> InjectionData:
             prior_f0=tuple(np.asarray(inj["prior_f0"], dtype=float).reshape(2)),
             prior_fdot=tuple(np.asarray(inj["prior_fdot"], dtype=float).reshape(2)),
             prior_A=tuple(np.asarray(inj["prior_A"], dtype=float).reshape(2)),
+            source_Af=np.asarray(inj["source_Af"], dtype=np.complex128) if "source_Af" in inj else None,
+            source_Ef=np.asarray(inj["source_Ef"], dtype=np.complex128) if "source_Ef" in inj else None,
+            source_Tf=np.asarray(inj["source_Tf"], dtype=np.complex128) if "source_Tf" in inj else None,
         )
 
 
@@ -622,6 +628,128 @@ def check_posterior_coverage(
         print(f"  {mark} {name:<22}: true={true_v:+.4e}  [{low:+.4e}, {high:+.4e}]")
     print(f"  {int(covered.sum())}/{len(covered)} parameters covered")
     return covered
+
+
+def compute_template_injection_overlap(
+    template_aet: tuple[np.ndarray, np.ndarray, np.ndarray],
+    injection_aet: tuple[np.ndarray, np.ndarray, np.ndarray],
+    noise_psd_aet: tuple[np.ndarray, np.ndarray, np.ndarray],
+    freqs: np.ndarray,
+    dt: float,
+) -> tuple[np.ndarray, float]:
+    """Compute A/E/T template-injection overlap at true parameters.
+
+    Returns the overlap for each channel and the combined SNR-weighted overlap.
+    The overlap should be ≈ 1 to noise level for a valid template-injection pair.
+
+    Args:
+        template_aet: Template A/E/T frequency series (3-tuple)
+        injection_aet: Injection A/E/T frequency series (3-tuple)
+        noise_psd_aet: Noise PSD for A/E/T channels (3-tuple)
+        freqs: Frequency grid
+        dt: Time spacing
+
+    Returns:
+        overlaps_per_channel: Shape (3,) overlap for A/E/T
+        combined_overlap: SNR-weighted combined overlap
+    """
+    overlaps_per_channel = np.zeros(3)
+    snrs_template = np.zeros(3)
+    snrs_injection = np.zeros(3)
+
+    for channel in range(3):
+        template = np.asarray(template_aet[channel], dtype=complex)
+        injection = np.asarray(injection_aet[channel], dtype=complex)
+        psd = np.asarray(noise_psd_aet[channel], dtype=float)
+        pos = np.asarray(freqs, dtype=float) > 0.0
+
+        # Compute matched filter SNRs and cross-correlation
+        snr_template = matched_filter_snr_rfft(template, psd, freqs, dt=dt)
+        snr_injection = matched_filter_snr_rfft(injection, psd, freqs, dt=dt)
+
+        # Inner product <template|injection>
+        if pos.sum() >= 2:
+            df = float(np.asarray(freqs, dtype=float)[pos][1] - np.asarray(freqs, dtype=float)[pos][0])
+            h_template = dt * template[pos]
+            h_injection = dt * injection[pos]
+            inner_product = 4.0 * df * np.real(
+                np.sum(np.conj(h_template) * h_injection / np.maximum(psd[pos], 1e-60))
+            )
+        else:
+            inner_product = 0.0
+
+        # Overlap = <h1|h2> / sqrt(<h1|h1> * <h2|h2>)
+        if snr_template > 0.0 and snr_injection > 0.0:
+            overlaps_per_channel[channel] = inner_product / (snr_template * snr_injection)
+        else:
+            overlaps_per_channel[channel] = 0.0
+
+        snrs_template[channel] = snr_template
+        snrs_injection[channel] = snr_injection
+
+    # Combined overlap weighted by SNR^2
+    total_snr2_template = np.sum(snrs_template**2)
+    total_snr2_injection = np.sum(snrs_injection**2)
+
+    if total_snr2_template > 0.0 and total_snr2_injection > 0.0:
+        # Weight by SNR^2 contribution from each channel
+        weights = (snrs_template * snrs_injection) / np.sqrt(total_snr2_template * total_snr2_injection)
+        combined_overlap = np.sum(weights * overlaps_per_channel)
+    else:
+        combined_overlap = 0.0
+
+    return overlaps_per_channel, float(combined_overlap)
+
+
+def check_template_injection_sanity(
+    template_aet: tuple[np.ndarray, np.ndarray, np.ndarray],
+    injection_aet: tuple[np.ndarray, np.ndarray, np.ndarray],
+    noise_psd_aet: tuple[np.ndarray, np.ndarray, np.ndarray],
+    freqs: np.ndarray,
+    dt: float,
+    *,
+    overlap_threshold: float = 0.95,
+    context: str = "Template-injection",
+) -> bool:
+    """Sanity check: template-injection overlap should be ≈ 1.
+
+    Args:
+        template_aet: Template A/E/T frequency series (3-tuple)
+        injection_aet: Injection A/E/T frequency series (3-tuple)
+        noise_psd_aet: Noise PSD for A/E/T channels (3-tuple)
+        freqs: Frequency grid
+        dt: Time spacing
+        overlap_threshold: Minimum acceptable overlap (default 0.95)
+        context: Description for logging
+
+    Returns:
+        True if overlap check passes, False otherwise
+    """
+    overlaps_per_channel, combined_overlap = compute_template_injection_overlap(
+        template_aet, injection_aet, noise_psd_aet, freqs, dt
+    )
+
+    print(f"\n{context} overlap sanity check:")
+    channel_names = ["A", "E", "T"]
+    for i, (name, overlap) in enumerate(zip(channel_names, overlaps_per_channel)):
+        status = "✓" if overlap >= overlap_threshold else "✗"
+        print(f"  {status} Channel {name}: overlap = {overlap:.6f}")
+
+    status = "✓" if combined_overlap >= overlap_threshold else "✗"
+    print(f"  {status} Combined:   overlap = {combined_overlap:.6f}")
+
+    all_pass = np.all(overlaps_per_channel >= overlap_threshold) and combined_overlap >= overlap_threshold
+
+    if not all_pass:
+        print(f"  WARNING: Template-injection overlap below threshold {overlap_threshold:.3f}")
+        print(f"  This suggests potential issues with:")
+        print(f"    - Template generation at true parameters")
+        print(f"    - Injection data consistency")
+        print(f"    - Numerical precision in frequency domain transforms")
+        return False
+    else:
+        print(f"  Template-injection overlap check PASSED (≥ {overlap_threshold:.3f})")
+        return True
 
 
 def print_posterior_report(

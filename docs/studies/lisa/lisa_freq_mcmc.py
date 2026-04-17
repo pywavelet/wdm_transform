@@ -21,6 +21,7 @@ from lisa_common import (
     INJECTION_PATH,
     RUN_DIR,
     build_sampled_source_params,
+    check_template_injection_sanity,
     interp_psd_channels,
     load_injection,
     save_posterior_archive,
@@ -419,6 +420,65 @@ def main() -> None:
 
     snr_optimal = compute_truth_snr(jgb=jgb, source_param=source_param, band=band, dt=dt)
     print(f"Frequency band SNR={snr_optimal:.1f}")
+
+    # ── Template-injection overlap sanity check ──────────────────────────────────
+    # Generate template at true parameters and compare with injection A/E/T
+    h_true_aet = source_aet_band(
+        jgb,
+        source_param,
+        int(band["band_kmin"]),
+        int(band["band_kmax"]),
+    )
+    injection_aet_band = (
+        data_aet_f[0, int(band["band_kmin"]):int(band["band_kmax"])],
+        data_aet_f[1, int(band["band_kmin"]):int(band["band_kmax"])],
+        data_aet_f[2, int(band["band_kmin"]):int(band["band_kmax"])],
+    )
+    template_aet_band = (
+        np.asarray(h_true_aet[0]),
+        np.asarray(h_true_aet[1]),
+        np.asarray(h_true_aet[2]),
+    )
+    noise_psd_band = (
+        np.asarray(band["noise_psd_aet"])[0],
+        np.asarray(band["noise_psd_aet"])[1],
+        np.asarray(band["noise_psd_aet"])[2],
+    )
+
+    overlap_check_passed = check_template_injection_sanity(
+        template_aet_band,
+        injection_aet_band,
+        noise_psd_band,
+        np.asarray(band["freqs"]),
+        dt,
+        context="Frequency-domain template-injection",
+    )
+
+    if (
+        injection.source_Af is not None
+        and injection.source_Ef is not None
+        and injection.source_Tf is not None
+    ):
+        pure_aet_band = (
+            injection.source_Af[int(band["band_kmin"]):int(band["band_kmax"])],
+            injection.source_Ef[int(band["band_kmin"]):int(band["band_kmax"])],
+            injection.source_Tf[int(band["band_kmin"]):int(band["band_kmax"])],
+        )
+        check_template_injection_sanity(
+            template_aet_band,
+            pure_aet_band,
+            noise_psd_band,
+            np.asarray(band["freqs"]),
+            dt,
+            context="Template vs pure source (no noise)",
+        )
+    else:
+        print("Skipping pure-source overlap check: injection archive does not include source_Af/source_Ef/source_Tf")
+
+    if not overlap_check_passed:
+        print("WARNING: Template-injection overlap check FAILED")
+        print("Consider investigating template generation or injection consistency")
+
     make_diagnostic_plots(
         jgb=jgb,
         band=band,

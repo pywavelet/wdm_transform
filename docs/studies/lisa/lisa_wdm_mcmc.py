@@ -20,6 +20,7 @@ from lisa_common import (
     INJECTION_PATH,
     WDM_POSTERIOR_PATH,
     build_sampled_source_params,
+    check_template_injection_sanity,
     interp_psd_channels,
     load_injection,
     load_posterior_samples_source,
@@ -550,12 +551,7 @@ def main() -> None:
     data_a = injection.data_At[:n_keep]
     data_e = injection.data_Et[:n_keep]
     data_t = injection.data_Tt[:n_keep]
-    # Use the full injection baseline for the template (matches data_generation.py).
-    # Truncation of the data array to n_keep is required by the WDM (2*NT) divisibility
-    # constraint; it loses at most a few samples out of millions, so the sub-bin FFT
-    # grid mismatch is negligible compared to the template-baseline bias it would
-    # introduce if we set t_obs = n_keep * dt here.
-    t_obs = injection.t_obs
+    t_obs = n_keep * injection.dt
     nf = n_keep // NT
     n_freqs = n_keep // 2 + 1
     df_rfft = 1.0 / t_obs
@@ -604,6 +600,65 @@ def main() -> None:
     )
     print(f"Frequency truth-band SNR={truth_snr_frequency:.1f}")
     print(f"WDM band SNR={truth_snr_wdm:.1f}")
+
+    # ── Template-injection overlap sanity check in frequency domain ──────────────
+    # Generate template and extract injection on the source frequency band for comparison
+    h_true_aet_freq = generate_aet_rfft(
+        jgb,
+        source_param,
+        int(band["src_kmin"]),
+        int(band["src_kmax"]),
+    )
+    injection_aet_freq = (
+        data_a_rfft[int(band["src_kmin"]):int(band["src_kmax"])],
+        data_e_rfft[int(band["src_kmin"]):int(band["src_kmax"])],
+        data_t_rfft[int(band["src_kmin"]):int(band["src_kmax"])],
+    )
+    template_aet_freq = (
+        np.asarray(h_true_aet_freq[0]),
+        np.asarray(h_true_aet_freq[1]),
+        np.asarray(h_true_aet_freq[2]),
+    )
+    band_freqs_rfft = rfft_freqs[int(band["src_kmin"]):int(band["src_kmax"])]
+    noise_psd_freq_band = (
+        noise_psd_rfft[0][int(band["src_kmin"]):int(band["src_kmax"])],
+        noise_psd_rfft[1][int(band["src_kmin"]):int(band["src_kmax"])],
+        noise_psd_rfft[2][int(band["src_kmin"]):int(band["src_kmax"])],
+    )
+
+    overlap_check_passed = check_template_injection_sanity(
+        template_aet_freq,
+        injection_aet_freq,
+        noise_psd_freq_band,
+        band_freqs_rfft,
+        injection.dt,
+        context="WDM analysis template-injection (freq domain)",
+    )
+
+    if (
+        injection.source_Af is not None
+        and injection.source_Ef is not None
+        and injection.source_Tf is not None
+    ):
+        pure_aet_freq = (
+            injection.source_Af[int(band["src_kmin"]):int(band["src_kmax"])],
+            injection.source_Ef[int(band["src_kmin"]):int(band["src_kmax"])],
+            injection.source_Tf[int(band["src_kmin"]):int(band["src_kmax"])],
+        )
+        check_template_injection_sanity(
+            template_aet_freq,
+            pure_aet_freq,
+            noise_psd_freq_band,
+            band_freqs_rfft,
+            injection.dt,
+            context="Template vs pure source (no noise)",
+        )
+    else:
+        print("Skipping pure-source overlap check: injection archive does not include source_Af/source_Ef/source_Tf")
+
+    if not overlap_check_passed:
+        print("WARNING: Template-injection overlap check FAILED")
+        print("Consider investigating template generation or injection consistency")
 
     mcmc, init_values = sample_source_wdm(
         jgb=jgb,
