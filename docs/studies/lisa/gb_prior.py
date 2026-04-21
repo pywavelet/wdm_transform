@@ -27,7 +27,11 @@ F0_REF = float(np.mean(SOURCE_CATALOG[:, 0]))
 
 
 def lisa_delta_f0_prior_half_width() -> float:
-    return float(os.getenv("LISA_DELTA_F0_PRIOR_HALF_WIDTH", "1e-7"))
+    return float(os.getenv("LISA_DELTA_F0_PRIOR_HALF_WIDTH", "3e-8"))
+
+
+def lisa_delta_f0_prior_sigma() -> float:
+    return float(os.getenv("LISA_DELTA_F0_PRIOR_SIGMA", "1e-8"))
 
 
 def lisa_f0_jitter_width() -> float:
@@ -115,6 +119,7 @@ def draw_source_prior_and_params(
 ) -> tuple[np.ndarray, float, float, tuple[float, float], tuple[float, float], tuple[float, float]]:
     f0_ref = F0_REF
     delta_f0_half_width = lisa_delta_f0_prior_half_width()
+    delta_f0_sigma = lisa_delta_f0_prior_sigma()
     prior_f0 = (
         float(f0_ref - delta_f0_half_width),
         float(f0_ref + delta_f0_half_width),
@@ -122,7 +127,13 @@ def draw_source_prior_and_params(
     prior_fdot = tuple(float(x) for x in FIXED_FDOT_PRIOR_BOUNDS)
     prior_A = tuple(float(x) for x in FIXED_A_PRIOR_BOUNDS)
 
-    delta_f0_true = float(rng.uniform(-delta_f0_half_width, delta_f0_half_width))
+    delta_f0_true = _draw_truncated_normal(
+        rng,
+        loc=0.0,
+        scale=delta_f0_sigma,
+        low=-delta_f0_half_width,
+        high=delta_f0_half_width,
+    )
     f0 = float(f0_ref + delta_f0_true)
     delta_logf0_true = float(np.log(f0) - np.log(f0_ref))
     fdot = draw_positive_parameter_from_bounds(rng, prior_fdot)

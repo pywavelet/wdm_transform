@@ -13,7 +13,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import numpyro
 import numpyro.distributions as dist
-from gb_prior import build_local_prior_info
+from gb_prior import build_local_prior_info, lisa_delta_f0_prior_sigma
 from jaxgb.jaxgb import JaxGB
 from lisa_common import (
     FREQ_POSTERIOR_PATH,
@@ -36,7 +36,7 @@ setup_jax_and_matplotlib()
 jax.config.update("jax_enable_x64", True)
 
 _SCRIPT_START = time.perf_counter()
-N_WARMUP = int(os.getenv("LISA_N_WARMUP", "800"))
+N_WARMUP = int(os.getenv("LISA_N_WARMUP", "1500"))
 N_DRAWS = int(os.getenv("LISA_N_DRAWS", "1000"))
 NUM_CHAINS = int(os.getenv("LISA_NUM_CHAINS", "2"))
 SHOW_PROGRESS = os.getenv("LISA_PROGRESS_BAR", "1").strip().lower() in {
@@ -45,8 +45,8 @@ SHOW_PROGRESS = os.getenv("LISA_PROGRESS_BAR", "1").strip().lower() in {
     "yes",
     "on",
 }
-NUTS_TARGET_ACCEPT = float(os.getenv("LISA_NUTS_TARGET_ACCEPT", "0.85"))
-NUTS_MAX_TREE_DEPTH = int(os.getenv("LISA_NUTS_MAX_TREE_DEPTH", "10"))
+NUTS_TARGET_ACCEPT = float(os.getenv("LISA_NUTS_TARGET_ACCEPT", "0.95"))
+NUTS_MAX_TREE_DEPTH = int(os.getenv("LISA_NUTS_MAX_TREE_DEPTH", "12"))
 NUTS_DENSE_MASS = os.getenv("LISA_NUTS_DENSE_MASS", "1").strip().lower() in {
     "1",
     "true",
@@ -123,6 +123,7 @@ def build_band(
             float(prior_f0[0] - f0_ref),
             float(prior_f0[1] - f0_ref),
         ),
+        "delta_f0_sigma": float(lisa_delta_f0_prior_sigma()),
         "prior_center": prior_info.prior_center,
         "prior_scale": prior_info.prior_scale,
         "logfdot_bounds": prior_info.logfdot_bounds,
@@ -174,31 +175,45 @@ def _build_init_values(
     fixed_params: np.ndarray,
     f0_ref: float,
     delta_f0_bounds: tuple[float, float],
+    delta_f0_sigma: float,
     logfdot_bounds: tuple[float, float],
     logA_bounds: tuple[float, float],
+    prior_center: np.ndarray,
     seed: int,
 ) -> dict[str, float]:
-    """Build a single truth-centered initialization for single-chain runs."""
+    """Build a per-chain init that preserves the truth f0 mode but breaks truth leakage.
+
+    delta_f0 is jittered by INIT_JITTER_SCALE * delta_f0_sigma around the truth so
+    between-chain variance is nonzero (R-hat becomes meaningful) while the chain
+    stays in the correct f0 mode.  logfdot / logA are centered on the *prior
+    center* (not the truth) so the sampler is not seeded with the true values.
+    """
     rng = np.random.default_rng(seed + 101)
-    delta_f0_eps = min(1e-12, 1e-3 * (delta_f0_bounds[1] - delta_f0_bounds[0]))
     log_eps = 1e-6
-    delta_f0_center = np.clip(
-        fixed_params[0] - f0_ref,
-        delta_f0_bounds[0] + delta_f0_eps,
-        delta_f0_bounds[1] - delta_f0_eps,
+    z_eps = 1e-6
+    z_lo = delta_f0_bounds[0] / max(delta_f0_sigma, 1e-30)
+    z_hi = delta_f0_bounds[1] / max(delta_f0_sigma, 1e-30)
+    delta_f0_true = float(fixed_params[0] - f0_ref)
+    z_f0_center = float(
+        np.clip(
+            delta_f0_true / max(delta_f0_sigma, 1e-30)
+            + INIT_JITTER_SCALE * rng.standard_normal(),
+            z_lo + z_eps,
+            z_hi - z_eps,
+        )
     )
     return {
-        "delta_f0": float(delta_f0_center),
+        "z_f0": z_f0_center,
         "logfdot": float(
             np.clip(
-                np.log(fixed_params[1]) + INIT_JITTER_SCALE * rng.standard_normal(),
+                float(prior_center[1]) + INIT_JITTER_SCALE * rng.standard_normal(),
                 logfdot_bounds[0] + log_eps,
                 logfdot_bounds[1] - log_eps,
             )
         ),
         "logA": float(
             np.clip(
-                np.log(fixed_params[2]) + INIT_JITTER_SCALE * rng.standard_normal(),
+                float(prior_center[2]) + INIT_JITTER_SCALE * rng.standard_normal(),
                 logA_bounds[0] + log_eps,
                 logA_bounds[1] - log_eps,
             )
@@ -256,7 +271,12 @@ def profile_amplitude_phase(
     dt_j: jnp.ndarray,
     df_j: jnp.ndarray,
 ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
-    """Profile over phase for fixed f0, fdot, and amplitude."""
+    """Marginalize over phase (Uniform[-pi, pi]) for fixed f0, fdot, A.
+
+    Whittle convention here is exponent = -<r|r> with inner = 2 df dt^2 Re(conj(a) b)/PSD.
+    We integrate over phi0 on a uniform grid via logsumexp — no orthogonality assumed
+    between the cos and sin basis templates.
+    """
     weight = 2.0 * df_j * dt_j**2 / noise_psd_aet_j
 
     def inner(lhs: jnp.ndarray, rhs: jnp.ndarray) -> jnp.ndarray:
@@ -265,16 +285,26 @@ def profile_amplitude_phase(
     scale = amplitude / jnp.maximum(amplitude_ref, 1e-30)
     h_cos_scaled = scale * h_cos
     h_sin_scaled = scale * h_sin
-    proj_cos = inner(h_cos_scaled, data_aet_j)
-    proj_sin = inner(h_sin_scaled, data_aet_j)
-    phi0 = jnp.arctan2(proj_sin, proj_cos)
-    template = jnp.cos(phi0) * h_cos_scaled + jnp.sin(phi0) * h_sin_scaled
-    residual = dt_j * (data_aet_j - template)
-    loglike = -jnp.sum(
-        jnp.log(noise_psd_aet_j)
-        + 2.0 * df_j * jnp.abs(residual) ** 2 / noise_psd_aet_j
-    )
-    return loglike, amplitude, phi0, template
+    rho_c = inner(h_cos_scaled, data_aet_j)
+    rho_s = inner(h_sin_scaled, data_aet_j)
+    H_cc = inner(h_cos_scaled, h_cos_scaled)
+    H_ss = inner(h_sin_scaled, h_sin_scaled)
+    H_cs = inner(h_cos_scaled, h_sin_scaled)
+    d_norm = inner(data_aet_j, data_aet_j)
+
+    n_phi = 128
+    phi0_grid = jnp.linspace(-jnp.pi, jnp.pi, n_phi, endpoint=False)
+    cosp = jnp.cos(phi0_grid)
+    sinp = jnp.sin(phi0_grid)
+    proj_grid = cosp * rho_c + sinp * rho_s
+    H_phi_grid = cosp**2 * H_cc + sinp**2 * H_ss + 2.0 * cosp * sinp * H_cs
+    log_integrand = 2.0 * proj_grid - H_phi_grid
+    log_marg = jax.scipy.special.logsumexp(log_integrand) - jnp.log(float(n_phi))
+
+    loglike = -jnp.sum(jnp.log(noise_psd_aet_j)) - d_norm + log_marg
+    phi0_mle = jnp.arctan2(rho_s, rho_c)
+    template = jnp.cos(phi0_mle) * h_cos_scaled + jnp.sin(phi0_mle) * h_sin_scaled
+    return loglike, amplitude, phi0_mle, template
 
 
 def build_sampler_diagnostic_report(
@@ -497,6 +527,7 @@ def sample_source(
     prior_center = jnp.asarray(band["prior_center"], dtype=jnp.float64)
     prior_scale = jnp.asarray(band["prior_scale"], dtype=jnp.float64)
     delta_f0_bounds = tuple(np.asarray(band["delta_f0_bounds"], dtype=float))
+    delta_f0_sigma = float(band["delta_f0_sigma"])
     logfdot_bounds = tuple(np.asarray(band["logfdot_bounds"], dtype=float))
     logA_bounds = tuple(np.asarray(band["logA_bounds"], dtype=float))
     f0_ref = float(band["f0_ref"])
@@ -505,19 +536,31 @@ def sample_source(
     df_j = jnp.asarray(df, dtype=jnp.float64)
 
     fixed_params = np.asarray(band["fixed_params"], dtype=float)
+    prior_center_np = np.asarray(band["prior_center"], dtype=float)
     init_values = _build_init_values(
         fixed_params=fixed_params,
         f0_ref=f0_ref,
         delta_f0_bounds=delta_f0_bounds,
+        delta_f0_sigma=delta_f0_sigma,
         logfdot_bounds=logfdot_bounds,
         logA_bounds=logA_bounds,
+        prior_center=prior_center_np,
         seed=seed,
     )
+    z_f0_low = float(delta_f0_bounds[0] / max(delta_f0_sigma, 1e-30))
+    z_f0_high = float(delta_f0_bounds[1] / max(delta_f0_sigma, 1e-30))
 
     def model() -> None:
-        delta_f0 = numpyro.sample(
-            "delta_f0", dist.Uniform(delta_f0_bounds[0], delta_f0_bounds[1])
+        z_f0 = numpyro.sample(
+            "z_f0",
+            dist.TruncatedNormal(
+                loc=0.0,
+                scale=1.0,
+                low=z_f0_low,
+                high=z_f0_high,
+            ),
         )
+        delta_f0 = numpyro.deterministic("delta_f0", delta_f0_sigma * z_f0)
         logfdot = numpyro.sample(
             "logfdot",
             dist.TruncatedNormal(
@@ -586,8 +629,10 @@ def sample_source(
                 fixed_params=fixed_params,
                 f0_ref=f0_ref,
                 delta_f0_bounds=delta_f0_bounds,
+                delta_f0_sigma=delta_f0_sigma,
                 logfdot_bounds=logfdot_bounds,
                 logA_bounds=logA_bounds,
+                prior_center=prior_center_np,
                 seed=seed + chain_idx * 7,
             )
             for chain_idx in range(NUM_CHAINS)
@@ -642,6 +687,7 @@ def save_sampler_diagnostics(
     injection_seed: int,
     mcmc_seed: int,
     f0_ref: float,
+    delta_f0_sigma: float,
     samples: dict[str, np.ndarray],
     samples_by_chain: dict[str, np.ndarray],
     init_values: dict[str, float] | None,
@@ -673,7 +719,8 @@ def save_sampler_diagnostics(
         "init_values": (
             {
                 **{key: float(value) for key, value in init_values.items()},
-                "f0": float(f0_ref + init_values["delta_f0"]),
+                "delta_f0": float(init_values["z_f0"] * delta_f0_sigma),
+                "f0": float(f0_ref + init_values["z_f0"] * delta_f0_sigma),
                 "fdot": float(np.exp(init_values["logfdot"])),
             }
             if init_values is not None
@@ -874,6 +921,7 @@ def main() -> None:
         injection_seed=injection.seed,
         mcmc_seed=mcmc_seed,
         f0_ref=float(band["f0_ref"]),
+        delta_f0_sigma=float(band["delta_f0_sigma"]),
         samples=samples,
         samples_by_chain=samples_by_chain,
         init_values=init_values,

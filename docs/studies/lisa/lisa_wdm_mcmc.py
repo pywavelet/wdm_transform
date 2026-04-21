@@ -13,7 +13,7 @@ import lisaorbits
 import numpy as np
 import numpyro
 import numpyro.distributions as dist
-from gb_prior import build_local_prior_info
+from gb_prior import build_local_prior_info, lisa_delta_f0_prior_sigma
 from jaxgb.jaxgb import JaxGB
 from lisa_common import (
     FREQ_POSTERIOR_PATH,
@@ -43,9 +43,9 @@ setup_jax_and_matplotlib()
 jax.config.update("jax_enable_x64", True)
 
 _SCRIPT_START = time.perf_counter()
-N_WARMUP = int(os.getenv("LISA_N_WARMUP", "800"))
+N_WARMUP = int(os.getenv("LISA_N_WARMUP", "1500"))
 N_DRAWS = int(os.getenv("LISA_N_DRAWS", "1000"))
-NUM_CHAINS = int(os.getenv("LISA_NUM_CHAINS", "4"))
+NUM_CHAINS = int(os.getenv("LISA_NUM_CHAINS", "2"))
 NT = int(os.getenv("LISA_NT", "32"))
 SHOW_PROGRESS = os.getenv("LISA_PROGRESS_BAR", "1").strip().lower() in {
     "1",
@@ -53,8 +53,8 @@ SHOW_PROGRESS = os.getenv("LISA_PROGRESS_BAR", "1").strip().lower() in {
     "yes",
     "on",
 }
-NUTS_TARGET_ACCEPT = float(os.getenv("LISA_NUTS_TARGET_ACCEPT", "0.85"))
-NUTS_MAX_TREE_DEPTH = int(os.getenv("LISA_NUTS_MAX_TREE_DEPTH", "10"))
+NUTS_TARGET_ACCEPT = float(os.getenv("LISA_NUTS_TARGET_ACCEPT", "0.95"))
+NUTS_MAX_TREE_DEPTH = int(os.getenv("LISA_NUTS_MAX_TREE_DEPTH", "12"))
 NUTS_DENSE_MASS = os.getenv("LISA_NUTS_DENSE_MASS", "1").strip().lower() in {
     "1",
     "true",
@@ -155,35 +155,47 @@ def _flatten_chain_samples(
 def _build_init_values(
     *,
     fixed_params: np.ndarray,
-    logf0_ref: float,
-    delta_logf0_bounds: tuple[float, float],
+    f0_ref: float,
+    delta_f0_bounds: tuple[float, float],
+    delta_f0_sigma: float,
     logfdot_bounds: tuple[float, float],
     logA_bounds: tuple[float, float],
+    prior_center: np.ndarray,
     seed: int,
 ) -> dict[str, float]:
-    """Build a single truth-centered initialization for single-chain runs."""
+    """Build a per-chain init that preserves the truth f0 mode but breaks truth leakage.
+
+    delta_f0 is jittered by INIT_JITTER_SCALE * delta_f0_sigma around the truth so
+    between-chain variance is nonzero (R-hat becomes meaningful) while the chain
+    stays in the correct f0 mode.  logfdot / logA are centered on the *prior
+    center* (not the truth) so the sampler is not seeded with the true values.
+    """
     rng = np.random.default_rng(seed + 17)
-    delta_logf0_eps = min(
-        1e-12, 1e-3 * (delta_logf0_bounds[1] - delta_logf0_bounds[0])
-    )
     log_eps = 1e-6
-    delta_logf0_center = np.clip(
-        np.log(fixed_params[0]) - logf0_ref,
-        delta_logf0_bounds[0] + delta_logf0_eps,
-        delta_logf0_bounds[1] - delta_logf0_eps,
+    z_eps = 1e-6
+    z_lo = delta_f0_bounds[0] / max(delta_f0_sigma, 1e-30)
+    z_hi = delta_f0_bounds[1] / max(delta_f0_sigma, 1e-30)
+    delta_f0_true = float(fixed_params[0] - f0_ref)
+    z_f0_center = float(
+        np.clip(
+            delta_f0_true / max(delta_f0_sigma, 1e-30)
+            + INIT_JITTER_SCALE * rng.standard_normal(),
+            z_lo + z_eps,
+            z_hi - z_eps,
+        )
     )
     return {
-        "delta_logf0": float(delta_logf0_center),
+        "z_f0": z_f0_center,
         "logfdot": float(
             np.clip(
-                np.log(fixed_params[1]) + INIT_JITTER_SCALE * rng.standard_normal(),
+                float(prior_center[1]) + INIT_JITTER_SCALE * rng.standard_normal(),
                 logfdot_bounds[0] + log_eps,
                 logfdot_bounds[1] - log_eps,
             )
         ),
         "logA": float(
             np.clip(
-                np.log(fixed_params[2]) + INIT_JITTER_SCALE * rng.standard_normal(),
+                float(prior_center[2]) + INIT_JITTER_SCALE * rng.standard_normal(),
                 logA_bounds[0] + log_eps,
                 logA_bounds[1] - log_eps,
             )
@@ -270,34 +282,45 @@ def profile_phase_wdm(
     amplitude: jnp.ndarray,
     amplitude_ref: jnp.ndarray,
 ) -> tuple[jnp.ndarray, jnp.ndarray]:
-    """Profile over phase for fixed f0, fdot, and amplitude in WDM space."""
-    scale = amplitude / jnp.maximum(amplitude_ref, 1e-30)
-    h_cos_scaled = tuple(scale * component for component in h_cos)
-    h_sin_scaled = tuple(scale * component for component in h_sin)
+    """Marginalize over phase (Uniform[-pi, pi]) for fixed f0, fdot, A in WDM space.
 
-    proj_cos = (
-        jnp.sum(h_cos_scaled[0] * data_a_j / noise_var_a_j)
-        + jnp.sum(h_cos_scaled[1] * data_e_j / noise_var_e_j)
-        + jnp.sum(h_cos_scaled[2] * data_t_j / noise_var_t_j)
+    Gaussian convention here is exponent = -0.5 * <r|r> with inner = sum(lhs * rhs / var).
+    Integration over phi0 is done on a uniform grid via logsumexp.
+    """
+    scale = amplitude / jnp.maximum(amplitude_ref, 1e-30)
+    h_cos_s = tuple(scale * component for component in h_cos)
+    h_sin_s = tuple(scale * component for component in h_sin)
+    datas = (data_a_j, data_e_j, data_t_j)
+    variances = (noise_var_a_j, noise_var_e_j, noise_var_t_j)
+
+    def _sum(expr_iter):
+        total = 0.0
+        for expr in expr_iter:
+            total = total + expr
+        return total
+
+    rho_c = _sum(jnp.sum(hc * d / v) for hc, d, v in zip(h_cos_s, datas, variances))
+    rho_s = _sum(jnp.sum(hs * d / v) for hs, d, v in zip(h_sin_s, datas, variances))
+    H_cc = _sum(jnp.sum(hc * hc / v) for hc, v in zip(h_cos_s, variances))
+    H_ss = _sum(jnp.sum(hs * hs / v) for hs, v in zip(h_sin_s, variances))
+    H_cs = _sum(jnp.sum(hc * hs / v) for hc, hs, v in zip(h_cos_s, h_sin_s, variances))
+    d_norm = _sum(jnp.sum(d * d / v) for d, v in zip(datas, variances))
+    log_norm = -0.5 * _sum(
+        jnp.sum(jnp.log(2.0 * jnp.pi * v)) for v in variances
     )
-    proj_sin = (
-        jnp.sum(h_sin_scaled[0] * data_a_j / noise_var_a_j)
-        + jnp.sum(h_sin_scaled[1] * data_e_j / noise_var_e_j)
-        + jnp.sum(h_sin_scaled[2] * data_t_j / noise_var_t_j)
-    )
-    phi0 = jnp.arctan2(proj_sin, proj_cos)
-    h_a = jnp.cos(phi0) * h_cos_scaled[0] + jnp.sin(phi0) * h_sin_scaled[0]
-    h_e = jnp.cos(phi0) * h_cos_scaled[1] + jnp.sin(phi0) * h_sin_scaled[1]
-    h_t = jnp.cos(phi0) * h_cos_scaled[2] + jnp.sin(phi0) * h_sin_scaled[2]
-    loglike = (
-        -0.5
-        * jnp.sum((data_a_j - h_a) ** 2 / noise_var_a_j + jnp.log(2.0 * jnp.pi * noise_var_a_j))
-        - 0.5
-        * jnp.sum((data_e_j - h_e) ** 2 / noise_var_e_j + jnp.log(2.0 * jnp.pi * noise_var_e_j))
-        - 0.5
-        * jnp.sum((data_t_j - h_t) ** 2 / noise_var_t_j + jnp.log(2.0 * jnp.pi * noise_var_t_j))
-    )
-    return loglike, phi0
+
+    n_phi = 128
+    phi0_grid = jnp.linspace(-jnp.pi, jnp.pi, n_phi, endpoint=False)
+    cosp = jnp.cos(phi0_grid)
+    sinp = jnp.sin(phi0_grid)
+    proj_grid = cosp * rho_c + sinp * rho_s
+    H_phi_grid = cosp**2 * H_cc + sinp**2 * H_ss + 2.0 * cosp * sinp * H_cs
+    log_integrand = proj_grid - 0.5 * H_phi_grid
+    log_marg = jax.scipy.special.logsumexp(log_integrand) - jnp.log(float(n_phi))
+
+    loglike = log_norm - 0.5 * d_norm + log_marg
+    phi0_mle = jnp.arctan2(rho_s, rho_c)
+    return loglike, phi0_mle
 
 
 def build_sampler_diagnostic_report(
@@ -364,7 +387,7 @@ def print_sampler_diagnostic_report(
         f"{float(report['fisher_logA_std_estimate']):.4f} "
         f"(ratio={float(report['logA_std_to_fisher_ratio']):.2f}, SNR={float(report['snr_reference']):.1f})"
     )
-    for name in ("delta_logf0", "logfdot", "logA"):
+    for name in ("delta_f0", "logfdot", "logA"):
         stats = latent_summary[name]
         print(
             f"  {name:<12} n_eff={float(np.asarray(stats['n_eff'])):8.1f} "
@@ -382,14 +405,14 @@ def make_trace_plots(
     snr_optimal: float,
     output_prefix: str = "wdm",
 ) -> None:
-    """Generate trace plots for delta_logf0, phi0, and logA by chain."""
+    """Generate trace plots for delta_f0, phi0, and logA by chain."""
     import matplotlib.pyplot as plt
 
-    params_to_plot = ["delta_logf0", "phi0", "logA"]
+    params_to_plot = ["delta_f0", "phi0", "logA"]
 
     # Calculate true values for reference lines
     true_values = {
-        "delta_logf0": np.log(source_param[0]) - logf0_ref,
+        "delta_f0": source_param[0] - np.exp(logf0_ref),
         "phi0": source_param[7],
         "logA": np.log(source_param[2]),
     }
@@ -430,8 +453,8 @@ def make_trace_plots(
             ax.axhline(np.pi, color='gray', linestyle=':', alpha=0.5)
             ax.set_ylim(-np.pi - 0.5, np.pi + 0.5)
             ax.set_ylabel('phi0 [rad]')
-        elif param == "delta_logf0":
-            ax.set_ylabel('δlog(f0)')
+        elif param == "delta_f0":
+            ax.set_ylabel('δf0 [Hz]')
         elif param == "logA":
             ax.set_ylabel('log(A)')
 
@@ -623,6 +646,11 @@ def build_wdm_inputs(
             float(prior_info.logf0_bounds[0] - np.log(f0_init)),
             float(prior_info.logf0_bounds[1] - np.log(f0_init)),
         ),
+        "delta_f0_bounds": (
+            float(injection.prior_f0[0] - injection.f0_ref),
+            float(injection.prior_f0[1] - injection.f0_ref),
+        ),
+        "delta_f0_sigma": float(lisa_delta_f0_prior_sigma()),
         "prior_center": prior_info.prior_center,
         "prior_scale": prior_info.prior_scale,
         "logfdot_bounds": prior_info.logfdot_bounds,
@@ -774,17 +802,28 @@ def sample_source_wdm(
     fixed_params_j = jnp.asarray(band["fixed_params"], dtype=jnp.float64)
     prior_center = jnp.asarray(band["prior_center"], dtype=jnp.float64)
     prior_scale = jnp.asarray(band["prior_scale"], dtype=jnp.float64)
-    delta_logf0_bounds = tuple(np.asarray(band["delta_logf0_bounds"], dtype=float))
+    delta_f0_bounds = tuple(np.asarray(band["delta_f0_bounds"], dtype=float))
+    delta_f0_sigma = float(band["delta_f0_sigma"])
     logfdot_bounds = tuple(np.asarray(band["logfdot_bounds"], dtype=float))
     logA_bounds = tuple(np.asarray(band["logA_bounds"], dtype=float))
     logf0_ref = float(band["logf0_ref"])
+    f0_ref = float(band["f0_ref"])
     amplitude_ref_j = fixed_params_j[2]
 
+    z_f0_low = float(delta_f0_bounds[0] / max(delta_f0_sigma, 1e-30))
+    z_f0_high = float(delta_f0_bounds[1] / max(delta_f0_sigma, 1e-30))
+
     def model() -> None:
-        delta_logf0 = numpyro.sample(
-            "delta_logf0",
-            dist.Uniform(delta_logf0_bounds[0], delta_logf0_bounds[1]),
+        z_f0 = numpyro.sample(
+            "z_f0",
+            dist.TruncatedNormal(
+                loc=0.0,
+                scale=1.0,
+                low=z_f0_low,
+                high=z_f0_high,
+            ),
         )
+        delta_f0 = numpyro.deterministic("delta_f0", delta_f0_sigma * z_f0)
         logfdot = numpyro.sample(
             "logfdot",
             dist.TruncatedNormal(
@@ -803,7 +842,7 @@ def sample_source_wdm(
                 high=logA_bounds[1],
             ),
         )
-        f0 = jnp.exp(logf0_ref + delta_logf0)
+        f0 = f0_ref + delta_f0
         fdot = jnp.exp(logfdot)
         amplitude = jnp.exp(logA)
         h_cos, h_sin = build_phase_basis_wdm(
@@ -831,18 +870,22 @@ def sample_source_wdm(
             amplitude_ref=amplitude_ref_j,
         )
         numpyro.factor("ll_profiled", loglike)
+        numpyro.deterministic("delta_logf0", jnp.log(f0) - logf0_ref)
         numpyro.deterministic("f0", f0)
         numpyro.deterministic("fdot", fdot)
         numpyro.deterministic("A", amplitude)
         numpyro.deterministic("phi0", phi0)
 
     fixed_params = np.asarray(band["fixed_params"], dtype=float)
+    prior_center_np = np.asarray(band["prior_center"], dtype=float)
     init_values = _build_init_values(
         fixed_params=fixed_params,
-        logf0_ref=logf0_ref,
-        delta_logf0_bounds=delta_logf0_bounds,
+        f0_ref=f0_ref,
+        delta_f0_bounds=delta_f0_bounds,
+        delta_f0_sigma=delta_f0_sigma,
         logfdot_bounds=logfdot_bounds,
         logA_bounds=logA_bounds,
+        prior_center=prior_center_np,
         seed=seed,
     )
     nuts_kwargs = {
@@ -866,10 +909,12 @@ def sample_source_wdm(
         per_chain_inits = [
             _build_init_values(
                 fixed_params=fixed_params,
-                logf0_ref=logf0_ref,
-                delta_logf0_bounds=delta_logf0_bounds,
+                f0_ref=f0_ref,
+                delta_f0_bounds=delta_f0_bounds,
+                delta_f0_sigma=delta_f0_sigma,
                 logfdot_bounds=logfdot_bounds,
                 logA_bounds=logA_bounds,
+                prior_center=prior_center_np,
                 seed=seed + chain_idx * 7,
             )
             for chain_idx in range(NUM_CHAINS)
@@ -945,7 +990,7 @@ def save_sampler_diagnostics(
     """Write a compact JSON summary of the WDM sampler diagnostics."""
     latent_summary = numpyro_summary(
         {
-            "delta_logf0": samples_by_chain["delta_logf0"],
+            "delta_f0": samples_by_chain["delta_f0"],
             "logfdot": samples_by_chain["logfdot"],
             "logA": samples_by_chain["logA"],
         },
@@ -967,8 +1012,12 @@ def save_sampler_diagnostics(
         "init_values": (
             {
                 **{key: float(value) for key, value in init_values.items()},
+                "delta_f0": float(
+                    init_values["z_f0"] * float(band["delta_f0_sigma"])
+                ),
                 "f0": float(
-                    np.exp(float(band["logf0_ref"]) + init_values["delta_logf0"])
+                    float(band["f0_ref"])
+                    + init_values["z_f0"] * float(band["delta_f0_sigma"])
                 ),
                 "fdot": float(np.exp(init_values["logfdot"])),
                 "A": float(np.exp(init_values["logA"])),
@@ -1142,7 +1191,7 @@ def main() -> None:
     samples = _flatten_chain_samples(samples_by_chain)
     latent_summary = numpyro_summary(
         {
-            "delta_logf0": samples_by_chain["delta_logf0"],
+            "delta_f0": samples_by_chain["delta_f0"],
             "logfdot": samples_by_chain["logfdot"],
             "logA": samples_by_chain["logA"],
         },

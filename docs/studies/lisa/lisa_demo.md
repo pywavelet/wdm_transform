@@ -162,7 +162,7 @@ The fitted parameters are $(f_0, \dot{f}, A, \phi_0)$ for the injected source. S
 polarization, and inclination stay fixed at their injected values to isolate the local likelihood
 machinery rather than perform a full eight-parameter search. In both inference scripts, `f0` is
 represented internally as a local offset around the fixed external reference `f_ref`. The current
-study default uses a narrow absolute prior width of `delta_f0 = f0 - f_ref ∈ [-1e-7, 1e-7] Hz`
+study default uses a narrow absolute prior width of `delta_f0 = f0 - f_ref ∈ [-3e-8, 3e-8] Hz`
 via `LISA_DELTA_F0_PRIOR_HALF_WIDTH`.
 
 The current local samplers work directly with a narrow frequency offset plus physical source

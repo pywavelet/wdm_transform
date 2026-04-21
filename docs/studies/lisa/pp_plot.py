@@ -26,7 +26,7 @@ from lisa_common import (
 
 FREQ_FILENAME = "freq_posteriors.npz"
 WDM_FILENAME = "wdm_posteriors.npz"
-DERIVED_LABELS = {"snr"}
+DERIVED_LABELS = {"snr", "phi0 [rad]"}
 CONFIDENCE_INTERVALS = (0.68, 0.95, 0.997)
 SCRIPT_START = time.perf_counter()
 
