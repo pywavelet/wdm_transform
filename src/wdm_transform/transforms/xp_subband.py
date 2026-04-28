@@ -45,9 +45,7 @@ starting Fourier index ``kmin``.
 Normalization
 -------------
 The compact inverse returns values on the package's one-sided Fourier
-convention.  After accumulating channel contributions, the spectrum is
-divided by ``nfreqs_wdm`` and the DC / Nyquist bins receive the usual extra
-factor of two when present in the compact output.
+convention using the same manuscript normalization as the full inverse.
 """
 
 from __future__ import annotations
@@ -55,6 +53,12 @@ from __future__ import annotations
 from typing import Any
 
 from ..backends import Backend
+from ..windows import (
+    cnm,
+    phi_window,
+    validate_window_order,
+    validate_window_parameter,
+)
 from ._subband import (
     dt_from_df,
     fourier_span_from_wdm_span,
@@ -63,7 +67,6 @@ from ._subband import (
     validate_wdm_span,
     wdm_span_from_fourier_span,
 )
-from ..windows import cnm, phi_window, validate_window_parameter
 
 
 def _extract_fourier_slice(
@@ -132,6 +135,7 @@ def forward_wdm_subband(
         ntimes_wdm=ntimes_wdm,
     )
     validate_window_parameter(a)
+    validate_window_order(d)
 
     dt = dt_from_df(df=df, nfreqs_fourier=nfreqs_fourier)
     spectrum = backend.asarray(data, dtype=xp.complex128)
@@ -186,7 +190,7 @@ def forward_wdm_subband(
                     axis=1,
                 )
                 + x0 * window[0] / 2.0
-            ) / (int(ntimes_wdm) * int(nfreqs_wdm))
+            ) * xp.sqrt(2.0)
             continue
 
         if m == int(nfreqs_wdm):
@@ -212,8 +216,8 @@ def forward_wdm_subband(
                     * block[None, :],
                     axis=1,
                 )
-                + xnyq * window[0] / 2.0
-            ) / (int(ntimes_wdm) * int(nfreqs_wdm))
+                + xp.conjugate(xnyq) * window[0] / 2.0
+            ) * xp.sqrt(2.0)
             continue
 
         phase = xp.conjugate(cnm(backend, narr, m))
@@ -232,9 +236,11 @@ def forward_wdm_subband(
             backend=backend,
         )
         block = xp.concatenate([upper, lower])
-        xnm_time = backend.fft.ifft(block * window)
-        coeffs[:, local_idx] = (xp.sqrt(2.0) / int(nfreqs_wdm)) * xp.real(
-            phase * xnm_time
+        xnm_time = backend.fft.ifft(block * window) * int(ntimes_wdm)
+        coeffs[:, local_idx] = (
+            ((-1) ** (m * narr))
+            * xp.sqrt(2.0)
+            * xp.real(phase * xnm_time)
         )
 
     return coeffs, mmin
@@ -260,6 +266,7 @@ def inverse_wdm_subband(
         ntimes_wdm=ntimes_wdm,
     )
     validate_window_parameter(a)
+    validate_window_order(d)
 
     dt = dt_from_df(df=df, nfreqs_fourier=nfreqs_fourier)
     w = backend.asarray(coeffs, dtype=xp.float64)
@@ -297,23 +304,23 @@ def inverse_wdm_subband(
     for local_idx, m in enumerate(range(int(mmin), int(mmin) + nf_sub_wdm)):
         if m == 0:
             coeffs_dc = w[:, local_idx]
-            larr = xp.arange(1, half)
+            larr = xp.arange(half)
             dc_block = (
                 xp.sum(
                     coeffs_dc[:, None]
-                    * xp.exp(-4j * xp.pi * narr[:, None] * larr[None, :] / int(ntimes_wdm)),
+                    * xp.exp(
+                        -4j
+                        * xp.pi
+                        * narr[:, None]
+                        * larr[None, :]
+                        / int(ntimes_wdm)
+                    ),
                     axis=0,
                 )
-                * int(nfreqs_wdm)
-                * window[1:half]
+                * window[:half]
+                / xp.sqrt(2.0)
             )
-            _accumulate_fourier_slice(reconstructed, dc_block, start=1, kmin=kmin)
-            _accumulate_fourier_slice(
-                reconstructed,
-                xp.asarray([xp.sum(coeffs_dc) * int(nfreqs_wdm) * window[0] / 2.0]),
-                start=0,
-                kmin=kmin,
-            )
+            _accumulate_fourier_slice(reconstructed, dc_block, start=0, kmin=kmin)
             continue
 
         if m == int(nfreqs_wdm):
@@ -323,39 +330,38 @@ def inverse_wdm_subband(
             nyq_block = (
                 xp.sum(
                     coeffs_nyq[:, None]
-                    * xp.exp(-4j * xp.pi * narr[:, None] * larr[None, :] / int(ntimes_wdm)),
+                    * xp.exp(
+                        -4j
+                        * xp.pi
+                        * narr[:, None]
+                        * larr[None, :]
+                        / int(ntimes_wdm)
+                    ),
                     axis=0,
                 )
-                * int(nfreqs_wdm)
                 * window[-half:]
+                / xp.sqrt(2.0)
             )
             _accumulate_fourier_slice(reconstructed, nyq_block, start=start, kmin=kmin)
             _accumulate_fourier_slice(
                 reconstructed,
-                xp.asarray([xp.sum(coeffs_nyq) * int(nfreqs_wdm) * window[0] / 2.0]),
+                xp.asarray([xp.sum(coeffs_nyq) * window[0] / xp.sqrt(2.0)]),
                 start=n_total // 2,
                 kmin=kmin,
             )
             continue
 
-        spectrum_block = backend.fft.fft(
-            cnm(backend, narr, m) * w[:, local_idx] * int(nfreqs_wdm) / xp.sqrt(2.0)
+        sign = (-1) ** ((m - 1) * narr)
+        shifted = (
+            backend.fft.fft(cnm(backend, narr, m) * w[:, local_idx] * sign)
+            * xp.concatenate([window[-half:], window[:half]])
+            / xp.sqrt(2.0)
         )
-        block = spectrum_block * window
-        shifted = xp.concatenate([block[half:], block[:half]])
         _accumulate_fourier_slice(
             reconstructed,
             shifted,
             start=(m - 1) * half,
             kmin=kmin,
         )
-
-    reconstructed = reconstructed / int(nfreqs_wdm)
-    if kmin == 0:
-        reconstructed[0] *= 2.0
-
-    nyquist = int(nfreqs_fourier) - 1
-    if kmin <= nyquist < kmin + lendata:
-        reconstructed[nyquist - kmin] *= 2.0
 
     return reconstructed, kmin

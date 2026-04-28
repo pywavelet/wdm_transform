@@ -67,8 +67,14 @@ def test_mkdocs_builds_walkthrough_page(tmp_path: Path) -> None:
 
     lisa_html = lisa_page.read_text(encoding="utf-8")
     assert "LISA Galactic-Binary Study" in lisa_html
-    assert "lisa_freq_mcmc_assets/local_frequency_bands.png" in lisa_html
-    assert "lisa_wdm_mcmc_assets/wdm_band_fit.png" in lisa_html
+    assert (
+        "lisa/outdir_lisa/galactic_background/seed_0/posterior_marginals_compare.png"
+        in lisa_html
+    )
+    assert (
+        "lisa/outdir_lisa/galactic_background/seed_0/posterior_interval_compare.png"
+        in lisa_html
+    )
     assert "data_generation.py" in lisa_html
     assert "jupyter-wrapper" not in lisa_html
 
