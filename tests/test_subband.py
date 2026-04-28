@@ -535,7 +535,7 @@ def test_forward_subband_matches_full_wdm_slice_for_sinusoid() -> None:
     _assert_forward_matches_full_slice(result)
 
 
-def test_full_wdm_matches_analytic_sinusoid_formula_after_normalization() -> None:
+def test_full_wdm_matches_analytic_sinusoid_formula() -> None:
     k0 = 37
     amplitude = 1.7
     phase = 0.31
@@ -554,10 +554,9 @@ def test_full_wdm_matches_analytic_sinusoid_formula_after_normalization() -> Non
         nf=NF,
     )
 
-    # This analytic convention differs by a factor nf from the package normalization.
     np.testing.assert_allclose(
         np.asarray(full_wdm.coeffs)[0],
-        np.real(analytic) / NF,
+        np.real(analytic),
         atol=1e-10,
         rtol=1e-10,
     )

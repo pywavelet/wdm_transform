@@ -34,7 +34,7 @@ DEFAULT_BATCH_SIZE = 3
 DEFAULT_OUTDIR = Path("benchmark_artifacts")
 DEFAULT_JSON_NAME = "benchmark_results.json"
 DEFAULT_PLOT_NAME = "benchmark_runtime.png"
-FIXED_PARAMS = {"a": 0.4, "d": 0.8, "dt": 1.0}
+FIXED_PARAMS = {"a": 0.4, "d": 1, "dt": 1.0}
 
 OPERATION_TITLES = {
     "from_freq": "Forward Kernel: from_freq_to_wdm",

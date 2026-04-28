@@ -9,7 +9,11 @@ import jax.numpy as jnp
 from jax import jit
 
 from ..backends import Backend
-from ..windows import phi_window, validate_window_parameter
+from ..windows import (
+    phi_window,
+    validate_window_order,
+    validate_window_parameter,
+)
 from ._subband import (
     dt_from_df,
     fourier_span_from_wdm_span,
@@ -100,7 +104,7 @@ def _forward_wdm_subband_impl(
                     axis=1,
                 )
                 + x0 * window[0] / 2.0
-            ) / (int(ntimes_wdm) * int(nfreqs_wdm))
+            ) * jnp.sqrt(2.0)
             coeff_columns.append(coeff)
             continue
 
@@ -127,8 +131,8 @@ def _forward_wdm_subband_impl(
                     * block[None, :],
                     axis=1,
                 )
-                + xnyq * window[0] / 2.0
-            ) / (int(ntimes_wdm) * int(nfreqs_wdm))
+                + jnp.conjugate(xnyq) * window[0] / 2.0
+            ) * jnp.sqrt(2.0)
             coeff_columns.append(coeff)
             continue
 
@@ -145,9 +149,13 @@ def _forward_wdm_subband_impl(
             stop=m * half,
             kmin=kmin,
         )
-        xnm_time = jnp.fft.ifft(jnp.concatenate([upper, lower]) * window)
+        xnm_time = (
+            jnp.fft.ifft(jnp.concatenate([upper, lower]) * window)
+            * int(ntimes_wdm)
+        )
+        sign = jnp.where((m * narr) % 2 == 0, 1.0, -1.0)
         coeff_columns.append(
-            (jnp.sqrt(2.0) / int(nfreqs_wdm)) * jnp.real(phase * xnm_time)
+            sign * jnp.sqrt(2.0) * jnp.real(phase * xnm_time)
         )
 
     return jnp.stack(coeff_columns, axis=1)
@@ -169,6 +177,7 @@ def _inverse_wdm_subband_impl(
     kmin: int,
     lendata: int,
 ) -> jnp.ndarray:
+    del nfreqs_fourier
     half = int(ntimes_wdm) // 2
     n_total = int(ntimes_wdm) * int(nfreqs_wdm)
     narr = jnp.arange(int(ntimes_wdm))
@@ -177,7 +186,7 @@ def _inverse_wdm_subband_impl(
     for local_idx, m in enumerate(range(int(mmin), int(mmin) + int(nf_sub_wdm))):
         if m == 0:
             coeffs_dc = coeffs[:, local_idx]
-            larr = jnp.arange(1, half)
+            larr = jnp.arange(half)
             dc_block = (
                 jnp.sum(
                     coeffs_dc[:, None]
@@ -186,18 +195,12 @@ def _inverse_wdm_subband_impl(
                     ),
                     axis=0,
                 )
-                * int(nfreqs_wdm)
-                * window[1:half]
+                * window[:half]
+                / jnp.sqrt(2.0)
             )
             reconstructed = _accumulate_fourier_slice(
                 reconstructed,
                 dc_block,
-                start=1,
-                kmin=kmin,
-            )
-            reconstructed = _accumulate_fourier_slice(
-                reconstructed,
-                jnp.asarray([jnp.sum(coeffs_dc) * int(nfreqs_wdm) * window[0] / 2.0]),
                 start=0,
                 kmin=kmin,
             )
@@ -215,8 +218,8 @@ def _inverse_wdm_subband_impl(
                     ),
                     axis=0,
                 )
-                * int(nfreqs_wdm)
                 * window[-half:]
+                / jnp.sqrt(2.0)
             )
             reconstructed = _accumulate_fourier_slice(
                 reconstructed,
@@ -227,31 +230,28 @@ def _inverse_wdm_subband_impl(
             reconstructed = _accumulate_fourier_slice(
                 reconstructed,
                 jnp.asarray(
-                    [jnp.sum(coeffs_nyq) * int(nfreqs_wdm) * window[0] / 2.0]
+                    [jnp.sum(coeffs_nyq) * window[0] / jnp.sqrt(2.0)]
                 ),
                 start=n_total // 2,
                 kmin=kmin,
             )
             continue
 
-        spectrum_block = jnp.fft.fft(
-            _cnm_jax(narr, m) * coeffs[:, local_idx] * int(nfreqs_wdm) / jnp.sqrt(2.0)
+        sign = jnp.where(((m - 1) * narr) % 2 == 0, 1.0, -1.0)
+        block = (
+            jnp.fft.fft(
+                _cnm_jax(narr, m) * coeffs[:, local_idx] * sign
+            )
+            * jnp.concatenate([window[-half:], window[:half]])
+            / jnp.sqrt(2.0)
         )
-        block = spectrum_block * window
         reconstructed = _accumulate_fourier_slice(
             reconstructed,
-            jnp.concatenate([block[half:], block[:half]]),
+            block,
             start=(m - 1) * half,
             kmin=kmin,
         )
 
-    reconstructed = reconstructed / int(nfreqs_wdm)
-    if kmin == 0:
-        reconstructed = reconstructed.at[0].multiply(2.0)
-
-    nyquist = int(nfreqs_fourier) - 1
-    if kmin <= nyquist < kmin + reconstructed.shape[0]:
-        reconstructed = reconstructed.at[nyquist - kmin].multiply(2.0)
     return reconstructed
 
 
@@ -273,6 +273,7 @@ def forward_wdm_subband(
         ntimes_wdm=ntimes_wdm,
     )
     validate_window_parameter(a)
+    validate_window_order(d)
 
     dt = dt_from_df(df=df, nfreqs_fourier=nfreqs_fourier)
     spectrum = backend.asarray(data, dtype=jnp.complex128)
@@ -327,6 +328,7 @@ def inverse_wdm_subband(
         ntimes_wdm=ntimes_wdm,
     )
     validate_window_parameter(a)
+    validate_window_order(d)
 
     dt = dt_from_df(df=df, nfreqs_fourier=nfreqs_fourier)
     w = backend.asarray(coeffs, dtype=jnp.float64)

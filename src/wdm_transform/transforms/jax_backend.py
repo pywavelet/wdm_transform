@@ -32,7 +32,12 @@ import jax.numpy as jnp
 from jax import jit
 
 from ..backends import Backend
-from ..windows import phi_window, validate_transform_shape, validate_window_parameter
+from ..windows import (
+    phi_window,
+    validate_transform_shape,
+    validate_window_order,
+    validate_window_parameter,
+)
 
 
 def _cnm_jax(n: Any, m: Any) -> Any:
@@ -98,7 +103,7 @@ def _from_spectrum_to_wdm_batch_impl(
     coeffs_dc = jnp.real(
         jnp.einsum("bl,nl->bn", block, dc_phase)
         + x_fft_batch[:, 0][:, None] * window[0] / 2.0
-    ) / (nt * nf)
+    ) * sqrt2
 
     # --- Interior channels (m = 1…nf−1), fully vectorised ---
     mid_m = jnp.arange(1, nf)
@@ -108,7 +113,12 @@ def _from_spectrum_to_wdm_batch_impl(
     mid_blocks = x_fft_batch[:, mid_indices] * window[None, None, :]
     mid_times = jnp.fft.ifft(mid_blocks, axis=-1).transpose(0, 2, 1)
     mid_phase = jnp.conjugate(_cnm_jax(narr[:, None], mid_m[None, :]))
-    coeffs_mid = (sqrt2 / nf) * jnp.real(mid_times * mid_phase[None, :, :])
+    sign = jnp.where((narr[:, None] * mid_m[None, :]) % 2 == 0, 1.0, -1.0)
+    coeffs_mid = (
+        sign[None, :, :]
+        * sqrt2
+        * jnp.real(nt * mid_times * mid_phase[None, :, :])
+    )
 
     # --- Nyquist edge channel (m = nf) ---
     block = x_fft_batch[:, n_total // 2 - half:n_total // 2] * window[None, -half:]
@@ -116,8 +126,8 @@ def _from_spectrum_to_wdm_batch_impl(
     nyq_phase = jnp.exp(4j * jnp.pi * larr[None, :] * narr[:, None] / nt)
     coeffs_nyq = jnp.real(
         jnp.einsum("bl,nl->bn", block, nyq_phase)
-        + x_fft_batch[:, n_total // 2][:, None] * window[0] / 2.0
-    ) / (nt * nf)
+        + jnp.conjugate(x_fft_batch[:, n_total // 2])[:, None] * window[0] / 2.0
+    ) * sqrt2
 
     # Assemble (batch, nt, nf+1): [DC | interior | Nyquist]
     return jnp.concatenate([
@@ -159,48 +169,45 @@ def _from_wdm_to_spectrum_batch_impl(
     coeffs_dc = w_batch[:, :, 0]
     coeffs_nyq = w_batch[:, :, nf]
     batch_idx = jnp.arange(w_batch.shape[0])[:, None, None]
-
-    # Modulate and FFT along the time axis: y[n,m] = C_{n,m} · W[n,m] · nf/√2
-    n_idx = jnp.arange(nt)[:, None]
-    m_idx = jnp.arange(1, nf)[None, :]
-    ylm = _cnm_jax(n_idx, m_idx)[None, :, :] * w_batch[:, :, 1:nf] * nf / jnp.sqrt(2.0)
-    spectrum_blocks = jnp.fft.fft(ylm, axis=1)
-
-    x_recon = jnp.zeros((w_batch.shape[0], n_total), dtype=jnp.complex128)
     narr = jnp.arange(nt)
+    xfr = jnp.zeros((w_batch.shape[0], n_total // 2 + 1), dtype=jnp.complex128)
 
-    # --- DC edge ---
-    larr = jnp.arange(1, half)
+    # Eq. \ref{eq:inverse_fourier}: synthesize the one-sided spectrum.
+    larr = jnp.arange(half)
     dc_phase = jnp.exp(-4j * jnp.pi * narr[:, None] * larr[None, :] / nt)
-    x_recon = x_recon.at[:, 1:half].add(
+    xfr = xfr.at[:, :half].add(
         jnp.einsum("bn,nl->bl", coeffs_dc, dc_phase)
-        * nf
-        * window[None, 1:half]
+        * window[None, :half]
+        / jnp.sqrt(2.0)
     )
-    x_recon = x_recon.at[:, 0].add(jnp.sum(coeffs_dc, axis=1) * nf * window[0] / 2.0)
 
-    # --- Interior channels: vectorised scatter-add ---
-    mid_blocks = spectrum_blocks.transpose(0, 2, 1) * window[None, None, :]
-    shifted_blocks = jnp.concatenate(
-        [mid_blocks[:, :, half:], mid_blocks[:, :, :half]],
-        axis=2,
+    # FFT trick: for l ∈ [(m-1)·half, (m+1)·half), the explicit DFT sum
+    # Σ_n C_{nm}·w[n,m]·exp(-2πi·n·l/nt) factorises into
+    # (-1)^((m-1)·n) · exp(-2πi·n·k/nt), so we reduce the inverse to an FFT.
+    mid_m = jnp.arange(1, nf)
+    mid_larr = (mid_m[:, None] - 1) * half + jnp.arange(nt)[None, :]
+    sign = jnp.where((narr[:, None] * (mid_m[None, :] - 1)) % 2 == 0, 1.0, -1.0)
+    mid_weighted = _cnm_jax(narr[:, None], mid_m[None, :])[None, :, :]
+    mid_weighted = mid_weighted * w_batch[:, :, 1:nf] * sign[None, :, :]
+    mid_values = (
+        jnp.fft.fft(mid_weighted, axis=1).transpose(0, 2, 1)
+        * jnp.concatenate([window[-half:], window[:half]])[None, None, :]
+        / jnp.sqrt(2.0)
     )
-    mid_indices = (jnp.arange(1, nf)[:, None] - 1) * half + jnp.arange(nt)[None, :]
-    x_recon = x_recon.at[batch_idx, mid_indices[None, :, :]].add(shifted_blocks)
+    xfr = xfr.at[batch_idx, mid_larr[None, :, :]].add(mid_values)
 
-    # --- Nyquist edge ---
     larr = jnp.arange(n_total // 2 - half, n_total // 2)
     nyq_phase = jnp.exp(-4j * jnp.pi * narr[:, None] * larr[None, :] / nt)
-    x_recon = x_recon.at[:, n_total // 2 - half:n_total // 2].add(
+    xfr = xfr.at[:, n_total // 2 - half:n_total // 2].add(
         jnp.einsum("bn,nl->bl", coeffs_nyq, nyq_phase)
-        * nf
         * window[None, -half:]
+        / jnp.sqrt(2.0)
     )
-    x_recon = x_recon.at[:, n_total // 2].add(
-        jnp.sum(coeffs_nyq, axis=1) * nf * window[0] / 2.0
+    xfr = xfr.at[:, n_total // 2].add(
+        jnp.sum(coeffs_nyq, axis=1) * window[0] / jnp.sqrt(2.0)
     )
 
-    return x_recon / (nf / 2.0)
+    return jnp.concatenate([xfr, jnp.conjugate(xfr[:, 1:-1][:, ::-1])], axis=1)
 
 
 # ---------------------------------------------------------------------------
@@ -229,6 +236,7 @@ def from_time_to_wdm(
     """
     validate_transform_shape(nt, nf)
     validate_window_parameter(a)
+    validate_window_order(d)
 
     n_total = nt * nf
     xp = backend.xp
@@ -261,6 +269,7 @@ def from_freq_to_wdm(
     """Forward WDM transform from Fourier-domain samples (JAX backend)."""
     validate_transform_shape(nt, nf)
     validate_window_parameter(a)
+    validate_window_order(d)
 
     n_total = nt * nf
     xp = backend.xp
@@ -304,6 +313,7 @@ def from_wdm_to_time(
     nf = ncols - 1
     validate_transform_shape(nt, nf)
     validate_window_parameter(a)
+    validate_window_order(d)
 
     window = jnp.asarray(
         phi_window(backend, nt, nf, dt, a, d),
@@ -332,6 +342,7 @@ def from_wdm_to_freq(
     nf = ncols - 1
     validate_transform_shape(nt, nf)
     validate_window_parameter(a)
+    validate_window_order(d)
 
     window = jnp.asarray(
         phi_window(backend, nt, nf, dt, a, d),

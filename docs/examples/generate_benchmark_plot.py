@@ -22,12 +22,14 @@ if str(SRC) not in sys.path:
 
 from wdm_transform.benchmarking import (  # noqa: E402
     DEFAULT_BACKENDS,
-    DEFAULT_N_VALUES,
     plot_results,
     print_summary,
+    resolve_n_values,
     run_benchmarks,
     save_results,
 )
+
+DEFAULT_N_VALUES = resolve_n_values()
 
 
 def main() -> None:
