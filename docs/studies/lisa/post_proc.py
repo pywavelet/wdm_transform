@@ -542,6 +542,70 @@ def compare_summary(run_a: RunPosterior, run_b: RunPosterior, labels: list[str])
         print(f"  {label:24s} delta={delta:+.6e}")
 
 
+def _jensen_shannon_bits_from_counts(counts_a: np.ndarray, counts_b: np.ndarray) -> float:
+    """Return Jensen-Shannon divergence in bits for two histogram count arrays."""
+    p = np.asarray(counts_a, dtype=float).reshape(-1)
+    q = np.asarray(counts_b, dtype=float).reshape(-1)
+    if np.sum(p) <= 0.0 or np.sum(q) <= 0.0:
+        return float("nan")
+
+    p = p / np.sum(p)
+    q = q / np.sum(q)
+    m = 0.5 * (p + q)
+
+    def kl_bits(lhs: np.ndarray, rhs: np.ndarray) -> float:
+        keep = lhs > 0.0
+        return float(np.sum(lhs[keep] * np.log2(lhs[keep] / rhs[keep])))
+
+    return 0.5 * kl_bits(p, m) + 0.5 * kl_bits(q, m)
+
+
+def _shared_histogram_edges(values_a: np.ndarray, values_b: np.ndarray, *, bins: int = 64) -> np.ndarray:
+    """Build shared finite histogram edges with light outlier clipping."""
+    pooled = np.concatenate([np.asarray(values_a, dtype=float), np.asarray(values_b, dtype=float)])
+    pooled = pooled[np.isfinite(pooled)]
+    if pooled.size == 0:
+        return np.linspace(0.0, 1.0, bins + 1)
+
+    lo, hi = np.percentile(pooled, [0.5, 99.5])
+    if not np.isfinite(lo) or not np.isfinite(hi) or lo >= hi:
+        lo = float(np.min(pooled))
+        hi = float(np.max(pooled))
+    if lo == hi:
+        pad = max(abs(lo), 1.0) * 1e-6
+        lo -= pad
+        hi += pad
+    return np.linspace(float(lo), float(hi), bins + 1)
+
+
+def compute_marginal_jsd(
+    run_a: RunPosterior,
+    run_b: RunPosterior,
+    labels: list[str],
+    *,
+    bins: int = 64,
+) -> list[dict[str, float | str]]:
+    """Compute per-parameter marginal JSD between two aligned posterior runs."""
+    rows: list[dict[str, float | str]] = []
+    for idx, label in enumerate(labels):
+        edges = _shared_histogram_edges(run_a.samples[:, idx], run_b.samples[:, idx], bins=bins)
+        counts_a, _ = np.histogram(run_a.samples[:, idx], bins=edges)
+        counts_b, _ = np.histogram(run_b.samples[:, idx], bins=edges)
+        rows.append(
+            {
+                "label": label,
+                "jsd_bits": _jensen_shannon_bits_from_counts(counts_a, counts_b),
+            }
+        )
+    return rows
+
+
+def print_marginal_jsd(jsd_rows: list[dict[str, float | str]]) -> None:
+    print("\nMarginal Jensen-Shannon divergence (A vs B)")
+    for row in jsd_rows:
+        print(f"  {str(row['label']):24s} JSD={float(row['jsd_bits']):.6e} bits")
+
+
 def build_run_diagnostics(run: RunPosterior) -> dict[str, object]:
     return {
         "name": run.name,
@@ -575,7 +639,10 @@ def build_comparison_diagnostics(
                 ),
             }
         )
-    return {"median_deltas": deltas}
+    return {
+        "median_deltas": deltas,
+        "marginal_jsd": compute_marginal_jsd(run_a, run_b, labels),
+    }
 
 
 def plot_corner(run_a: RunPosterior, run_b: RunPosterior, output_dir: Path) -> None:
@@ -690,10 +757,12 @@ def main() -> None:
                 run_a.name: build_run_diagnostics(run_a),
                 run_b.name: build_run_diagnostics(run_b),
             }
-            payload["comparison"] = build_comparison_diagnostics(run_a, run_b, labels)
+            comparison = build_comparison_diagnostics(run_a, run_b, labels)
+            payload["comparison"] = comparison
             report_run(run_a)
             report_run(run_b)
             compare_summary(run_a, run_b, labels)
+            print_marginal_jsd(comparison["marginal_jsd"])
             plot_corner(run_a, run_b, args.output_dir)
 
             print("\nSaved comparison figures:")

@@ -9,9 +9,8 @@ The main improvements so far are:
 
 - The local `f0` prior was tightened to a narrow absolute offset around the fixed reference
   frequency. The current default is `delta_f0 = f0 - f_ref ∈ [-3e-8, 3e-8] Hz`.
-- Frequency-domain likelihood plotting was moved out of the main analysis script into
-  `lisa_freq_diagnostics.py`, so exploratory likelihood scans do not affect the production MCMC
-  path.
+- Exploratory likelihood plotting was removed from this directory so the production MCMC and
+  posterior-comparison path stays small.
 - In the frequency-domain run, `phi0` is no longer sampled directly. The current sampler samples
   `(delta_f0, logfdot, logA)` and profiles over `phi0` inside the likelihood.
 - In the WDM-domain run, `phi0` is also profiled out while `logA` remains sampled. The WDM sampler
@@ -62,7 +61,7 @@ The current sampler choices are pragmatic:
 - sample amplitude,
 - profile over phase,
 - keep the local frequency prior narrow,
-- keep likelihood-surface diagnostics separate from the main MCMC scripts.
+- keep diagnostics separate from the main MCMC scripts.
 
 This is currently the most stable setup found in this study, but it should still be regarded as
 provisional until repeated-seed tests show that the main mode is recovered reliably.

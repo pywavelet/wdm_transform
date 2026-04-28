@@ -817,13 +817,14 @@ def main() -> None:
         np.asarray(band["noise_psd_aet"])[2],
     )
 
-    overlap_check_passed = check_template_injection_sanity(
+    check_template_injection_sanity(
         template_aet_band,
         injection_aet_band,
         noise_psd_band,
         np.asarray(band["freqs"]),
         dt,
         context="Frequency-domain template-injection",
+        warn_on_fail=False,
     )
 
     if (
@@ -848,10 +849,6 @@ def main() -> None:
         print(
             "Skipping pure-source overlap check: injection archive does not include source_Af/source_Ef/source_Tf"
         )
-
-    if not overlap_check_passed:
-        print("WARNING: Template-injection overlap check FAILED")
-        print("Consider investigating template generation or injection consistency")
 
     samples, samples_by_chain, mcmc, init_values = sample_source(
         jgb=jgb,

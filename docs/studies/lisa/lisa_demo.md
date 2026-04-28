@@ -4,9 +4,10 @@ Executable scripts:
 [`data_generation.py`](./data_generation.py),
 [`lisa_freq_mcmc.py`](./lisa_freq_mcmc.py),
 [`lisa_wdm_mcmc.py`](./lisa_wdm_mcmc.py),
-[`pp_plot.py`](./pp_plot.py).
+[`post_proc.py`](./post_proc.py), and
+[`collect_jsd.py`](./collect_jsd.py).
 
-This study is organized as a markdown-first case study backed by three plain Python scripts.
+This study is organized as a markdown-first case study backed by a small set of plain Python scripts.
 The markdown page carries the narrative, the math, and the rendered figures. The scripts are
 kept as standalone executables that generate the cached products and posterior diagnostics shown
 here.
@@ -22,9 +23,10 @@ here.
 3. `lisa_wdm_mcmc.py` loads the same cache, transforms the injected data to WDM coefficients, and
    performs one per-source fit on a narrow WDM band (mirroring the frequency-domain
    approach). Uses $n_t = 32$ by default for inference.
-4. `pp_plot.py` scans the seeded posterior archives for one mode and builds a multi-seed PP plot
-   comparing the WDM and frequency-domain calibration for the sampled parameters
-   $(f_0, \dot{f}, A, \phi_0)$.
+4. `post_proc.py` compares WDM and frequency-domain posteriors for one seed and writes
+   diagnostics, including marginal Jensen-Shannon divergence.
+5. `collect_jsd.py` aggregates the per-seed JSD diagnostics into a CSV, JSON summary, and
+   histogram.
 
 ## How To Run
 
@@ -48,7 +50,8 @@ Useful overrides:
 LISA_SEED=3 python docs/studies/lisa/data_generation.py
 LISA_N_WARMUP=400 LISA_N_DRAWS=600 python docs/studies/lisa/lisa_freq_mcmc.py
 LISA_N_WARMUP=400 LISA_N_DRAWS=600 LISA_NT=32 python docs/studies/lisa/lisa_wdm_mcmc.py
-python docs/studies/lisa/pp_plot.py --mode stationary_noise
+python docs/studies/lisa/post_proc.py
+python docs/studies/lisa/collect_jsd.py --mode stationary_noise --start-seed 0 --end-seed 9
 ```
 
 `data_generation.py` is the prerequisite step. Both inference scripts read:
@@ -172,8 +175,8 @@ parameters, using `(delta_f0, logfdot, logA, phi0)` in the frequency-domain run 
 ### Outputs
 
 `lisa_freq_mcmc.py` writes only the frequency-domain posterior archive and sampler diagnostics.
-Exploratory likelihood plots now live in `lisa_freq_diagnostics.py`, which can regenerate the
-prior/data plot plus 1D or 2D local likelihood scans without touching the main inference run.
+Posterior comparison diagnostics now live in `post_proc.py` and repeated-seed JSD aggregation in
+`collect_jsd.py`.
 
 ### Source Code: `lisa_freq_mcmc.py`
 

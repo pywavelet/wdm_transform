@@ -710,6 +710,7 @@ def check_template_injection_sanity(
     *,
     overlap_threshold: float = 0.95,
     context: str = "Template-injection",
+    warn_on_fail: bool = True,
 ) -> bool:
     """Sanity check: template-injection overlap should be ≈ 1.
 
@@ -721,6 +722,8 @@ def check_template_injection_sanity(
         dt: Time spacing
         overlap_threshold: Minimum acceptable overlap (default 0.95)
         context: Description for logging
+        warn_on_fail: Treat a failed threshold as a possible consistency
+            problem. Use False for template-vs-noisy-data checks.
 
     Returns:
         True if overlap check passes, False otherwise
@@ -741,11 +744,16 @@ def check_template_injection_sanity(
     all_pass = np.all(overlaps_per_channel >= overlap_threshold) and combined_overlap >= overlap_threshold
 
     if not all_pass:
-        print(f"  WARNING: Template-injection overlap below threshold {overlap_threshold:.3f}")
-        print(f"  This suggests potential issues with:")
-        print(f"    - Template generation at true parameters")
-        print(f"    - Injection data consistency")
-        print(f"    - Numerical precision in frequency domain transforms")
+        prefix = "WARNING" if warn_on_fail else "NOTE"
+        print(f"  {prefix}: overlap below threshold {overlap_threshold:.3f}")
+        if warn_on_fail:
+            print("  This suggests potential issues with:")
+            print("    - Template generation at true parameters")
+            print("    - Injection data consistency")
+            print("    - Numerical precision in frequency domain transforms")
+        else:
+            print("  Template-vs-noisy-data overlaps can be below threshold;")
+            print("  use the pure-source overlap check for consistency validation.")
         return False
     else:
         print(f"  Template-injection overlap check PASSED (≥ {overlap_threshold:.3f})")

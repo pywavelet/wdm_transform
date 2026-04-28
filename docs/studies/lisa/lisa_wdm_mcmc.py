@@ -544,6 +544,7 @@ def build_wdm_inputs(
 ) -> dict[str, np.ndarray | float | tuple[float, float]]:
     """Return the local WDM patch and prior metadata."""
     f0_init = float(injection.f0_ref)
+    n_total = 2 * (int(n_freqs) - 1)
     margin = jgb.n / t_obs
     band_slice = trim_frequency_band(
         freq_grid,
@@ -630,15 +631,16 @@ def build_wdm_inputs(
                 jnp.asarray(data_t_rfft[kmin_rfft:kmax_rfft]), **band_kwargs
             )
         ),
-        "noise_var_band_A": wdm_noise_variance(
-            noise_psd_band_a, nt=nt, dt=injection.dt
-        ),
-        "noise_var_band_E": wdm_noise_variance(
-            noise_psd_band_e, nt=nt, dt=injection.dt
-        ),
-        "noise_var_band_T": wdm_noise_variance(
-            noise_psd_band_t, nt=nt, dt=injection.dt
-        ),
+        # forward_wdm_band works on raw NumPy/JAX FFT coefficients. With that
+        # convention the WDM coefficients carry a sqrt(N) factor relative to a
+        # unitary projection, so their white-noise variance carries N.
+        "noise_var_band_A": n_total
+        * wdm_noise_variance(noise_psd_band_a, nt=nt, dt=injection.dt),
+        "noise_var_band_E": n_total
+        * wdm_noise_variance(noise_psd_band_e, nt=nt, dt=injection.dt),
+        "noise_var_band_T": n_total
+        * wdm_noise_variance(noise_psd_band_t, nt=nt, dt=injection.dt),
+        "n_total": n_total,
         "f0_ref": float(injection.f0_ref),
         "f0_init": float(f0_init),
         "logf0_ref": float(np.log(f0_init)),
@@ -1135,19 +1137,21 @@ def main() -> None:
         noise_psd_rfft[2][int(band["src_kmin"]) : int(band["src_kmax"])],
     )
 
-    overlap_check_passed = check_template_injection_sanity(
+    check_template_injection_sanity(
         template_aet_freq,
         injection_aet_freq,
         noise_psd_freq_band,
         band_freqs_rfft,
         injection.dt,
         context="WDM analysis template-injection (freq domain)",
+        warn_on_fail=False,
     )
 
     if (
         injection.source_Af is not None
         and injection.source_Ef is not None
         and injection.source_Tf is not None
+        and len(injection.source_Af) == n_freqs
     ):
         pure_aet_freq = (
             injection.source_Af[int(band["src_kmin"]) : int(band["src_kmax"])],
@@ -1164,12 +1168,9 @@ def main() -> None:
         )
     else:
         print(
-            "Skipping pure-source overlap check: injection archive does not include source_Af/source_Ef/source_Tf"
+            "Skipping pure-source overlap check: cached source FFT is absent or uses "
+            "a different observation length than the WDM-trimmed data"
         )
-
-    if not overlap_check_passed:
-        print("WARNING: Template-injection overlap check FAILED")
-        print("Consider investigating template generation or injection consistency")
 
     mcmc, init_values = sample_source_wdm(
         jgb=jgb,
