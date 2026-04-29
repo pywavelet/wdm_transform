@@ -6,6 +6,12 @@ edit_uri: edit/main/docs/
 docs_dir: docs
 site_dir: site
 
+exclude_docs: |
+  studies/**
+  manuscript/**
+  reference/api.md
+  dev-notes.md
+
 theme:
   name: material
   logo: _static/logo.png
@@ -93,15 +99,6 @@ nav:
       - Windows And Atoms: guide/windows-and-atoms.md
       - Reconstruction And Inference: guide/reconstruction-and-inference.md
   - Tutorial & Walkthrough: examples/wdm_walkthrough.py
-  - Examples:
-      - Basic Signal Processing:
-          - Sinusoid In Colored Noise: studies/toymodels/monochrome_stationary_psd.md
-          - Signal With A Gap: studies/toymodels/monochrome_gaps.md
-          - Deglitching: studies/toymodels/deglitching.md
-      - Advanced Applications:
-          - LISA GB Inference: studies/lisa/lisa_demo.md
-          - Monochromatic Signal in Time-Varying Noise: studies/toymodels/monochrome_tv_psd.md
-          - Time-Varying WDM PSD: studies/toymodels/tv_psd.md
   - API Reference:
       - API Overview: guide/api-overview.md
       - Package Layout: guide/package-layout.md

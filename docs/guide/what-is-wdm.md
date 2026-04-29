@@ -74,6 +74,6 @@ This view is useful when you want:
 - a domain where localized signals can be separated from broadband or
   stationary noise more naturally
 
-For a full worked example, see the study notebook:
+For a full worked example with executable plots, see the walkthrough:
 
-- [Sinusoid In Colored Noise](../studies/toymodels/monochrome_stationary_psd.md)
+- [WDM Walkthrough](../examples/wdm_walkthrough.py)

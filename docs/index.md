@@ -27,15 +27,6 @@ Use the executed walkthrough to see the package API and plots in one place:
 
 - [WDM Walkthrough](examples/wdm_walkthrough.py)
 
-### Case Studies
-
-These are longer worked examples showing how WDM behaves in specific analysis problems:
-
-- [Sinusoid In Colored Noise](studies/toymodels/monochrome_stationary_psd.md)
-- [Time-Varying WDM PSD](studies/toymodels/tv_psd.md)
-- [Deglitching](studies/toymodels/deglitching.md)
-- [Signal With A Gap](studies/toymodels/monochrome_gaps.md)
-
 ### Reference
 
 Use these when you want implementation-oriented details:
