@@ -5,26 +5,10 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-import corner
 import jax
 import numpy as np
-from gb_prior import (
-    F0_GLOBAL_BOUNDS,
-    F0_REF,
-    FDOT_GLOBAL_BOUNDS,
-    FIXED_A_PRIOR_BOUNDS,
-    FIXED_FDOT_PRIOR_BOUNDS,
-    SOURCE_CATALOG,
-    build_local_prior_info,
-    draw_source_prior_and_params,
-    lisa_f0_jitter_width,
-)
-from wdm_transform.signal_processing import (
-    matched_filter_snr_rfft,
-    matched_filter_snr_wdm,
-    noise_characteristic_strain,
-    rfft_characteristic_strain,
-)
+from gb_prior import SOURCE_CATALOG
+from wdm_transform.signal_processing import matched_filter_snr_rfft
 
 STUDY_DIR = Path(__file__).resolve().parent
 OUTDIR_ROOT = STUDY_DIR / "outdir_lisa"
@@ -73,8 +57,6 @@ def lisa_run_dir(
 RUN_DIR = lisa_run_dir()
 RESPONSE_TENSOR_PATH = CACHE_DIR / "Rtildeop_tf.npz"
 INJECTION_PATH = RUN_DIR / "injection.npz"
-FREQ_POSTERIOR_PATH = RUN_DIR / "freq_posteriors.npz"
-WDM_POSTERIOR_PATH = RUN_DIR / "wdm_posteriors.npz"
 
 
 # ── JAX and matplotlib setup ──────────────────────────────────────────────────
@@ -301,66 +283,6 @@ def estimate_frequency_peak(
         + np.abs(np.asarray(data_Tf)[keep]) ** 2 / np.maximum(np.asarray(noise_psd_T)[keep], 1e-60)
     )
     return float(np.asarray(freqs)[keep][int(np.argmax(score))])
-
-
-def build_sampled_source_params(fixed_params: np.ndarray, samples_i: np.ndarray) -> np.ndarray:
-    """Expand sampled [f0, fdot, A, phi0, ...] rows into full 8-parameter vectors."""
-    samples_full = np.tile(np.asarray(fixed_params, dtype=float), (samples_i.shape[0], 1))
-    samples_full[:, 0] = samples_i[:, 0]
-    samples_full[:, 1] = samples_i[:, 1]
-    samples_full[:, 2] = samples_i[:, 2]
-    samples_full[:, 7] = samples_i[:, 3]
-    return samples_full
-
-
-def source_truth_vector(fixed_params: np.ndarray, *, snr: float | None = None) -> np.ndarray:
-    """Truth vector matching the local posterior column convention."""
-    truth = [
-        float(fixed_params[0]),
-        float(fixed_params[1]),
-        float(fixed_params[2]),
-        float(wrap_phase(fixed_params[7])),
-    ]
-    if snr is not None:
-        truth.append(float(snr))
-    return np.asarray(truth, dtype=float)
-
-
-def save_posterior_archive(
-    output_path: Path,
-    *,
-    source_params: np.ndarray,
-    all_samples: list[np.ndarray],
-    snr_optimal: list[float],
-    labels: list[str] | None = None,
-    truth: np.ndarray | None = None,
-) -> Path:
-    """Write the shared posterior NPZ layout used by the study scripts."""
-    ensure_output_dir(output_path.parent)
-    source_params = np.atleast_2d(np.asarray(source_params, dtype=float))
-    archive_data: dict[str, np.ndarray] = {
-        "source_params": source_params,
-        "snr_optimal": np.asarray(snr_optimal, dtype=float),
-    }
-    if labels is not None:
-        archive_data["labels"] = np.asarray(labels, dtype=str)
-    if truth is not None:
-        archive_data["truth"] = np.asarray(truth, dtype=float)
-    if all_samples:
-        archive_data["samples_source"] = np.asarray(all_samples[0], dtype=float)
-    np.savez(
-        output_path,
-        **archive_data,
-    )
-    return output_path
-
-
-def load_posterior_samples_source(path: Path) -> np.ndarray:
-    """Load the primary sampled source array from a study posterior archive."""
-    with np.load(path) as archive:
-        if "samples_source" not in archive:
-            raise KeyError(f"{path} does not contain 'samples_source'.")
-        return np.asarray(archive["samples_source"], dtype=float)
 
 
 def print_cross_domain_diagnostics(

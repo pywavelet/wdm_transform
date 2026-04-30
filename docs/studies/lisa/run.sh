@@ -32,9 +32,7 @@ run_mode() {
     echo
     echo "=== ${mode_name} seed ${seed} ==="
     LISA_SEED="$seed" LISA_INCLUDE_GALACTIC="$include_galactic" $PYTHON_BIN data_generation.py
-    LISA_SEED="$seed" LISA_INCLUDE_GALACTIC="$include_galactic" $PYTHON_BIN lisa_freq_mcmc.py
-    LISA_SEED="$seed" LISA_INCLUDE_GALACTIC="$include_galactic" $PYTHON_BIN lisa_wdm_mcmc.py
-    LISA_SEED="$seed" LISA_INCLUDE_GALACTIC="$include_galactic" $PYTHON_BIN post_proc.py
+    LISA_INCLUDE_GALACTIC="$include_galactic" $PYTHON_BIN lisa_mcmc.py "$seed"
   done
 
   echo

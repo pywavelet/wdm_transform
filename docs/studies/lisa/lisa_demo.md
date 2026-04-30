@@ -2,9 +2,7 @@
 
 Executable scripts:
 [`data_generation.py`](./data_generation.py),
-[`lisa_freq_mcmc.py`](./lisa_freq_mcmc.py),
-[`lisa_wdm_mcmc.py`](./lisa_wdm_mcmc.py),
-[`post_proc.py`](./post_proc.py), and
+[`lisa_mcmc.py`](./lisa_mcmc.py), and
 [`collect_jsd.py`](./collect_jsd.py).
 
 This study is organized as a markdown-first case study backed by a small set of plain Python scripts.
@@ -18,12 +16,12 @@ here.
    LISA response, injects one seeded resolved Galactic binary with true frequency drawn from a
    small jitter around a fixed external reference frequency `f_ref`, and writes
    `outdir_lisa/<mode>/seed_<LISA_SEED>/injection.npz`.
-2. `lisa_freq_mcmc.py` loads that cache and performs one local frequency-domain fit with a
+2. `lisa_mcmc.py` loads that cache and performs one local frequency-domain fit with a
    narrow-band Whittle likelihood.
-3. `lisa_wdm_mcmc.py` loads the same cache, transforms the injected data to WDM coefficients, and
+3. The same script transforms the injected data to WDM coefficients and
    performs one per-source fit on a narrow WDM band (mirroring the frequency-domain
    approach). Uses $n_t = 32$ by default for inference.
-4. `post_proc.py` compares WDM and frequency-domain posteriors for one seed and writes
+4. The final comparison step writes
    diagnostics, including marginal Jensen-Shannon divergence.
 5. `collect_jsd.py` aggregates the per-seed JSD diagnostics into a CSV, JSON summary, and
    histogram.
@@ -34,8 +32,7 @@ Run the scripts from the repository root:
 
 ```bash
 LISA_SEED=0 python docs/studies/lisa/data_generation.py
-python docs/studies/lisa/lisa_freq_mcmc.py
-python docs/studies/lisa/lisa_wdm_mcmc.py
+python docs/studies/lisa/lisa_mcmc.py
 ```
 
 To generate an instrument-only stationary-noise injection without the stochastic Galactic foreground:
@@ -48,13 +45,11 @@ Useful overrides:
 
 ```bash
 LISA_SEED=3 python docs/studies/lisa/data_generation.py
-LISA_N_WARMUP=400 LISA_N_DRAWS=600 python docs/studies/lisa/lisa_freq_mcmc.py
-LISA_N_WARMUP=400 LISA_N_DRAWS=600 LISA_NT=32 python docs/studies/lisa/lisa_wdm_mcmc.py
-python docs/studies/lisa/post_proc.py
+LISA_N_WARMUP=400 LISA_N_DRAWS=600 LISA_NT=32 python docs/studies/lisa/lisa_mcmc.py 3
 python docs/studies/lisa/collect_jsd.py --mode stationary_noise --start-seed 0 --end-seed 9
 ```
 
-`data_generation.py` is the prerequisite step. Both inference scripts read:
+`data_generation.py` is the prerequisite step. `lisa_mcmc.py` reads:
 
 - `docs/studies/lisa/outdir_lisa/<mode>/seed_<LISA_SEED>/injection.npz`
 
@@ -70,12 +65,12 @@ All outputs from the three scripts for a given run now live in the same director
 Typical files are:
 
 - `injection.npz`
-- `freq_posteriors.npz`
-- `wdm_posteriors.npz`
-- `posterior_marginals_compare.png`
-- `posterior_interval_compare.png`
-- `posterior_pp_compare.png`
-- `corner_source_1.png`
+- `freq_posterior.nc`
+- `wdm_posterior.nc`
+- `freq_trace.png`
+- `wdm_trace.png`
+- `posterior_diagnostics/posterior_diagnostics.json`
+- `posterior_diagnostics/posterior_dist.pdf`
 
 The expensive response-tensor cache is now shared across runs:
 
@@ -174,14 +169,14 @@ parameters, using `(delta_f0, logfdot, logA, phi0)` in the frequency-domain run 
 
 ### Outputs
 
-`lisa_freq_mcmc.py` writes only the frequency-domain posterior archive and sampler diagnostics.
-Posterior comparison diagnostics now live in `post_proc.py` and repeated-seed JSD aggregation in
+`lisa_mcmc.py` writes the frequency-domain posterior archive and sampler diagnostics.
+Posterior comparison diagnostics are written by the same script, and repeated-seed JSD aggregation in
 `collect_jsd.py`.
 
-### Source Code: `lisa_freq_mcmc.py`
+### Source Code: `lisa_mcmc.py`
 
 ```python
---8<-- "docs/studies/lisa/lisa_freq_mcmc.py"
+--8<-- "docs/studies/lisa/lisa_mcmc.py"
 ```
 
 ## WDM-Domain MCMC
@@ -278,53 +273,35 @@ the comparison figures below.
 
 ### Outputs
 
-`lisa_wdm_mcmc.py` writes the WDM posterior archive only. Plotting is handled centrally by the
-post-processing step after both inference runs finish.
+`lisa_mcmc.py` writes the WDM posterior archive after the frequency-domain run. Plotting is handled
+after both inference runs finish.
 
-### Source Code: `lisa_wdm_mcmc.py`
-
-```python
---8<-- "docs/studies/lisa/lisa_wdm_mcmc.py"
-```
+The WDM and frequency-domain paths share the source shown above.
 
 ## Comparison of Methods
 
 ### Results
 
-To assess the two inference approaches (frequency-domain vs. WDM-domain), the script
-[`post_proc.py`](./post_proc.py) loads both posterior files and produces
-side-by-side visualizations.
+To assess the two inference approaches (frequency-domain vs. WDM-domain),
+`lisa_mcmc.py` loads both posterior files and produces diagnostics.
 
-**Marginal posterior histograms:**
+**Marginal posterior distributions:**
 
-![Posterior marginals comparison](../../_static/lisa/outdir_lisa/galactic_background/seed_0/posterior_marginals_compare.png)
-
-**Credible intervals (5th, median, 95th percentiles):**
-
-![Posterior intervals comparison](../../_static/lisa/outdir_lisa/galactic_background/seed_0/posterior_interval_compare.png)
-
-**Joint corner plot for the injected source (overlaid runs):**
-
-![Comparison corner GB 1](../../_static/lisa/outdir_lisa/galactic_background/seed_0/corner_source_1.png)
+![Posterior distribution comparison](../../_static/lisa/outdir_lisa/galactic_background/seed_0/posterior_diagnostics/posterior_dist.pdf)
 
 The intended result is that the WDM and frequency-domain posteriors overlap closely in all four
-fitted source parameters and in the derived SNR. If the checked-in figures do not show that
+fitted source parameters. If the checked-in figures do not show that
 behavior, treat them as stale outputs and rerun the study scripts before drawing conclusions about
 the WDM representation.
 
 To generate these figures, run:
 
 ```bash
-python docs/studies/lisa/post_proc.py
+python docs/studies/lisa/lisa_mcmc.py
 ```
 
-This compares the default WDM and frequency-domain posteriors. You can also pass custom paths:
-
-```bash
-python docs/studies/lisa/post_proc.py \
-  --run-a path/to/wdm_posteriors.npz --name-a "WDM" \
-  --run-b path/to/freq_posteriors.npz --name-b "Frequency"
-```
+This compares the WDM and frequency-domain posteriors for seed 0 by default. Pass a seed number,
+for example `python docs/studies/lisa/lisa_mcmc.py 3`, to run another seed.
 
 ## Notes
 
@@ -332,8 +309,7 @@ python docs/studies/lisa/post_proc.py \
   before injecting the resolved binaries.
 - JAX is imported inside `main()` in `data_generation.py` only after the multiprocessing pools
   finish, avoiding the JAX-plus-fork failure mode.
-- `lisa_freq_mcmc.py` and `lisa_wdm_mcmc.py` are now ordinary scripts rather than notebook-style
-  percent files.
+- `lisa_mcmc.py` is now an ordinary script rather than a notebook-style percent file.
 - The shared helper file `lisa_common.py` now holds the common prior metadata, truth-vector, and
   posterior-output helpers used by both inference scripts.
 - The page above includes the live source for the study scripts, so the docs build exposes the
