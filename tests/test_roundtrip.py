@@ -254,7 +254,7 @@ def test_batched_plot_methods_create_one_axis_per_batch_element() -> None:
 
     time_series = TimeSeries(np.zeros((2, 16)), dt=0.25)
     freq_series = FrequencySeries(np.zeros((2, 16), dtype=complex), df=0.25)
-    wdm = WDM(np.zeros((2, 4, 5)), dt=0.25, backend="jax")
+    wdm = WDM(np.zeros((2, 4, 5)), dt=0.25, backend="numpy")
 
     fig, axes = time_series.plot()
     assert len(np.ravel(axes)) == 2
