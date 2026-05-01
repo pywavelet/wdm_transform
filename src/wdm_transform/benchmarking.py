@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import shutil
 import time
 from pathlib import Path
 from typing import Any, Callable
@@ -35,6 +37,22 @@ DEFAULT_OUTDIR = Path("benchmark_artifacts")
 DEFAULT_JSON_NAME = "benchmark_results.json"
 DEFAULT_PLOT_NAME = "benchmark_runtime.png"
 FIXED_PARAMS = {"a": 0.4, "d": 1, "dt": 1.0}
+
+def _resolve_device(requested: str) -> str:
+    """Resolve 'cpu'/'gpu'/'auto' and configure JAX platform env vars.
+
+    Must be called before any backend is imported.
+    """
+    if requested == "auto":
+        device = "gpu" if shutil.which("nvidia-smi") is not None else "cpu"
+    else:
+        device = requested
+
+    jax_platform = "cuda" if device == "gpu" else "cpu"
+    os.environ.setdefault("JAX_PLATFORMS", jax_platform)
+    os.environ.setdefault("JAX_PLATFORM_NAME", jax_platform)
+    return device
+
 
 OPERATION_TITLES = {
     "from_freq": "Forward Kernel: from_freq_to_wdm",
@@ -494,6 +512,7 @@ def plot_results(  # pragma: no cover
     backend_styles = {
         "numpy": {"color": "tab:blue"},
         "jax": {"color": "tab:orange"},
+        "cupy": {"color": "tab:green"},
     }
     for column, operation in enumerate(operations):
         runtime_ax = axes[0, column]
@@ -599,11 +618,24 @@ def _build_parser() -> argparse.ArgumentParser:
         description="Benchmark low-level WDM kernels across backends and input sizes.",
     )
     parser.add_argument(
+        "--device",
+        choices=["cpu", "gpu", "auto"],
+        default="auto",
+        help=(
+            "Target device for JAX (and CuPy). "
+            "'auto' detects GPU via nvidia-smi. "
+            "Forces JAX platform and auto-suffixes output filenames."
+        ),
+    )
+    parser.add_argument(
         "--backends",
         nargs="+",
-        default=DEFAULT_BACKENDS,
+        default=None,
         choices=["numpy", "jax", "cupy"],
-        help="Backends to benchmark (default: numpy jax)",
+        help=(
+            "Backends to benchmark. "
+            "Default: numpy+jax on CPU, numpy+jax+cupy on GPU."
+        ),
     )
     parser.add_argument(
         "--pow2",
@@ -651,6 +683,15 @@ def _build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> None:  # pragma: no cover
     """CLI entry point for benchmarking."""
     args = _build_parser().parse_args(argv)
+
+    # Resolve device and configure JAX platform BEFORE any backend is imported.
+    device = _resolve_device(args.device)
+    print(f"Device: {device.upper()}")
+
+    backends_to_test = args.backends or (
+        ["numpy", "jax", "cupy"] if device == "gpu" else DEFAULT_BACKENDS
+    )
+
     if args.batch_size < 1:
         raise SystemExit("--batch-size must be at least 1.")
     pow2_range = tuple(args.pow2) if args.pow2 is not None else None
@@ -659,18 +700,33 @@ def main(argv: list[str] | None = None) -> None:  # pragma: no cover
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
 
+    # Log which JAX devices are in use before running (confirms CPU vs GPU).
+    _jax = None
+    try:
+        import jax as _jax  # noqa: PLC0415
+
+        print(f"JAX devices: {_jax.devices()}")
+    except Exception:
+        pass
+
     results = run_benchmarks(
-        backends_to_test=args.backends,
+        backends_to_test=backends_to_test,
         n_values=n_values,
         num_runs=args.runs,
         batch_size=args.batch_size,
     )
+
+    if _jax is not None:
+        results["metadata"]["jax_devices"] = [str(d) for d in _jax.devices()]
+
     print_summary(results)
 
-    output_json = args.output_json or (args.outdir / DEFAULT_JSON_NAME)
-    output_plot = args.output_plot or (args.outdir / DEFAULT_PLOT_NAME)
+    suffix = f"_{device}"
+    output_json = args.output_json or (args.outdir / f"benchmark_results{suffix}.json")
+    output_plot = args.output_plot or (args.outdir / f"benchmark_runtime{suffix}.png")
+    plot_title = args.plot_title + f" ({device.upper()})"
     json_path = save_results(results, output_json)
-    plot_path = plot_results(results, output_plot, title=args.plot_title)
+    plot_path = plot_results(results, output_plot, title=plot_title)
 
     print(f"\nSaved JSON results to {json_path}")
     print(f"Saved benchmark plot to {plot_path}")
