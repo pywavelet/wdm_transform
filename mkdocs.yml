@@ -7,7 +7,9 @@ docs_dir: docs
 site_dir: site
 
 exclude_docs: |
+  studies/**
   manuscript/**
+  reference/api.md
   dev-notes.md
 
 theme:
