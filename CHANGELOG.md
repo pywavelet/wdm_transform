@@ -1,3 +1,11 @@
+## v0.3.0 (2026-05-01)
+
+### fix
+
+- workflows for pypi
+- pytest fixes
+- add gpu and cpu tracking on benchmarking
+
 ## v0.2.0 (2026-04-29)
 
 ### feat
