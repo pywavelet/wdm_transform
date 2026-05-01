@@ -33,4 +33,4 @@ Use these when you want implementation-oriented details:
 
 - [API Overview](guide/api-overview.md)
 - [Package Layout](guide/package-layout.md)
-- [Benchmarks](benchmarks.md)
+- [Benchmarks](benchmarks.ipynb)

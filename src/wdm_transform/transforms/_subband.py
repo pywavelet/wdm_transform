@@ -93,7 +93,23 @@ def wdm_span_from_fourier_span(
     kmin: int,
     lendata: int,
 ) -> tuple[int, int]:
-    """Map a compact one-sided Fourier span onto the touched WDM channels."""
+    """Map a compact one-sided Fourier span onto the touched WDM channels.
+
+    Args:
+        nfreqs_fourier: Number of samples in the full one-sided Fourier grid,
+            including DC and Nyquist.
+        nfreqs_wdm: Number of positive WDM frequency intervals in the full
+            transform. A full WDM coefficient grid has ``nfreqs_wdm + 1``
+            frequency channels.
+        ntimes_wdm: Number of WDM time bins.
+        kmin: Starting Fourier-bin index of the compact Fourier span.
+        lendata: Number of Fourier bins in the compact span.
+
+    Returns:
+        A tuple ``(mmin, nf_sub_wdm)``. ``mmin`` is the first touched WDM
+        frequency-channel index, and ``nf_sub_wdm`` is the number of adjacent
+        WDM channels touched by the Fourier span.
+    """
     validate_subband_grid(
         nfreqs_fourier=nfreqs_fourier,
         nfreqs_wdm=nfreqs_wdm,
@@ -123,7 +139,24 @@ def fourier_span_from_wdm_span(
     mmin: int,
     nf_sub_wdm: int,
 ) -> tuple[int, int]:
-    """Map a compact WDM channel span onto the touched one-sided Fourier bins."""
+    """Map a compact WDM channel span onto the touched one-sided Fourier bins.
+
+    Args:
+        nfreqs_fourier: Number of samples in the full one-sided Fourier grid,
+            including DC and Nyquist.
+        nfreqs_wdm: Number of positive WDM frequency intervals in the full
+            transform. A full WDM coefficient grid has ``nfreqs_wdm + 1``
+            frequency channels.
+        ntimes_wdm: Number of WDM time bins.
+        mmin: First WDM frequency-channel index in the compact WDM span.
+        nf_sub_wdm: Number of adjacent WDM frequency channels in the compact
+            span.
+
+    Returns:
+        A tuple ``(kmin, lendata)``. ``kmin`` is the first touched one-sided
+        Fourier-bin index, and ``lendata`` is the number of touched Fourier
+        bins.
+    """
     validate_subband_grid(
         nfreqs_fourier=nfreqs_fourier,
         nfreqs_wdm=nfreqs_wdm,
@@ -143,4 +176,3 @@ def fourier_span_from_wdm_span(
     nyquist = int(nfreqs_wdm) * half
     kmax = nyquist if mmax == int(nfreqs_wdm) else (mmax + 1) * half - 1
     return kmin, kmax - kmin + 1
-

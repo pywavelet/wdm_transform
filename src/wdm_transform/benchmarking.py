@@ -624,7 +624,7 @@ def _build_parser() -> argparse.ArgumentParser:
         help=(
             "Target device for JAX (and CuPy). "
             "'auto' detects GPU via nvidia-smi. "
-            "Forces JAX platform and auto-suffixes output filenames."
+            "Forces JAX platform."
         ),
     )
     parser.add_argument(
@@ -721,9 +721,8 @@ def main(argv: list[str] | None = None) -> None:  # pragma: no cover
 
     print_summary(results)
 
-    suffix = f"_{device}"
-    output_json = args.output_json or (args.outdir / f"benchmark_results{suffix}.json")
-    output_plot = args.output_plot or (args.outdir / f"benchmark_runtime{suffix}.png")
+    output_json = args.output_json or (args.outdir / DEFAULT_JSON_NAME)
+    output_plot = args.output_plot or (args.outdir / DEFAULT_PLOT_NAME)
     plot_title = args.plot_title + f" ({device.upper()})"
     json_path = save_results(results, output_json)
     plot_path = plot_results(results, output_plot, title=plot_title)

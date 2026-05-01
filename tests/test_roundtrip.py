@@ -8,6 +8,7 @@ import pytest
 from wdm_transform import FrequencySeries, TimeSeries, WDM
 from wdm_transform.backends import Backend, get_backend
 from wdm_transform.plotting import plot_periodogram, plot_spectrogram
+import matplotlib.pyplot as plt
 
 
 def _chirplet(times: np.ndarray, duration: float) -> np.ndarray:
@@ -294,9 +295,6 @@ def test_singleton_plot_methods_return_one_element_axes_arrays() -> None:
 
 
 def test_wdm_roundtrip_diagnostics_plots(outdir: Path) -> None:
-    matplotlib = pytest.importorskip("matplotlib")
-    matplotlib.use("Agg", force=True)
-    plt = pytest.importorskip("matplotlib.pyplot")
 
     series, nt, _ = _example_series()
     coeffs = WDM.from_time_series(series, nt=nt, a=1.0 / 3.0)
@@ -305,15 +303,13 @@ def test_wdm_roundtrip_diagnostics_plots(outdir: Path) -> None:
     reconstructed = coeffs.to_time_series()
 
     residual = reconstructed.data - series.data
-    test_outdir = outdir / "test_roundtrip"
-    test_outdir.mkdir(parents=True, exist_ok=True)
 
     fig, ax = plt.subplots(figsize=(8, 3.5))
     series.plot(ax=ax, color="C0", label="input")
     ax.set_title("Original time series")
     assert ax.get_xlabel() == "Time [min]"
     assert ax.get_ylabel() == "Amplitude"
-    fig.savefig(test_outdir / "1_original.png", dpi=140)
+    fig.savefig(outdir / "1_original.png", dpi=140)
     plt.close(fig)
 
     fig, ax = plt.subplots(figsize=(8, 3.5))
@@ -327,7 +323,7 @@ def test_wdm_roundtrip_diagnostics_plots(outdir: Path) -> None:
     ax.set_title("Complex FFT coefficients")
     assert ax.get_xlabel() == "Frequency [Hz]"
     assert ax.get_ylabel() == "Value"
-    fig.savefig(test_outdir / "2_frequency.png", dpi=140)
+    fig.savefig(outdir / "2_frequency.png", dpi=140)
     plt.close(fig)
 
     fig, ax = plt.subplots(figsize=(7, 3.5))
@@ -335,7 +331,7 @@ def test_wdm_roundtrip_diagnostics_plots(outdir: Path) -> None:
     ax.set_title("Periodogram")
     assert ax.get_xlabel() == "Frequency [Hz]"
     assert ax.get_ylabel() == "Periodogram"
-    fig.savefig(test_outdir / "3_periodogram.png", dpi=140)
+    fig.savefig(outdir / "3_periodogram.png", dpi=140)
     plt.close(fig)
 
     fig, ax = plt.subplots(figsize=(8, 4.5))
@@ -348,7 +344,7 @@ def test_wdm_roundtrip_diagnostics_plots(outdir: Path) -> None:
     ax.set_title("Spectrogram")
     assert ax.get_xlabel() == "Time [min]"
     assert ax.get_ylabel() == "Frequency [Hz]"
-    fig.savefig(test_outdir / "4_spectrogram.png", dpi=140)
+    fig.savefig(outdir / "4_spectrogram.png", dpi=140)
     plt.close(fig)
 
     fig, ax = plt.subplots(figsize=(8, 4.5))
@@ -365,7 +361,7 @@ def test_wdm_roundtrip_diagnostics_plots(outdir: Path) -> None:
     assert "Time bins" in ax.get_xlabel()
     assert "Frequency bins" in ax.get_ylabel()
     assert any("coeffs" in text.get_text() for text in ax.texts)
-    fig.savefig(test_outdir / "5_wdm.png", dpi=140)
+    fig.savefig(outdir / "5_wdm.png", dpi=140)
     plt.close(fig)
 
     with pytest.warns(UserWarning, match="Falling back to default linear normalization"):
@@ -378,7 +374,7 @@ def test_wdm_roundtrip_diagnostics_plots(outdir: Path) -> None:
             whiten_by=np.full((coeffs.nf + 1, coeffs.nt), np.nan),
         )
     assert len(fig.axes) == 1
-    fig.savefig(test_outdir / "6_wdm_fallback.png", dpi=140)
+    fig.savefig(outdir / "6_wdm_fallback.png", dpi=140)
     plt.close(fig)
 
     fig, ax = plt.subplots(figsize=(8, 3.5))
@@ -386,7 +382,7 @@ def test_wdm_roundtrip_diagnostics_plots(outdir: Path) -> None:
     ax.set_title("Reconstruction")
     assert ax.get_xlabel() == "Time [min]"
     assert ax.get_ylabel() == "Amplitude"
-    fig.savefig(test_outdir / "7_reconstruction.png", dpi=140)
+    fig.savefig(outdir / "7_reconstruction.png", dpi=140)
     plt.close(fig)
 
     fig, ax = plt.subplots(figsize=(7, 3.5))
@@ -395,7 +391,7 @@ def test_wdm_roundtrip_diagnostics_plots(outdir: Path) -> None:
     ax.set_xlabel("reconstruction - original")
     ax.set_ylabel("count")
     fig.tight_layout()
-    fig.savefig(test_outdir / "8_residual_hist.png", dpi=140)
+    fig.savefig(outdir / "8_residual_hist.png", dpi=140)
     plt.close(fig)
 
     np.testing.assert_allclose(reconstructed.data, series.data, atol=1e-10, rtol=1e-10)

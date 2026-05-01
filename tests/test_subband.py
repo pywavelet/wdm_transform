@@ -18,6 +18,7 @@ from wdm_transform.transforms import (
     wdm_span_from_fourier_span,
 )
 from wdm_transform.windows import cnm, phi_unit
+import matplotlib.pyplot as plt
 
 
 NT = 32
@@ -691,11 +692,6 @@ def test_chirping_binary_subband_roundtrip_jax() -> None:
 
 
 def test_chirping_binary_subband_diagnostics_plot(outdir) -> None:
-    matplotlib = pytest.importorskip("matplotlib")
-    matplotlib.use("Agg", force=True)
-    plt = pytest.importorskip("matplotlib.pyplot")
-    test_outdir = outdir / "test_subband"
-    test_outdir.mkdir(parents=True, exist_ok=True)
 
     signal, one_sided, kmin, lendata = _chirping_binary_subband_case()
     full_runtime_ms = _mean_runtime_ms(
@@ -871,5 +867,5 @@ def test_chirping_binary_subband_diagnostics_plot(outdir) -> None:
     axes[3].legend(loc="upper right")
     _annotate_metrics(axes[3], mf_snr=fourier_mf_snr)
 
-    fig.savefig(test_outdir / "subband_diagnostics_vertical.png", dpi=140)
+    fig.savefig(outdir / "subband_diagnostics_vertical.png", dpi=140)
     plt.close(fig)

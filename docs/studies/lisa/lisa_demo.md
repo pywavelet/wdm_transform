@@ -278,6 +278,11 @@ after both inference runs finish.
 
 The WDM and frequency-domain paths share the source shown above.
 
+Summary comparison artifacts are written alongside the seed outputs:
+
+- `lisa/outdir_lisa/galactic_background/seed_0/posterior_marginals_compare.png`
+- `lisa/outdir_lisa/galactic_background/seed_0/posterior_interval_compare.png`
+
 ## Comparison of Methods
 
 ### Results

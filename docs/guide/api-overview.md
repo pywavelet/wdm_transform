@@ -72,6 +72,58 @@ The backend system is intentionally small right now. A backend provides:
 That is enough for the current NumPy implementation and sets up a clean insertion point for JAX and
 CuPy later.
 
+## Sub-band transforms
+
+The high-level objects transform complete time or frequency arrays. For narrow
+frequency-domain workflows, `wdm_transform.transforms` also exposes compact
+sub-band helpers that operate on only the Fourier bins and WDM channels touched
+by a local band.
+
+Use `from_freq_to_wdm_subband(...)` when you want the full overlapping WDM span
+implied by a compact Fourier crop. It returns both the coefficient block and the
+first WDM channel index for that block. Use `from_freq_to_wdm_band(...)` when
+you already know the WDM channel range you want to keep. Use
+`from_wdm_to_freq_subband(...)` to reconstruct the touched Fourier span from a
+compact WDM block.
+
+The span helpers are useful for allocating arrays and keeping local crops
+aligned with the full transform grid:
+
+```python
+from wdm_transform.transforms import (
+    from_freq_to_wdm_subband,
+    fourier_span_from_wdm_span,
+    wdm_span_from_fourier_span,
+)
+
+mmin, nf_sub_wdm = wdm_span_from_fourier_span(
+    nfreqs_fourier=nfreqs_fourier,
+    nfreqs_wdm=nfreqs_wdm,
+    ntimes_wdm=ntimes_wdm,
+    kmin=kmin,
+    lendata=len(spectrum_crop),
+)
+
+coeffs, touched_mmin = from_freq_to_wdm_subband(
+    spectrum_crop,
+    df=df,
+    nfreqs_fourier=nfreqs_fourier,
+    kmin=kmin,
+    nfreqs_wdm=nfreqs_wdm,
+    ntimes_wdm=ntimes_wdm,
+)
+
+assert touched_mmin == mmin
+
+kmin_recon, lendata_recon = fourier_span_from_wdm_span(
+    nfreqs_fourier=nfreqs_fourier,
+    nfreqs_wdm=nfreqs_wdm,
+    ntimes_wdm=ntimes_wdm,
+    mmin=touched_mmin,
+    nf_sub_wdm=coeffs.shape[1],
+)
+```
+
 ## Live API Reference
 
 The sections below are generated from live docstrings with `mkdocstrings`, so signatures stay
@@ -125,6 +177,53 @@ Public import: `from wdm_transform import WDM`
 ### `register_backend`
 
 ::: wdm_transform.register_backend
+    options:
+      show_root_heading: false
+      show_root_toc_entry: false
+
+## Transform Helpers Reference
+
+### `from_freq_to_wdm_subband`
+
+Public import: `from wdm_transform.transforms import from_freq_to_wdm_subband`
+
+::: wdm_transform.transforms.from_freq_to_wdm_subband
+    options:
+      show_root_heading: false
+      show_root_toc_entry: false
+
+### `from_freq_to_wdm_band`
+
+Public import: `from wdm_transform.transforms import from_freq_to_wdm_band`
+
+::: wdm_transform.transforms.from_freq_to_wdm_band
+    options:
+      show_root_heading: false
+      show_root_toc_entry: false
+
+### `from_wdm_to_freq_subband`
+
+Public import: `from wdm_transform.transforms import from_wdm_to_freq_subband`
+
+::: wdm_transform.transforms.from_wdm_to_freq_subband
+    options:
+      show_root_heading: false
+      show_root_toc_entry: false
+
+### `wdm_span_from_fourier_span`
+
+Public import: `from wdm_transform.transforms import wdm_span_from_fourier_span`
+
+::: wdm_transform.transforms.wdm_span_from_fourier_span
+    options:
+      show_root_heading: false
+      show_root_toc_entry: false
+
+### `fourier_span_from_wdm_span`
+
+Public import: `from wdm_transform.transforms import fourier_span_from_wdm_span`
+
+::: wdm_transform.transforms.fourier_span_from_wdm_span
     options:
       show_root_heading: false
       show_root_toc_entry: false

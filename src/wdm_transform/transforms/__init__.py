@@ -154,7 +154,36 @@ def from_freq_to_wdm_subband(
     d: float = 1.0,
     backend: str | Backend | None = None,
 ) -> tuple[Any, int]:
-    """Compute the overlapping WDM sub-band from a compact Fourier span."""
+    """Compute the overlapping WDM sub-band from a compact Fourier span.
+
+    Use this when the input is already cropped in the one-sided Fourier
+    domain. The function evaluates only the WDM frequency channels whose
+    window support intersects the supplied Fourier span, rather than
+    materializing the full WDM grid.
+
+    Args:
+        data: One-dimensional one-sided Fourier samples for the compact span
+            ``[kmin, kmin + len(data))``.
+        df: Frequency spacing of the full one-sided Fourier grid.
+        nfreqs_fourier: Number of samples in the full one-sided Fourier grid,
+            including DC and Nyquist.
+        kmin: Starting Fourier-bin index of ``data`` in the full one-sided
+            grid.
+        nfreqs_wdm: Number of positive WDM frequency intervals in the full
+            transform. A full WDM coefficient grid has ``nfreqs_wdm + 1``
+            frequency channels.
+        ntimes_wdm: Number of WDM time bins.
+        a: Window roll-off parameter.
+        d: Window order parameter.
+        backend: Backend name or object. If omitted, the default backend is
+            used.
+
+    Returns:
+        A tuple ``(coeffs, mmin)``. ``coeffs`` has shape
+        ``(ntimes_wdm, nf_sub_wdm)`` and stores the touched WDM channels.
+        ``mmin`` is the first WDM frequency-channel index represented by
+        ``coeffs[:, 0]``.
+    """
     resolved_backend = get_backend(backend)
     module = _get_subband_transform_module(resolved_backend)
     return module.forward_wdm_subband(
@@ -190,6 +219,29 @@ def from_freq_to_wdm_band(
     minimal touched WDM span, then returns only the requested compact block
     ``mmin : mmin + nf_sub_wdm``. The requested block must lie inside the
     touched span of the supplied Fourier support.
+
+    Args:
+        data: One-dimensional one-sided Fourier samples for the compact span
+            ``[kmin, kmin + len(data))``.
+        df: Frequency spacing of the full one-sided Fourier grid.
+        nfreqs_fourier: Number of samples in the full one-sided Fourier grid,
+            including DC and Nyquist.
+        kmin: Starting Fourier-bin index of ``data`` in the full one-sided
+            grid.
+        nfreqs_wdm: Number of positive WDM frequency intervals in the full
+            transform. A full WDM coefficient grid has ``nfreqs_wdm + 1``
+            frequency channels.
+        ntimes_wdm: Number of WDM time bins.
+        mmin: First WDM frequency-channel index to return.
+        nf_sub_wdm: Number of WDM frequency channels to return.
+        a: Window roll-off parameter.
+        d: Window order parameter.
+        backend: Backend name or object. If omitted, the default backend is
+            used.
+
+    Returns:
+        The requested coefficient block with shape
+        ``(ntimes_wdm, nf_sub_wdm)``.
     """
     coeffs, touched_mmin = from_freq_to_wdm_subband(
         data,
@@ -225,7 +277,34 @@ def from_wdm_to_freq_subband(
     d: float = 1.0,
     backend: str | Backend | None = None,
 ) -> tuple[Any, int]:
-    """Reconstruct the touched Fourier span from a compact WDM block."""
+    """Reconstruct the touched Fourier span from a compact WDM block.
+
+    This is the inverse of the compact sub-band transform. It expands a block
+    of adjacent WDM frequency channels into the one-sided Fourier bins touched
+    by those channels' window support.
+
+    Args:
+        coeffs: Two-dimensional WDM coefficient block with shape
+            ``(ntimes_wdm, nf_sub_wdm)``.
+        df: Frequency spacing of the full one-sided Fourier grid.
+        nfreqs_fourier: Number of samples in the full one-sided Fourier grid,
+            including DC and Nyquist.
+        mmin: First WDM frequency-channel index represented by
+            ``coeffs[:, 0]``.
+        nfreqs_wdm: Number of positive WDM frequency intervals in the full
+            transform. A full WDM coefficient grid has ``nfreqs_wdm + 1``
+            frequency channels.
+        ntimes_wdm: Number of WDM time bins.
+        a: Window roll-off parameter.
+        d: Window order parameter.
+        backend: Backend name or object. If omitted, the default backend is
+            used.
+
+    Returns:
+        A tuple ``(spectrum, kmin)``. ``spectrum`` contains the reconstructed
+        one-sided Fourier span, and ``kmin`` is the starting Fourier-bin index
+        of ``spectrum[0]`` in the full one-sided grid.
+    """
     resolved_backend = get_backend(backend)
     module = _get_subband_transform_module(resolved_backend)
     return module.inverse_wdm_subband(

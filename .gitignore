@@ -43,5 +43,6 @@ test_out/
 docs/studies/run_all.sh
 
 # Generated notebook outputs and images (use docs/_static/ instead)
+docs/benchmark_artifacts/
 docs/studies/**/outdir_*/
 docs/studies/**/*_assets/
