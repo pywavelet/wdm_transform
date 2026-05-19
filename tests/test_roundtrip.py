@@ -386,7 +386,7 @@ def test_wdm_roundtrip_diagnostics_plots(outdir: Path) -> None:
     plt.close(fig)
 
     fig, ax = plt.subplots(figsize=(7, 3.5))
-    ax.hist(np.asarray(residual), bins=40)
+    ax.hist(np.asarray(residual).flatten(), bins=40)
     ax.set_title("Residual histogram")
     ax.set_xlabel("reconstruction - original")
     ax.set_ylabel("count")

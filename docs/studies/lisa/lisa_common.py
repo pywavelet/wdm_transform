@@ -38,6 +38,15 @@ def lisa_seed() -> int:
     return int(os.getenv("LISA_SEED", "0"))
 
 
+def lisa_a_gal() -> float:
+    """Galactic foreground amplitude (LISA_A_GAL env var, default 10^-43.0).
+
+    10^-43.9 is the Robson–Cornish–Liu 2-yr mean; 10^-43.0 is a bright
+    foreground scenario that makes the time-varying component clearly visible.
+    """
+    return float(os.getenv("LISA_A_GAL", str(10**-43.0)))
+
+
 def lisa_mode_dirname(*, include_galactic: bool | None = None) -> str:
     if include_galactic is None:
         include_galactic = lisa_include_galactic()
@@ -408,7 +417,7 @@ def freqs_gal(
 def galactic_psd(
     f,
     Tobsyr: float = 2.0,
-    A_gal: float = 10**-43.9,
+    A_gal: float | None = None,
     alp_gal: float = 1.8,
     a1_gal: float = -0.25,
     b1_gal: float = -2.7,
@@ -416,6 +425,8 @@ def galactic_psd(
     bk_gal: float = -2.47,
     f2_gal: float = 10**-3.5,
 ):
+    if A_gal is None:
+        A_gal = lisa_a_gal()
     f = np.asarray(f, dtype=float)
     f_safe = np.where(f > 0.0, f, 1.0)
     f1_gal = 10 ** (a1_gal * np.log10(Tobsyr) + b1_gal)
@@ -495,6 +506,71 @@ def build_total_noise_psd(
     fg_mean = np.mean(fg_time, axis=0)
     fg_interp = np.interp(target_freqs, freqs_response, fg_mean, left=0.0, right=0.0)
     return np.maximum(noise_tdi15_psd(channel, target_freqs) + fg_interp, 1e-60)
+
+
+_GAL_PSD_KEYS = ("gal_psd_A_tf", "gal_psd_E_tf", "gal_psd_T_tf", "gal_psd_freqs", "gal_psd_times")
+_CH_LABELS = ("A", "E", "T")
+
+
+def build_wdm_nonstationary_variance(
+    inj_npz: dict,
+    channel: int,
+    wdm_freq_centers: np.ndarray,
+    wdm_time_centers: np.ndarray,
+    dt: float,
+    n_freqs_full: int | None = None,
+) -> np.ndarray:
+    """Per-pixel WDM variance using a time-varying galactic foreground PSD.
+
+    Matches the normalization of the stationary path in build_wdm_band():
+        sigma2[n, m] = N * S_total(t_n, f_m) / (2*dt)
+    where S_total = S_instrument + S_galactic(t_n, f_m).
+
+    Args:
+        inj_npz: raw dict from np.load(injection.npz) containing the
+            gal_psd_*_tf, gal_psd_freqs, and gal_psd_times keys.
+        channel: 0=A, 1=E, 2=T.
+        wdm_freq_centers: (n_wdm_f,) WDM channel-centre frequencies in Hz.
+        wdm_time_centers: (n_wdm_t,) WDM time-bin centre times in seconds.
+        dt: sampling interval in seconds.
+        n_freqs_full: total one-sided rFFT bins for the full data segment.
+
+    Returns:
+        sigma2 of shape (n_wdm_t, n_wdm_f), same units as wdm_psd[ch] in
+        build_wdm_band (i.e. variance, not PSD).
+
+    Raises:
+        KeyError: if inj_npz is missing the required time-dependent keys.
+    """
+    if n_freqs_full is None:
+        raise ValueError("n_freqs_full is required for WDM variance normalization.")
+    missing = [k for k in _GAL_PSD_KEYS if k not in inj_npz]
+    if missing:
+        raise KeyError(
+            f"injection.npz is missing time-dependent galactic PSD arrays {missing}. "
+            "Regenerate with the updated data_generation.py."
+        )
+
+    ch_label = _CH_LABELS[channel]
+    gal_tf = np.asarray(inj_npz[f"gal_psd_{ch_label}_tf"], dtype=float)  # (n_gal_t, n_gal_f)
+    gal_freqs = np.asarray(inj_npz["gal_psd_freqs"], dtype=float)         # (n_gal_f,)
+    gal_times = np.asarray(inj_npz["gal_psd_times"], dtype=float)         # (n_gal_t,)
+
+    wdm_freq_centers = np.asarray(wdm_freq_centers, dtype=float)
+    wdm_time_centers = np.asarray(wdm_time_centers, dtype=float)
+
+    inst = noise_tdi15_psd(channel, wdm_freq_centers)  # (n_wdm_f,)
+
+    n_wdm_t = len(wdm_time_centers)
+    n_wdm_f = len(wdm_freq_centers)
+    sigma2 = np.empty((n_wdm_t, n_wdm_f), dtype=float)
+    for n in range(n_wdm_t):
+        ti = int(np.argmin(np.abs(gal_times - wdm_time_centers[n])))
+        gal_at_wdm = np.interp(wdm_freq_centers, gal_freqs, gal_tf[ti], left=0.0, right=0.0)
+        s_total = inst + gal_at_wdm
+        sigma2[n] = (2 * (n_freqs_full - 1)) * s_total / (2.0 * dt)
+
+    return np.maximum(sigma2, 1e-60)
 
 
 def trim_frequency_band(

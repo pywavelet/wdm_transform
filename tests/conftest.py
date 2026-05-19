@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from importlib.util import find_spec
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -11,6 +12,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
+HERE = Path(__file__).parent.resolve()
 
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
@@ -36,11 +38,35 @@ def _current_branch_name() -> str:
     return re.sub(r"[^A-Za-z0-9._-]+", "_", branch)
 
 
-@pytest.fixture(scope="session")
-def outdir() -> Path:
-    output_dir = ROOT / "tests" / "test_out" / f"branch_{_current_branch_name()}"
-    output_dir.mkdir(parents=True, exist_ok=True)
-    return output_dir
+
+
+@pytest.fixture
+def outdir(request):
+    # 1. Get Git branch
+    try:
+        from git import Repo
+
+        branch = Repo(".", search_parent_directories=True).active_branch.name
+    except Exception:
+        branch = "unknown_branch"
+
+    # 2. Get the filename (e.g., 'test_physics') and test name (e.g., 'test_simulation')
+    # request.path.stem gives 'test_logic' from 'test_logic.py'
+    file_stem = request.path.stem
+    test_name = request.node.name
+
+    # 3. Build path: .../test_logic/branch_[main]/test_simulation
+    target_dir = (
+        HERE / "test_output" / f"branch_[{branch}]" / file_stem / test_name
+    )
+
+    # 4. Cleanup and Create
+    if target_dir.exists():
+        shutil.rmtree(target_dir)
+
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    return target_dir
 
 
 def _available_backend_params() -> list[object]:

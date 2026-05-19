@@ -101,6 +101,9 @@ idx = None               # index where freqs_chunk enters analysis band
 e_ab_arrL = None         # left-circular polarisation tensor projected on sky
 e_ab_arrR = None         # right-circular polarisation tensor projected on sky
 seed_base = 0            # base RNG seed for deterministic draws
+sample_dt = None         # sampling interval for frequency-domain draws
+foreground_df = None     # chunk frequency spacing for foreground draws
+INJECTION_NORMALIZATION_VERSION = "physical_psd_rfft_v1"
 
 
 # ── Galactic morphology ───────────────────────────────────────────────────────
@@ -284,6 +287,41 @@ def _stabilize_covariance_batch(cov_batch, *, rtol: float = 1e-12, atol: float =
     return cov_batch
 
 
+def draw_rfft_from_psd(
+    psd: np.ndarray,
+    *,
+    rng: np.random.Generator,
+    df: float,
+    dt: float,
+) -> np.ndarray:
+    """Draw one-sided rFFT coefficients from a physical one-sided PSD."""
+    if df <= 0.0:
+        raise ValueError("df must be positive.")
+    if dt <= 0.0:
+        raise ValueError("dt must be positive.")
+    psd = np.asarray(psd, dtype=float)
+    white = rng.normal(size=psd.shape) + 1j * rng.normal(size=psd.shape)
+    coeffs = np.sqrt(np.maximum(psd, 0.0) / (4.0 * df * dt**2)) * white
+    if coeffs.size:
+        coeffs[0] = coeffs[0].real
+        coeffs[-1] = coeffs[-1].real
+    return coeffs
+
+
+def scale_rfft_covariance_draws(
+    draws: np.ndarray,
+    *,
+    df: float,
+    dt: float,
+) -> np.ndarray:
+    """Scale complex covariance draws from PSD units to rFFT coefficient units."""
+    if df <= 0.0:
+        raise ValueError("df must be positive.")
+    if dt <= 0.0:
+        raise ValueError("dt must be positive.")
+    return np.asarray(draws, dtype=np.complex128) / np.sqrt(2.0 * df * dt**2)
+
+
 def compute_time(ti):
     n_f = len(freqs_chunk)
     cov_full = np.zeros((3, 3, n_f))
@@ -303,6 +341,7 @@ def compute_time(ti):
     z_r = rng.standard_normal((n_draw, 3))
     z_i = rng.standard_normal((n_draw, 3))
     draws = (np.einsum("nij,nj->ni", L, z_r) + 1j * np.einsum("nij,nj->ni", L, z_i)) / np.sqrt(2)
+    draws = scale_rfft_covariance_draws(draws, df=foreground_df, dt=sample_dt)
     out = np.zeros((3, n_f), dtype=complex)
     out[:, idx:] = draws.T
     return ti, out
@@ -333,6 +372,7 @@ def stitch_chunked_foreground_spectrum(samples_tf, nfreq_full):
 def main():
     global frequencies, S_gal, map_Gal, npix, kappas_import
     global x_all, l_hat_ij_all, Rtildeop_tf_times_H
+    global sample_dt, foreground_df
     global freqs_cut, freqs_chunk, idx
     global e_ab_arrL, e_ab_arrR, seed_base
 
@@ -462,20 +502,22 @@ def main():
     fmax_comp = np.max(frequencies)
     fmin_comp = np.min(frequencies)
     dt = 1 / (2 * fmax_comp)
+    sample_dt = dt
     Nsamp_tot = int(yr / dt)
     freqs_all = rfftfreq(Nsamp_tot, dt)
+    df_full = 1.0 / yr
 
     def _noise_fd(channel):
         psd = noise_tdi15_psd(channel, freqs_all)
         channel_rng = np.random.default_rng(RNG_SEED + 10_000 + channel)
-        white = channel_rng.normal(size=len(freqs_all)) + 1j * channel_rng.normal(size=len(freqs_all))
-        return np.sqrt(psd) * white / np.sqrt(2)
+        return draw_rfft_from_psd(psd, rng=channel_rng, df=df_full, dt=dt)
 
     nAf, nEf, nTf = _noise_fd(0), _noise_fd(1), _noise_fd(2)
 
     n_freqs = len(freqs_all)
     if INCLUDE_GALACTIC:
         DT_chunk = yr / ntimes
+        foreground_df = 1.0 / DT_chunk
         Nsamp_chunk = int(DT_chunk / dt)
         freqs_chunk = rfftfreq(Nsamp_chunk, dt)
         freqs_cut = freqs_chunk[freqs_chunk >= fmin_comp]
@@ -602,6 +644,22 @@ def main():
     save_figure(plt.gcf(), OUTDIR, "resolved_gb_vs_noise_characteristic_strain")
 
     # ── 7. Save injection data ────────────────────────────────────────────────
+    # Diagonal galactic foreground PSDs per time step, on the response-tensor
+    # frequency grid.  Convention: |R[c,c,ti]| * tdi15_factor(freqs), matching
+    # build_total_noise_psd() in lisa_common.py.  Zero arrays are saved when
+    # INCLUDE_GALACTIC=False so downstream code can always rely on these keys.
+    _gal_times = np.linspace(0, TS, NTIMES_RESPONSE)
+    if INCLUDE_GALACTIC:
+        _gal_psd_A = np.abs(Rtildeop_tf_times_H[0, 0]) * tdi15_factor(frequencies)
+        _gal_psd_E = np.abs(Rtildeop_tf_times_H[1, 1]) * tdi15_factor(frequencies)
+        _gal_psd_T = np.abs(Rtildeop_tf_times_H[2, 2]) * tdi15_factor(frequencies)
+        # TODO: save gal_cov_AET_tf (3, 3, ntimes, nfreqs) for off-diagonal terms
+        # once the demo is extended to use the full covariance.
+    else:
+        _gal_psd_A = np.zeros((NTIMES_RESPONSE, len(frequencies)))
+        _gal_psd_E = np.zeros((NTIMES_RESPONSE, len(frequencies)))
+        _gal_psd_T = np.zeros((NTIMES_RESPONSE, len(frequencies)))
+
     np.savez(
         INJECTION_PATH,
         dt=dt,
@@ -628,6 +686,12 @@ def main():
         source_snrs_ae=np.array([snr_ae], dtype=float),
         source_snrs_aet=np.array([snr_aet], dtype=float),
         include_galactic=np.array(int(INCLUDE_GALACTIC)),
+        normalization_version=np.array(INJECTION_NORMALIZATION_VERSION),
+        gal_psd_A_tf=_gal_psd_A,
+        gal_psd_E_tf=_gal_psd_E,
+        gal_psd_T_tf=_gal_psd_T,
+        gal_psd_freqs=frequencies,
+        gal_psd_times=_gal_times,
     )
     print(f"Saved injection to {INJECTION_PATH}")
 

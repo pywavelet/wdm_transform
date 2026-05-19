@@ -689,7 +689,7 @@ def main(argv: list[str] | None = None) -> None:  # pragma: no cover
     print(f"Device: {device.upper()}")
 
     backends_to_test = args.backends or (
-        ["numpy", "jax", "cupy"] if device == "gpu" else DEFAULT_BACKENDS
+        ["jax", "cupy"] if device == "gpu" else DEFAULT_BACKENDS
     )
 
     if args.batch_size < 1:
