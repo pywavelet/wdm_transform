@@ -22,14 +22,15 @@ if str(SRC) not in sys.path:
 
 from wdm_transform.benchmarking import (  # noqa: E402
     DEFAULT_BACKENDS,
+    DEFAULT_FIXED_NT,
     plot_results,
     print_summary,
-    resolve_n_values,
+    resolve_fixed_nt_n_values,
     run_benchmarks,
     save_results,
 )
 
-DEFAULT_N_VALUES = resolve_n_values()
+DEFAULT_N_VALUES = resolve_fixed_nt_n_values(nt=DEFAULT_FIXED_NT)
 
 
 def main() -> None:
@@ -48,7 +49,7 @@ def main() -> None:
         nargs="+",
         type=int,
         default=DEFAULT_N_VALUES,
-        help="Input sizes to test (default: 2048 through 33554432)",
+        help="Input sizes to test (default: fixed nt=1024, nf=4 through 1024)",
     )
     parser.add_argument(
         "--runs",
@@ -80,6 +81,7 @@ def main() -> None:
         backends_to_test=args.backends,
         n_values=args.n,
         num_runs=args.runs,
+        fixed_nt=DEFAULT_FIXED_NT,
     )
     print_summary(results)
     json_path = save_results(results, args.output_json)

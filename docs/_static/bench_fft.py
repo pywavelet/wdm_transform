@@ -20,8 +20,27 @@ from pathlib import Path
 import numpy as np
 
 N_VALUES = [2**p for p in range(11, 21)]  # 2048 .. 1048576
+DEFAULT_FIXED_NT = 1024
+DEFAULT_NF_POW2_RANGE = (2, 10)
 BATCH_SIZE = 3
 NUM_RUNS = 7
+
+
+def _resolve_n_values(
+    *,
+    fixed_nt: int | None,
+    nf_pow2_range: tuple[int, int] | None,
+) -> list[int]:
+    if fixed_nt is None:
+        return N_VALUES
+    if fixed_nt < 2 or fixed_nt % 2:
+        raise ValueError("--fixed-nt must be an even integer >= 2.")
+    start, end = (
+        nf_pow2_range if nf_pow2_range is not None else DEFAULT_NF_POW2_RANGE
+    )
+    if start < 1 or start > end:
+        raise ValueError("--nf-pow2 must satisfy 1 <= START <= END.")
+    return [fixed_nt * 2**power for power in range(start, end + 1)]
 
 
 def _resolve_device(requested: str) -> str:
@@ -82,6 +101,27 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--device", choices=["cpu", "gpu", "auto"], default="auto")
     parser.add_argument(
+        "--square-tiling",
+        action="store_true",
+        help="Use the legacy N=2**p grid instead of the fixed-nt WDM grid.",
+    )
+    parser.add_argument(
+        "--fixed-nt",
+        type=int,
+        default=DEFAULT_FIXED_NT,
+        help=(
+            "Use the fixed-nt WDM sweep grid N=nt*nf for matching FFT "
+            f"overlays. Default: {DEFAULT_FIXED_NT}."
+        ),
+    )
+    parser.add_argument(
+        "--nf-pow2",
+        nargs=2,
+        metavar=("START", "END"),
+        type=int,
+        help="Inclusive exponent range for nf=2**p when --fixed-nt is set.",
+    )
+    parser.add_argument(
         "--output",
         type=Path,
         default=Path(__file__).with_name("benchmark_fft_data.csv"),
@@ -89,6 +129,10 @@ def main() -> None:
     args = parser.parse_args()
 
     device = _resolve_device(args.device).upper()
+    n_values = _resolve_n_values(
+        fixed_nt=None if args.square_tiling else args.fixed_nt,
+        nf_pow2_range=tuple(args.nf_pow2) if args.nf_pow2 is not None else None,
+    )
 
     libraries = ["numpy", "jax"] if device == "CPU" else ["jax"]
 
@@ -107,7 +151,7 @@ def main() -> None:
     for library in libraries:
         print(f"\nLibrary: {library}")
         bench = bench_numpy if library == "numpy" else bench_jax
-        for n in N_VALUES:
+        for n in n_values:
             scalar_ms, batch_ms, serial_ms = bench(n)
             speedup = serial_ms / batch_ms if batch_ms else float("nan")
             print(

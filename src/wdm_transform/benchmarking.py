@@ -29,6 +29,8 @@ from . import backends, transforms
 
 DEFAULT_BACKENDS = ["numpy", "jax"]
 DEFAULT_POW2_RANGE = (11, 20)
+DEFAULT_FIXED_NT = 1024
+DEFAULT_NF_POW2_RANGE = (2, 10)
 MIN_POW2 = 8
 MAX_POW2 = 25
 FIT_MIN_POW2 = 16
@@ -76,6 +78,22 @@ def resolve_n_values(
     if start > end:
         raise ValueError("pow2 start must be <= end.")
     return [2**power for power in range(start, end + 1)]
+
+
+def resolve_fixed_nt_n_values(
+    *,
+    nt: int,
+    nf_pow2_range: tuple[int, int] | None = None,
+) -> list[int]:
+    """Resolve benchmark sizes for a fixed-nt sweep over powers of two in nf."""
+    if nt < 2 or nt % 2:
+        raise ValueError("fixed nt must be an even integer >= 2.")
+    start, end = nf_pow2_range if nf_pow2_range is not None else DEFAULT_NF_POW2_RANGE
+    if start < 1:
+        raise ValueError("nf pow2 start must be at least 1.")
+    if start > end:
+        raise ValueError("nf pow2 start must be <= end.")
+    return [nt * 2**power for power in range(start, end + 1)]
 
 
 def validate_backend_available(backend_name: str) -> bool:  # pragma: no cover
@@ -320,6 +338,7 @@ def run_benchmarks(  # pragma: no cover
     *,
     num_runs: int = 7,
     batch_size: int = DEFAULT_BATCH_SIZE,
+    fixed_nt: int | None = None,
 ) -> dict[str, Any]:
     """Run the benchmark suite across backends and input sizes."""
     available_backends = [name for name in backends_to_test if validate_backend_available(name)]
@@ -330,6 +349,7 @@ def run_benchmarks(  # pragma: no cover
             "n_values": n_values,
             "num_runs": num_runs,
             "batch_size": batch_size,
+            "fixed_nt": fixed_nt,
             "parameters": FIXED_PARAMS,
         },
         "operations": {
@@ -362,12 +382,20 @@ def run_benchmarks(  # pragma: no cover
             print("-" * 44)
 
             for n in n_values:
-                factorization = find_factorization(n)
+                if fixed_nt is None:
+                    factorization = find_factorization(n)
+                elif n % fixed_nt == 0:
+                    factorization = (fixed_nt, n // fixed_nt)
+                else:
+                    factorization = None
                 if factorization is None:
                     print(f"  N={n:>8}: SKIPPED (no valid even-even factorization)")
                     continue
 
                 nt, nf = factorization
+                if nt % 2 or nf % 2:
+                    print(f"  N={n:>8}: SKIPPED (nt={nt}, nf={nf} must both be even)")
+                    continue
                 try:
                     payload = _prepare_inputs(
                         backend_name,
@@ -449,9 +477,12 @@ def run_benchmarks(  # pragma: no cover
             ]
             fit = _fit_runtime_curve(fitted_ns, fitted_medians)
             if fit is not None:
+                model = "a*N*log2(N) + b*N + c"
+                if fixed_nt is not None:
+                    model = f"a*N*log2({fixed_nt}) + b*N + c"
                 results["operations"][operation]["fits"][backend_name] = {
                     **fit,
-                    "model": "a*N*log2(N) + b*N + c",
+                    "model": model,
                     "fit_min_pow2": FIT_MIN_POW2,
                 }
 
@@ -642,7 +673,34 @@ def _build_parser() -> argparse.ArgumentParser:
         nargs=2,
         metavar=("START", "END"),
         type=int,
-        help="Inclusive exponent range for N=2**p (min 8, max 25). Default: 11 20.",
+        help=(
+            "Inclusive exponent range for N=2**p when --square-tiling is set. "
+            "Default: 11 20."
+        ),
+    )
+    parser.add_argument(
+        "--square-tiling",
+        action="store_true",
+        help="Use the legacy near-square nt*nf factorization instead of fixed nt.",
+    )
+    parser.add_argument(
+        "--fixed-nt",
+        type=int,
+        default=DEFAULT_FIXED_NT,
+        help=(
+            "Hold nt fixed and benchmark N=nt*nf instead of using "
+            f"near-square tilings. Default: {DEFAULT_FIXED_NT}."
+        ),
+    )
+    parser.add_argument(
+        "--nf-pow2",
+        nargs=2,
+        metavar=("START", "END"),
+        type=int,
+        help=(
+            "Inclusive exponent range for nf=2**p when --fixed-nt is set. "
+            "Default: 2 10."
+        ),
     )
     parser.add_argument(
         "--runs",
@@ -694,9 +752,23 @@ def main(argv: list[str] | None = None) -> None:  # pragma: no cover
 
     if args.batch_size < 1:
         raise SystemExit("--batch-size must be at least 1.")
+    fixed_nt = None if args.square_tiling else args.fixed_nt
     pow2_range = tuple(args.pow2) if args.pow2 is not None else None
+    nf_pow2_range = tuple(args.nf_pow2) if args.nf_pow2 is not None else None
     try:
-        n_values = resolve_n_values(pow2_range=pow2_range)
+        if fixed_nt is None:
+            if args.nf_pow2 is not None:
+                raise ValueError("--nf-pow2 requires fixed-nt mode.")
+            n_values = resolve_n_values(pow2_range=pow2_range)
+        else:
+            if args.pow2 is not None:
+                raise ValueError(
+                    "--pow2 cannot be combined with fixed-nt mode; use --nf-pow2."
+                )
+            n_values = resolve_fixed_nt_n_values(
+                nt=fixed_nt,
+                nf_pow2_range=nf_pow2_range,
+            )
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
 
@@ -714,6 +786,7 @@ def main(argv: list[str] | None = None) -> None:  # pragma: no cover
         n_values=n_values,
         num_runs=args.runs,
         batch_size=args.batch_size,
+        fixed_nt=fixed_nt,
     )
 
     if _jax is not None:
