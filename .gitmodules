@@ -1,3 +1,0 @@
-[submodule "docs/manuscript"]
-	url = https://github.com/pywavelet/manuscript.git
-	path = docs/manuscript
