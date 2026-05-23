@@ -53,10 +53,17 @@ def matched_filter_snr_wdm(
     coeffs: np.ndarray,
     noise_var: np.ndarray,
 ) -> float:
-    """Matched-filter SNR for real WDM coefficients with diagonal noise variance."""
+    """Matched-filter SNR for real WDM coefficients with diagonal noise variance.
+
+    NaN entries in ``noise_var`` (used to flag rank-deficient DC/Nyquist
+    columns) are excluded from the sum.  Callers may therefore pass the full
+    ``(nt, nf+1)`` arrays returned by :func:`wdm_noise_variance` directly;
+    the edge channels will be skipped automatically.
+    """
     coeffs_arr = np.asarray(coeffs, dtype=float)
-    noise_var_arr = np.asarray(noise_var, dtype=float)
-    snr2 = np.sum(coeffs_arr**2 / np.maximum(noise_var_arr, 1e-60))
+    var = np.asarray(noise_var, dtype=float)
+    mask = np.isfinite(var) & (var > 0)
+    snr2 = np.sum(np.where(mask, coeffs_arr**2 / np.where(mask, var, 1.0), 0.0))
     return float(np.sqrt(max(float(snr2), 0.0)))
 
 
@@ -64,25 +71,58 @@ def wdm_noise_variance(
     noise_psd: np.ndarray,
     *,
     nt: int,
+    nf: int,
     dt: float,
 ) -> np.ndarray:
-    """Broadcast one-sided PSD samples into diagonal WDM coefficient variance.
+    """Diagonal WDM noise variance for interior channels.
 
-    For a stationary process with one-sided physical PSD ``S_n(f_m)``, the
-    per-pixel WDM variance is
+    For stationary noise with one-sided PSD ``S(f)``, the per-pixel WDM
+    coefficient variance under the discrete-FFT normalisation used here is
 
-        E[w[n, m]^2] = S_n(f_m) / (2 * dt),
+        sigma^2_{nm} = N * S(f_m) / (2 * dt)   for  1 <= m <= nf - 1
 
-    which is independent of the WDM frequency-bin spacing. The input PSD must
-    already be sampled at the WDM frequency channels of interest.
+    where ``N = nt * nf``.
+
+    The DC (m=0) and Nyquist (m=nf) edge channels are returned as ``NaN``.
+    Those channels are overcomplete (rank-deficient) and must be excluded from
+    any diagonal-Whittle SNR or likelihood sum.  :func:`matched_filter_snr_wdm`
+    skips NaN entries automatically, so callers can pass the full arrays
+    returned by this function without manual slicing.
+
+    Parameters
+    ----------
+    noise_psd:
+        One-sided physical PSD sampled at the WDM channel frequencies
+        ``f_m = m * Delta_F`` for ``m = 0, 1, …, nf``; shape ``(nf + 1,)``.
+    nt, nf:
+        WDM grid dimensions.
+    dt:
+        Sampling interval of the underlying time series.
+
+    Returns
+    -------
+    sigma2 : ndarray, shape ``(nt, nf + 1)``
+        Per-pixel WDM variance, with DC (column 0) and Nyquist (column nf)
+        set to ``NaN`` as a deliberate guardrail against including the
+        rank-deficient edge channels in sums.
     """
     if nt <= 0:
         raise ValueError("nt must be positive.")
+    if nf <= 0:
+        raise ValueError("nf must be positive.")
     if dt <= 0:
         raise ValueError("dt must be positive.")
-    f_nyquist = 1.0 / (2.0 * dt)
-    var_row = np.maximum(np.asarray(noise_psd, dtype=float) * f_nyquist, 1e-60)
-    return np.broadcast_to(var_row[None, :], (nt, len(var_row))).copy()
+    psd = np.asarray(noise_psd, dtype=float)
+    if psd.shape[-1] != nf + 1:
+        raise ValueError(
+            f"noise_psd must have length nf+1 = {nf + 1}, got {psd.shape[-1]}."
+        )
+    N = nt * nf
+    var_row = N * psd / (2.0 * dt)
+    out = np.broadcast_to(var_row[None, :], (nt, nf + 1)).copy()
+    out[:, 0] = np.nan
+    out[:, nf] = np.nan
+    return out
 
 
 __all__ = [
