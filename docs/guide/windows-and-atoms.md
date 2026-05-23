@@ -1,124 +1,170 @@
 # Windows And Atoms
 
-WDM is built from a cosine-tapered frequency window `phi` and a family of
-shifted atoms `g_{n,m}`.
+WDM is built from three ingredients:
 
-These are the ingredients that make the coefficient grid interpretable.
+- a smooth, compactly supported **Daubechies–Meyer frequency window** $\tilde\varphi$
+- a **Wilson-basis pairing** of positive- and negative-frequency atoms
+  through a phase factor $C_{nm}$
+- a family of shifted, modulated atoms $\tilde g_{nm}$ in the discrete
+  frequency domain
 
-## The Window `phi`
+These are what make the coefficient grid interpretable and the interior
+atoms exactly orthonormal.
 
-The package uses a compactly supported frequency-domain window:
+## The Daubechies–Meyer Window $\tilde\varphi$
 
-- flat in the middle
-- smoothly tapered at the edges
-- exactly zero outside its support
+The package uses the discrete frequency-domain window
 
-The roll-off is controlled by the parameter `a`.
+$$
+\tilde\varphi[\ell] = \sqrt{\tfrac{2}{N_t}}
+\begin{cases}
+1 & |\hat\ell| < A \\
+\cos\!\left[\dfrac{\pi}{2}\!\left(\dfrac{|\hat\ell| - A}{B}\right)\right] & A \le |\hat\ell| < A + B \\
+0 & \text{otherwise}
+\end{cases}
+$$
 
-- smaller `a`: narrower flat region, broader taper
-- larger `a`: broader flat region, narrower taper
+where $\hat\ell = \ell \cdot 2/N_t$ is the normalised frequency bin and
 
-In this repository the default choice is `a = 1/3`.
+$$
+B = 1 - 2A, \qquad A \in (0, 1/2] .
+$$
 
-The easiest way to read `a` is:
+So a single parameter $A$ controls the shape:
 
-- smaller `a`: the flat part of the window is narrower and the taper occupies
-  more of the band
-- larger `a`: the flat part is wider and the taper is tighter
+- $|\hat\ell| < A$ — flat passband
+- $A \le |\hat\ell| < A + B$ — smooth cosine taper to zero
+- $|\hat\ell| \ge A + B$ — exactly zero
 
-That is visible directly in frequency space, but it also changes the
-corresponding time-domain localization. The figure below shows both effects
-side by side.
+In code this parameter is exposed as the `a` attribute of the
+[`WDM`](../guide/api-overview.md) class. The default is `a = 1/3`. The
+window is the $d = 1$ cosine-tapered member of the Meyer family; the
+parameter $d$ is retained in the API for possible future
+generalisations (e.g. $d = 4$ as in Cornish 2020 gives a flatter passband
+at the cost of wider time-domain support).
 
-![Effect of the window parameter a](../_static/wdm_phi_parameter_comparison.png)
+### How $A$ Trades Off Time vs Frequency Localisation
 
-How to interpret it:
+- **Smaller $A$**: narrower flat passband, longer cosine taper, sharper
+  spectral roll-off but broader time-domain support.
+- **Larger $A$**: wider flat passband, shorter taper, more compact in time
+  but more spectral leakage.
 
-- Left panel: the actual cosine-tapered window shape in normalized frequency
-  coordinates
-- Right panel: a normalized time-domain shape implied by the same `phi`,
-  included only to show the localization trend as `a` changes
+The figure below shows both effects side by side.
 
-This is the core tradeoff:
+![Effect of the window parameter A](../_static/wdm_phi_parameter_comparison.png)
 
-- a broader and flatter frequency window usually gives a more concentrated band
-  selection in frequency
-- but that also changes how extended the corresponding shape is in time
-
-So `a` is one of the main knobs for how sharply the transform separates nearby
-frequencies versus how localized the atoms remain in time.
+- Left panel: the cosine-tapered $\tilde\varphi$ shape in normalised
+  frequency coordinates.
+- Right panel: the implied time-domain envelope; this is what controls
+  how localised each atom is in time.
 
 ## Shifted Windows Define The Channels
 
-The same base window is shifted to different channel locations `m`. That is how
-WDM separates the signal into localized frequency bands.
+The same base window is shifted by $mN_t/2$ to define each channel $m$.
+Adjacent channels overlap by exactly $50\%$ of their spectral support — that
+overlap is what gives the construction its partition-of-unity property and
+allows exact reconstruction:
 
-The figure below overlays a few shifted windows on top of a sample spectrum.
+$$
+\tilde\varphi^2(f) + \tilde\varphi^2(f - \Delta F) = \frac{1}{\Delta F}
+$$
+
+across each overlap region.
 
 ![Shifted WDM windows](../_static/wdm_shifted_windows.png)
 
-The interior channels are centered away from DC and Nyquist, while the two edge
-channels have a special form because they sit at the boundaries of the sampled
-frequency range.
+## The Atoms $\tilde g_{nm}$
 
-## The Atoms `g_{n,m}`
+The Wilson-basis atom definition has three cases, matching the packed
+$(N_t,\, N_f+1)$ storage:
 
-Once the window is placed at channel `m`, the transform also modulates it in
-time.
+$$
+\tilde g_{nm}[\ell] = \frac{1}{\sqrt 2}
+\begin{cases}
+e^{-4\pi i n \ell / N_t}\, \tilde\varphi[\ell] & m = 0 \\[2pt]
+e^{-2\pi i n \ell / N_t}\Big(C_{nm}\, \tilde\varphi[\ell - m N_t/2] + C_{nm}^{*}\, \tilde\varphi[\ell + m N_t/2]\Big) & 0 < m < N_f \\[2pt]
+e^{-4\pi i n \ell / N_t}\Big(\tilde\varphi[\ell - N/2] + \tilde\varphi[\ell + N/2]\Big) & m = N_f
+\end{cases}
+$$
 
-- `m` changes *where the atom lives in frequency*
-- `n` changes *where the atom lives in time*
+Note the **doubled time-shift exponent** ($4\pi$ instead of $2\pi$) for the
+DC and Nyquist edge channels: those channels oscillate at twice the rate in
+$n$ because they see both positive and negative frequency copies of the
+window simultaneously.
 
-That is the origin of the two-dimensional WDM grid.
+## The Phase Factor $C_{nm}$
+
+The interior channels use an alternating phase factor
+
+$$
+C_{nm} = \exp\!\left[i\tfrac{\pi}{4}\,(1 - (-1)^{n+m})\right]
+= \begin{cases} 1 & n+m \text{ even} \\ i & n+m \text{ odd} \end{cases}
+$$
+
+This is the **Wilson** part of the construction: it combines the
+positive- and negative-frequency windowed atoms at $\pm m N_t / 2$ into a
+single real, orthogonal pair. Without $C_{nm}$ the pairing would not yield
+real coefficients with the right orthogonality structure.
+
+The forward transform for the interior block can be written compactly as
+
+$$
+w_{nm} = \sqrt 2\, (-1)^{nm}\, \Re\!\left[C_{nm}^{*}\, x_m[n]\right]
+$$
+
+where $x_m[n]$ is the length-$N_t$ inverse FFT of the windowed spectral
+block at channel $m$. The $(-1)^{nm}$ checkerboard sign is what produces
+the alternating pattern visible across the coefficient grid.
 
 ## Why Orthogonality Matters
 
-If two different atoms overlap too strongly, then coefficients stop having a
-clean interpretation. A large coefficient could be partly due to leakage from
-several neighboring atoms rather than one localized feature.
+The interior atoms satisfy
 
-Near-orthogonality fixes that:
+$$
+\sum_{\ell} \tilde g_{nm}^{*}[\ell]\, \tilde g_{pq}[\ell] = \delta_{np}\,\delta_{mq}
+$$
 
-- one atom corresponds to one localized time-frequency pattern
-- coefficients can be read more independently
-- reconstruction remains stable and well-behaved
+**exactly** (to machine precision). This means each interior coefficient
+$w_{nm}$ measures the projection onto **one** localised time-frequency
+pattern, with no leakage from neighbours in the ideal sense. In practice:
 
-The study notebook includes overlap maps that visualize this directly.
+- one atom corresponds to one localised time-frequency cell
+- coefficients can be read independently
+- forward followed by inverse reconstructs the data to floating-point
+  roundoff
+- for stationary white noise the coefficient covariance is exactly
+  diagonal; for coloured stationary noise it is approximately diagonal,
+  with off-diagonal correlations decaying rapidly with $|n - n'|$ and
+  $|m - m'|$.
+
+The full packed array is overcomplete only at the DC and Nyquist edges,
+which together carry $N_t$ redundant real numbers.
 
 ## Atom Shift Animation
 
-The animation below keeps one frequency channel fixed and shifts the atom across
-time bins. The frequency support stays in the same band, while the time-domain
-shape moves across the signal duration.
+Keeping one channel fixed and varying $n$ shifts the atom in time:
 
 ![WDM basis atom shift](../_static/wdm_basis_atom_shift.gif)
 
-This is the key intuition behind the `n` index: it is not a sample number, but
-a location on the coarser WDM time grid.
-
 ## Channel Shift Animation
 
-The complementary animation below keeps one time bin fixed and shifts the atom
-through the WDM channels.
+Keeping one time bin fixed and varying $m$ shifts the atom in frequency:
 
 ![WDM channel shift](../_static/wdm_channel_shift.gif)
 
-This shows the role of `m`:
-
-- the active frequency band moves up and down the spectrum
-- the time-localization stays in roughly the same place
-- the time-domain atom oscillates faster or slower depending on the channel
-
 So, at a high level:
 
-- changing `n` at fixed `m` moves an atom in time
-- changing `m` at fixed `n` moves an atom in frequency
+- changing $n$ at fixed $m$ moves an atom in time
+- changing $m$ at fixed $n$ moves an atom in frequency
 
 ## Implementation Surface
 
 The shared helpers that define these pieces live in:
 
-- `wdm_transform.windows.phi_unit`
-- `wdm_transform.windows.phi_window`
-- `wdm_transform.windows.gnmf`
-- `wdm_transform.windows.cnm`
+- `wdm_transform.windows.phi_unit` — the dimensionless cosine taper
+- `wdm_transform.windows.phi_window` — $\tilde\varphi$ as evaluated on the
+  discrete frequency grid
+- `wdm_transform.windows.cnm` — the phase factor $C_{nm}$
+- `wdm_transform.windows.gnmf` — the full atom $\tilde g_{nm}$ in the
+  three-case form above

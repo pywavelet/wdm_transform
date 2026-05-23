@@ -1,268 +1,106 @@
 # API Overview
 
-The package currently centers on three public objects.
+The public API centres on three data classes and a handful of
+signal-processing helpers. The full auto-generated reference is below;
+this page is a quick orientation.
 
-## `TimeSeries`
+## At A Glance
 
-`TimeSeries` represents sampled time-domain data and the sample spacing `dt`.
-It accepts either a single series with shape `(n,)` or a leading-batch layout
-with shape `(batch, n)`, and stores data canonically as `(batch, n)`.
+| Object | Purpose | Key methods |
+|---|---|---|
+| [`TimeSeries`](#wdm_transform.datatypes.TimeSeries) | Sampled time-domain data plus `dt` | `to_frequency_series()`, `to_wdm()`, `plot()` |
+| [`FrequencySeries`](#wdm_transform.datatypes.FrequencySeries) | FFT-domain data plus `df` | `to_time_series()`, `to_wdm()`, `plot()` |
+| [`WDM`](#wdm_transform.datatypes.WDM) | Packed $(N_t,\, N_f+1)$ real coefficients plus transform metadata | `to_time_series()`, `to_frequency_series()`, `plot()` |
 
-Typical operations:
+All three accept either a single array `(n,)` or a leading-batch layout
+`(batch, n)` and store data canonically as batched. The `WDM` class stores
+coefficients as `(batch, nt, nf + 1)`.
 
-- inspect `times`
-- transform to `FrequencySeries`
-- transform to `WDM`
-- call `plot()`
+## Backend Selection
 
-## `FrequencySeries`
-
-`FrequencySeries` represents FFT-domain data and the frequency spacing `df`.
-It accepts either shape `(n,)` or `(batch, n)`, and stores data canonically as
-`(batch, n)`.
-
-Typical operations:
-
-- inspect `freqs`
-- convert back to `TimeSeries`
-- transform to `WDM`
-- call `plot()`
-
-## `WDM`
-
-`WDM` stores the packed coefficient matrix and the transform metadata:
-
-- `dt`
-- window parameter `a`
-- auxiliary parameter `d`
-- backend
-
-Typical operations:
-
-- `WDM.from_time_series(...)`
-- `TimeSeries.to_wdm(...)`
-- `FrequencySeries.to_wdm(...)`
-- `to_time_series()`
-- `to_frequency_series()`
-- `plot()`
-
-The coefficient layout is stored canonically as `(batch, nt, nf + 1)`. Users
-may still pass a single transform with shape `(nt, nf + 1)`, which is
-normalized to a singleton batch internally.
+`wdm-transform` ships with a NumPy backend by default. The JAX backend is
+opt-in:
 
 ```python
-import jax.numpy as jnp
-from wdm_transform import TimeSeries
-
-aet = jnp.stack([a_channel, e_channel, t_channel], axis=0)
-series = TimeSeries(aet, dt=dt, backend="jax")
-wdm = series.to_wdm(nt=nt)
-
-assert wdm.coeffs.shape == (3, nt, aet.shape[-1] // nt + 1)
+import wdm_transform as wt
+wt.get_backend()                  # current backend
+wt.register_backend("jax")        # opt in to the JAX backend
 ```
 
-## Backend model
+See [Reconstruction and Inference](reconstruction-and-inference.md) and
+the [Benchmarks](../benchmarks.ipynb) page for a runtime comparison.
 
-The backend system is intentionally small right now. A backend provides:
+---
 
-- an array namespace
-- an FFT namespace
-- `asarray(...)`
+## Data Classes
 
-That is enough for the current NumPy implementation and sets up a clean insertion point for JAX and
-CuPy later.
-
-## Sub-band transforms
-
-The high-level objects transform complete time or frequency arrays. For narrow
-frequency-domain workflows, `wdm_transform.transforms` also exposes compact
-sub-band helpers that operate on only the Fourier bins and WDM channels touched
-by a local band.
-
-Use `from_freq_to_wdm_subband(...)` when you want the full overlapping WDM span
-implied by a compact Fourier crop. It returns both the coefficient block and the
-first WDM channel index for that block. Use `from_freq_to_wdm_band(...)` when
-you already know the WDM channel range you want to keep. Use
-`from_wdm_to_freq_subband(...)` to reconstruct the touched Fourier span from a
-compact WDM block.
-
-The span helpers are useful for allocating arrays and keeping local crops
-aligned with the full transform grid:
-
-```python
-from wdm_transform.transforms import (
-    from_freq_to_wdm_subband,
-    fourier_span_from_wdm_span,
-    wdm_span_from_fourier_span,
-)
-
-mmin, nf_sub_wdm = wdm_span_from_fourier_span(
-    nfreqs_fourier=nfreqs_fourier,
-    nfreqs_wdm=nfreqs_wdm,
-    ntimes_wdm=ntimes_wdm,
-    kmin=kmin,
-    lendata=len(spectrum_crop),
-)
-
-coeffs, touched_mmin = from_freq_to_wdm_subband(
-    spectrum_crop,
-    df=df,
-    nfreqs_fourier=nfreqs_fourier,
-    kmin=kmin,
-    nfreqs_wdm=nfreqs_wdm,
-    ntimes_wdm=ntimes_wdm,
-)
-
-assert touched_mmin == mmin
-
-kmin_recon, lendata_recon = fourier_span_from_wdm_span(
-    nfreqs_fourier=nfreqs_fourier,
-    nfreqs_wdm=nfreqs_wdm,
-    ntimes_wdm=ntimes_wdm,
-    mmin=touched_mmin,
-    nf_sub_wdm=coeffs.shape[1],
-)
-```
-
-## Live API Reference
-
-The sections below are generated from live docstrings with `mkdocstrings`, so signatures stay
-aligned with the implementation.
-
-## Core Objects Reference
-
-### `TimeSeries`
-
-Public import: `from wdm_transform import TimeSeries`
-
-::: wdm_transform.datatypes.series.TimeSeries
+::: wdm_transform.datatypes.TimeSeries
     options:
-      show_root_heading: false
-      show_root_toc_entry: false
+      show_root_heading: true
+      heading_level: 3
+      members_order: source
+      show_source: false
 
-### `FrequencySeries`
-
-Public import: `from wdm_transform import FrequencySeries`
-
-::: wdm_transform.datatypes.series.FrequencySeries
+::: wdm_transform.datatypes.FrequencySeries
     options:
-      show_root_heading: false
-      show_root_toc_entry: false
+      show_root_heading: true
+      heading_level: 3
+      members_order: source
+      show_source: false
 
-### `WDM`
-
-Public import: `from wdm_transform import WDM`
-
-::: wdm_transform.datatypes.wdm.WDM
+::: wdm_transform.datatypes.WDM
     options:
-      show_root_heading: false
-      show_root_toc_entry: false
+      show_root_heading: true
+      heading_level: 3
+      members_order: source
+      show_source: false
 
-## Backend Utilities Reference
+---
 
-### `Backend`
+## Signal Processing Helpers
 
-::: wdm_transform.backends.base.Backend
+::: wdm_transform.signal_processing.matched_filter_snr_rfft
     options:
-      show_root_heading: false
-      show_root_toc_entry: false
+      show_root_heading: true
+      heading_level: 3
+      show_source: false
 
-### `get_backend`
-
-::: wdm_transform.get_backend
+::: wdm_transform.signal_processing.matched_filter_snr_wdm
     options:
-      show_root_heading: false
-      show_root_toc_entry: false
+      show_root_heading: true
+      heading_level: 3
+      show_source: false
 
-### `register_backend`
-
-::: wdm_transform.register_backend
+::: wdm_transform.signal_processing.noise_characteristic_strain
     options:
-      show_root_heading: false
-      show_root_toc_entry: false
+      show_root_heading: true
+      heading_level: 3
+      show_source: false
 
-## Transform Helpers Reference
-
-### `from_freq_to_wdm_subband`
-
-Public import: `from wdm_transform.transforms import from_freq_to_wdm_subband`
-
-::: wdm_transform.transforms.from_freq_to_wdm_subband
+::: wdm_transform.signal_processing.rfft_characteristic_strain
     options:
-      show_root_heading: false
-      show_root_toc_entry: false
+      show_root_heading: true
+      heading_level: 3
+      show_source: false
 
-### `from_freq_to_wdm_band`
-
-Public import: `from wdm_transform.transforms import from_freq_to_wdm_band`
-
-::: wdm_transform.transforms.from_freq_to_wdm_band
+::: wdm_transform.signal_processing.wdm_noise_variance
     options:
-      show_root_heading: false
-      show_root_toc_entry: false
+      show_root_heading: true
+      heading_level: 3
+      show_source: false
 
-### `from_wdm_to_freq_subband`
+---
 
-Public import: `from wdm_transform.transforms import from_wdm_to_freq_subband`
+## Backends
 
-::: wdm_transform.transforms.from_wdm_to_freq_subband
+::: wdm_transform.backends.get_backend
     options:
-      show_root_heading: false
-      show_root_toc_entry: false
+      show_root_heading: true
+      heading_level: 3
+      show_source: false
 
-### `wdm_span_from_fourier_span`
-
-Public import: `from wdm_transform.transforms import wdm_span_from_fourier_span`
-
-::: wdm_transform.transforms.wdm_span_from_fourier_span
+::: wdm_transform.backends.register_backend
     options:
-      show_root_heading: false
-      show_root_toc_entry: false
-
-### `fourier_span_from_wdm_span`
-
-Public import: `from wdm_transform.transforms import fourier_span_from_wdm_span`
-
-::: wdm_transform.transforms.fourier_span_from_wdm_span
-    options:
-      show_root_heading: false
-      show_root_toc_entry: false
-
-## Plotting Helpers Reference
-
-These helpers power the datatype `.plot()` methods and remain available as standalone functions.
-
-### `plot_time_series`
-
-::: wdm_transform.plotting.plot_time_series
-    options:
-      show_root_heading: false
-      show_root_toc_entry: false
-
-### `plot_frequency_series`
-
-::: wdm_transform.plotting.plot_frequency_series
-    options:
-      show_root_heading: false
-      show_root_toc_entry: false
-
-### `plot_periodogram`
-
-::: wdm_transform.plotting.plot_periodogram
-    options:
-      show_root_heading: false
-      show_root_toc_entry: false
-
-### `plot_spectrogram`
-
-::: wdm_transform.plotting.plot_spectrogram
-    options:
-      show_root_heading: false
-      show_root_toc_entry: false
-
-### `plot_wdm_grid`
-
-::: wdm_transform.plotting.plot_wdm_grid
-    options:
-      show_root_heading: false
-      show_root_toc_entry: false
+      show_root_heading: true
+      heading_level: 3
+      show_source: false
