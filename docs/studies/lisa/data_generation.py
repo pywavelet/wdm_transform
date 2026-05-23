@@ -53,7 +53,7 @@ INCLUDE_GALACTIC = os.getenv("LISA_INCLUDE_GALACTIC", "1").strip().lower() not i
     "no",
     "off",
 }
-RNG_SEED = int(os.getenv("LISA_SEED", "0"))
+RNG_SEED = int(os.getenv("LISA_SEED", "2"))
 
 
 def _save_plot_once_to_cache(stem: str, draw_plot) -> None:
