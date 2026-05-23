@@ -122,9 +122,10 @@ def test_wdm_variance_matches_psd_normalized_noise_draws() -> None:
     psd_value = 3.5
     psd = np.full(n_total // 2 + 1, psd_value)
     rng = np.random.default_rng(5678)
-    variance = n_total * wdm_noise_variance(
+    variance = wdm_noise_variance(
         np.full(nf + 1, psd_value),
         nt=nt,
+        nf=nf,
         dt=dt,
     )
     whitened_means = []

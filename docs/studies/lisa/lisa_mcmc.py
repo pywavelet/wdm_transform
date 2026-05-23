@@ -32,7 +32,6 @@ from lisa_common import (
 from numpy.fft import rfft, rfftfreq
 from numpyro.infer import MCMC, NUTS
 
-from wdm_transform.signal_processing import wdm_noise_variance
 from wdm_transform.transforms import forward_wdm_band
 
 setup_jax_and_matplotlib()
@@ -51,7 +50,8 @@ INIT_JITTER_SCALE = 0.15
 A_WDM = 1.0 / 3.0
 D_WDM = 1.0
 POSTERIOR_VARS = ("f0", "fdot", "A", "phi0")
-POSTERIOR_LABELS = ["f0 [Hz]", "fdot [Hz/s]", "A", "phi0 [rad]"]
+POSTERIOR_LABELS = ["log10(f0 / Hz)", "log10(fdot / Hz/s)", "log10(A)", "phi0 [rad]"]
+LOG10_VARS: frozenset[str] = frozenset({"f0", "fdot", "A"})
 
 numpyro.set_host_device_count(NUM_CHAINS)
 
@@ -223,9 +223,11 @@ def build_wdm_band(injection, source_param: np.ndarray, jgb: JaxGB) -> dict:
         injection.freqs,
         np.stack([injection.noise_psd_A, injection.noise_psd_E, injection.noise_psd_T]),
     )
-    wdm_psd = (2 * (n_freqs - 1)) * np.stack(
-        [wdm_noise_variance(psd, nt=NT, dt=injection.dt) for psd in noise_psd]
-    )
+    N = 2 * (n_freqs - 1)
+    wdm_psd = np.broadcast_to(
+        N * noise_psd[:, None, :] / (2.0 * injection.dt),
+        (noise_psd.shape[0], NT, noise_psd.shape[-1]),
+    ).copy()
     return {
         **prior_metadata(injection),
         "domain": "wdm",
@@ -458,10 +460,23 @@ def load_posterior_dataset(path: Path) -> xr.Dataset:
         return posterior.load()
 
 
+def _log10_transform_dataset(ds: xr.Dataset) -> xr.Dataset:
+    """Return a copy of ds with LOG10_VARS replaced by their log10."""
+    ds = ds.copy()
+    for name in LOG10_VARS:
+        if name in ds:
+            ds[name] = np.log10(ds[name])
+    return ds
+
+
 def posterior_samples(posterior: xr.Dataset) -> np.ndarray:
-    samples = np.column_stack(
-        [np.asarray(posterior[name]).reshape(-1) for name in POSTERIOR_VARS]
-    )
+    cols = []
+    for name in POSTERIOR_VARS:
+        col = np.asarray(posterior[name]).reshape(-1)
+        if name in LOG10_VARS:
+            col = np.log10(col)
+        cols.append(col)
+    samples = np.column_stack(cols)
     return normalize_phase_columns(samples, POSTERIOR_LABELS)
 
 
@@ -502,8 +517,8 @@ def save_distribution_plot(
 ) -> None:
     azp.plot_dist(
         {
-            "Frequency": xr.DataTree.from_dict({"posterior": freq}),
-            "WDM": xr.DataTree.from_dict({"posterior": wdm}),
+            "Frequency": xr.DataTree.from_dict({"posterior": _log10_transform_dataset(freq)}),
+            "WDM": xr.DataTree.from_dict({"posterior": _log10_transform_dataset(wdm)}),
         },
         var_names=list(POSTERIOR_VARS),
         backend="matplotlib",
