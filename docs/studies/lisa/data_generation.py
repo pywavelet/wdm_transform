@@ -53,7 +53,7 @@ INCLUDE_GALACTIC = os.getenv("LISA_INCLUDE_GALACTIC", "1").strip().lower() not i
     "no",
     "off",
 }
-RNG_SEED = int(os.getenv("LISA_SEED", "2"))
+RNG_SEED = int(os.getenv("LISA_SEED", "0"))
 
 
 def _save_plot_once_to_cache(stem: str, draw_plot) -> None:
@@ -303,8 +303,8 @@ def draw_rfft_from_psd(
     white = rng.normal(size=psd.shape) + 1j * rng.normal(size=psd.shape)
     coeffs = np.sqrt(np.maximum(psd, 0.0) / (4.0 * df * dt**2)) * white
     if coeffs.size:
-        coeffs[0] = coeffs[0].real
-        coeffs[-1] = coeffs[-1].real
+        coeffs[0] = np.sqrt(2) * coeffs[0].real
+        coeffs[-1] = np.sqrt(2) * coeffs[-1].real
     return coeffs
 
 
@@ -542,9 +542,9 @@ def main():
         gEf = np.zeros(n_freqs, dtype=complex)
         gTf = np.zeros(n_freqs, dtype=complex)
 
-    a_bg_f = nAf + gAf
-    e_bg_f = nEf + gEf
-    t_bg_f = nTf + gTf
+    a_bg_f = 0*(nAf + gAf)
+    e_bg_f = 0*(nEf + gEf)
+    t_bg_f = 0*(nTf + gTf)
 
     plt.loglog(freqs_all, np.abs(nAf) ** 2, label="A Noise", alpha=0.5)
     if INCLUDE_GALACTIC:

@@ -10,20 +10,23 @@ import numpy as np
 
 SOURCE_CATALOG = np.array(
     [
-        [1.35962e-3, 8.94581279e-19, 1.07345e-22, 2.40, 0.31, 3.56, 0.52, 3.06],
-        [1.41220e-3, 2.30000000e-18, 8.20000000e-23, 2.15, 0.18, 1.20, 0.93, 1.40],
+        # [1.35962e-3, 8.94581279e-19, 1.07345e-22, 2.40, 0.31, 3.56, 0.52, 3.06],
+        # [1.41220e-3, 2.30000000e-18, 8.20000000e-23, 2.15, 0.18, 1.20, 0.93, 1.40],
+        [1.35962e-3, 8.94581279e-15, 1.07345e-20, 2.40, 0.31, 3.56, 0.52, 3.06],
+        [1.41220e-3, 2.30000000e-12, 8.20000000e-21, 2.15, 0.18, 1.20, 0.93, 1.40],
     ],
     dtype=float,
 )
 
 F0_GLOBAL_BOUNDS = (
-    float(SOURCE_CATALOG[:, 0].min() - 1.5e-5),
-    float(SOURCE_CATALOG[:, 0].max() + 1.5e-5),
+    float(SOURCE_CATALOG[:, 0].min() - 1.5e-7),
+    float(SOURCE_CATALOG[:, 0].max() + 1.5e-7),
 )
 # FDOT_GLOBAL_BOUNDS = (5.0e-19, 4.0e-18)
-FDOT_GLOBAL_BOUNDS = (5.0e-19, 8.0e-18)
+# FDOT_GLOBAL_BOUNDS = (5.0e-19, 8.0e-18)
+FDOT_GLOBAL_BOUNDS = (5.0e-17, 8.0e-13)
 FIXED_FDOT_PRIOR_BOUNDS = FDOT_GLOBAL_BOUNDS
-FIXED_A_PRIOR_BOUNDS = (6.0e-24, 1.7e-23)
+FIXED_A_PRIOR_BOUNDS = (6.0e-25, 1.7e-22)
 F0_REF = float(np.mean(SOURCE_CATALOG[:, 0]))
 
 
