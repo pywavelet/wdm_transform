@@ -73,6 +73,8 @@ plugins:
         - "studies/*.py"
         - "studies/**/*.py"
       execute: true
+      execute_ignore:
+        - "benchmarks.ipynb"
       include_source: true
       show_input: true
 

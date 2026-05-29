@@ -28,7 +28,7 @@ import numpy as np
 from . import backends, transforms
 
 DEFAULT_BACKENDS = ["numpy", "jax"]
-DEFAULT_POW2_RANGE = (11, 20)
+DEFAULT_POW2_RANGE = (11, 24)
 DEFAULT_FIXED_NT = 1024
 DEFAULT_NF_POW2_RANGE = (2, 10)
 MIN_POW2 = 8
