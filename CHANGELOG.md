@@ -1,3 +1,11 @@
+## v0.4.0 (2026-05-29)
+
+### fix
+
+- update test for benchmarking
+- raise default benchmark range to 2**24
+- remove docs/manuscript submodule, keep local only
+
 ## v0.3.0 (2026-05-01)
 
 ### fix
