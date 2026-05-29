@@ -69,6 +69,7 @@ plugins:
         - "__pycache__/*"
         - "examples/generate_benchmark_plot.py"
         - "examples/generate_wdm_assets.py"
+        - "examples/wdm_walkthrough.ipynb"
         - "studies/*.py"
         - "studies/**/*.py"
       execute: true

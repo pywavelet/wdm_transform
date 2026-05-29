@@ -5,7 +5,7 @@
 [![Tests](https://github.com/pywavelet/wdm_transform/actions/workflows/tests.yml/badge.svg)](https://github.com/pywavelet/wdm_transform/actions/workflows/tests.yml)
 [![Docs](https://github.com/pywavelet/wdm_transform/actions/workflows/docs.yml/badge.svg)](https://pywavelet.github.io/wdm_transform/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/pywavelet/wdm_transform/blob/main/docs/examples/wdm_walkthrough.py)
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/pywavelet/wdm_transform/blob/main/docs/examples/wdm_walkthrough.ipynb)
 
 **A NumPy / JAX implementation of the Wilson–Daubechies–Meyer (WDM)
 wavelet-packet time-frequency transform, with exact closed-form forward
