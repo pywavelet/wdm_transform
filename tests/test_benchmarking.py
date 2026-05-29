@@ -70,21 +70,11 @@ def test_resolve_n_values_validates_pow2_range() -> None:
         resolve_n_values(pow2_range=(10, 8))
 
 
-def test_benchmark_cli_writes_outdir_artifacts(tmp_path: Path) -> None:
-    main(
-        [
-            "--backends",
-            "numpy",
-            "--square-tiling",
-            "--pow2",
-            "8",
-            "8",
-            "--runs",
-            "1",
-            "--outdir",
-            str(tmp_path),
-        ]
-    )
+def test_benchmark_cli_writes_outdir_artifacts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    main(["--backends", "numpy", "--pow2", "11", "11"])
 
     json_path = tmp_path / "benchmark_results.json"
     plot_path = tmp_path / "benchmark_runtime.png"
@@ -93,5 +83,5 @@ def test_benchmark_cli_writes_outdir_artifacts(tmp_path: Path) -> None:
 
     data = json.loads(json_path.read_text(encoding="utf-8"))
     assert data["metadata"]["available_backends"] == ["numpy"]
-    assert data["metadata"]["n_values"] == [256]
+    assert data["metadata"]["n_values"] == [2048]
     assert sorted(data["operations"]) == ["from_freq", "to_freq"]

@@ -30,7 +30,7 @@ from . import backends, transforms
 DEFAULT_BACKENDS = ["numpy", "jax"]
 DEFAULT_POW2_RANGE = (11, 24)
 DEFAULT_FIXED_NT = 1024
-DEFAULT_NF_POW2_RANGE = (2, 10)
+DEFAULT_NF_POW2_RANGE = (1, 14)
 MIN_POW2 = 8
 MAX_POW2 = 25
 FIT_MIN_POW2 = 16
@@ -296,8 +296,17 @@ def _timing_record(
     }
 
 
-def _fit_runtime_curve(ns: list[int], medians_seconds: list[float]) -> dict[str, float] | None:
-    """Fit ``a N log2(N) + b N + c`` on the large-N regime."""
+def _fit_runtime_curve(
+    ns: list[int],
+    medians_seconds: list[float],
+    *,
+    fixed_nt: int | None = None,
+) -> dict[str, float] | None:
+    """Fit runtime vs N on the large-N regime.
+
+    When ``fixed_nt`` is set, fits ``a * N * log2(nt) + c`` (linear in N since
+    log2(nt) is constant). Otherwise fits ``a * N * log2(N) + b * N + c``.
+    """
     fit_points = [
         (float(n), float(runtime))
         for n, runtime in zip(ns, medians_seconds, strict=True)
@@ -308,6 +317,13 @@ def _fit_runtime_curve(ns: list[int], medians_seconds: list[float]) -> dict[str,
 
     fit_ns = np.asarray([point[0] for point in fit_points], dtype=float)
     fit_ys = np.asarray([point[1] for point in fit_points], dtype=float)
+
+    if fixed_nt is not None:
+        log2_nt = float(np.log2(fixed_nt))
+        design = np.column_stack([fit_ns * log2_nt, np.ones_like(fit_ns)])
+        coeffs, _, _, _ = np.linalg.lstsq(design, fit_ys, rcond=None)
+        return {"a": float(coeffs[0]), "c": float(coeffs[1])}
+
     design = np.column_stack(
         [
             fit_ns * np.log2(fit_ns),
@@ -323,8 +339,15 @@ def _fit_runtime_curve(ns: list[int], medians_seconds: list[float]) -> dict[str,
     }
 
 
-def _evaluate_runtime_curve(ns: list[int], coeffs: dict[str, float]) -> np.ndarray:
+def _evaluate_runtime_curve(
+    ns: list[int],
+    coeffs: dict[str, float],
+    *,
+    fixed_nt: int | None = None,
+) -> np.ndarray:
     ns_array = np.asarray(ns, dtype=float)
+    if fixed_nt is not None:
+        return coeffs["a"] * ns_array * float(np.log2(fixed_nt)) + coeffs["c"]
     return (
         coeffs["a"] * ns_array * np.log2(ns_array)
         + coeffs["b"] * ns_array
@@ -475,15 +498,17 @@ def run_benchmarks(  # pragma: no cover
                 backend_results[backend_name][n]["scalar"]["median_seconds"]
                 for n in fitted_ns
             ]
-            fit = _fit_runtime_curve(fitted_ns, fitted_medians)
+            fit = _fit_runtime_curve(fitted_ns, fitted_medians, fixed_nt=fixed_nt)
             if fit is not None:
-                model = "a*N*log2(N) + b*N + c"
-                if fixed_nt is not None:
-                    model = f"a*N*log2({fixed_nt}) + b*N + c"
+                if fixed_nt is None:
+                    model = "a*N*log2(N) + b*N + c"
+                else:
+                    model = f"a*N*log2({fixed_nt}) + c"
                 results["operations"][operation]["fits"][backend_name] = {
                     **fit,
                     "model": model,
                     "fit_min_pow2": FIT_MIN_POW2,
+                    "fixed_nt": fixed_nt,
                 }
 
     return results
@@ -572,7 +597,10 @@ def plot_results(  # pragma: no cover
             fit = results.get("operations", {}).get(operation, {}).get("fits", {}).get(backend_name)
             if fit is not None:
                 fit_ns = [n for n in ns if n >= 2**FIT_MIN_POW2]
-                fit_ms = _evaluate_runtime_curve(fit_ns, fit) * 1e3
+                fit_ms = (
+                    _evaluate_runtime_curve(fit_ns, fit, fixed_nt=fit.get("fixed_nt"))
+                    * 1e3
+                )
                 runtime_ax.plot(
                     fit_ns,
                     fit_ms,
@@ -580,6 +608,7 @@ def plot_results(  # pragma: no cover
                     linestyle="--",
                     color=backend_style.get("color"),
                     alpha=0.95,
+                    label=f"{backend_name} fit: {fit['model']}" if column == 0 else None,
                 )
 
             speedup_median = [
@@ -649,16 +678,6 @@ def _build_parser() -> argparse.ArgumentParser:
         description="Benchmark low-level WDM kernels across backends and input sizes.",
     )
     parser.add_argument(
-        "--device",
-        choices=["cpu", "gpu", "auto"],
-        default="auto",
-        help=(
-            "Target device for JAX (and CuPy). "
-            "'auto' detects GPU via nvidia-smi. "
-            "Forces JAX platform."
-        ),
-    )
-    parser.add_argument(
         "--backends",
         nargs="+",
         default=None,
@@ -674,66 +693,10 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar=("START", "END"),
         type=int,
         help=(
-            "Inclusive exponent range for N=2**p when --square-tiling is set. "
-            "Default: 11 20."
+            "Inclusive exponent range for N=2**p. "
+            f"nt is fixed at {DEFAULT_FIXED_NT}; nf = N/nt. "
+            "Default: 11 24."
         ),
-    )
-    parser.add_argument(
-        "--square-tiling",
-        action="store_true",
-        help="Use the legacy near-square nt*nf factorization instead of fixed nt.",
-    )
-    parser.add_argument(
-        "--fixed-nt",
-        type=int,
-        default=DEFAULT_FIXED_NT,
-        help=(
-            "Hold nt fixed and benchmark N=nt*nf instead of using "
-            f"near-square tilings. Default: {DEFAULT_FIXED_NT}."
-        ),
-    )
-    parser.add_argument(
-        "--nf-pow2",
-        nargs=2,
-        metavar=("START", "END"),
-        type=int,
-        help=(
-            "Inclusive exponent range for nf=2**p when --fixed-nt is set. "
-            "Default: 2 10."
-        ),
-    )
-    parser.add_argument(
-        "--runs",
-        type=int,
-        default=7,
-        help="Number of timed runs per benchmark (default: 7)",
-    )
-    parser.add_argument(
-        "--batch-size",
-        type=int,
-        default=DEFAULT_BATCH_SIZE,
-        help="Batch size for batched-vs-serial comparisons (default: 3)",
-    )
-    parser.add_argument(
-        "--outdir",
-        type=Path,
-        default=DEFAULT_OUTDIR,
-        help="Directory where benchmark JSON and plot will be written.",
-    )
-    parser.add_argument(
-        "--output-json",
-        type=Path,
-        help="Optional explicit path for the JSON benchmark summary.",
-    )
-    parser.add_argument(
-        "--output-plot",
-        type=Path,
-        help="Optional explicit path for the benchmark plot.",
-    )
-    parser.add_argument(
-        "--plot-title",
-        default="WDM Kernel Benchmark Runtime Comparison",
-        help="Title to use for the generated benchmark plot.",
     )
     return parser
 
@@ -742,33 +705,26 @@ def main(argv: list[str] | None = None) -> None:  # pragma: no cover
     """CLI entry point for benchmarking."""
     args = _build_parser().parse_args(argv)
 
-    # Resolve device and configure JAX platform BEFORE any backend is imported.
-    device = _resolve_device(args.device)
+    # Auto-detect device and configure JAX platform BEFORE any backend is imported.
+    device = _resolve_device("auto")
     print(f"Device: {device.upper()}")
 
     backends_to_test = args.backends or (
         ["jax", "cupy"] if device == "gpu" else DEFAULT_BACKENDS
     )
 
-    if args.batch_size < 1:
-        raise SystemExit("--batch-size must be at least 1.")
-    fixed_nt = None if args.square_tiling else args.fixed_nt
-    pow2_range = tuple(args.pow2) if args.pow2 is not None else None
-    nf_pow2_range = tuple(args.nf_pow2) if args.nf_pow2 is not None else None
+    fixed_nt = DEFAULT_FIXED_NT
+    nt_pow2 = int(np.log2(fixed_nt))
+    if args.pow2 is not None:
+        n_start, n_end = args.pow2
+        nf_pow2_range = (n_start - nt_pow2, n_end - nt_pow2)
+    else:
+        nf_pow2_range = None
     try:
-        if fixed_nt is None:
-            if args.nf_pow2 is not None:
-                raise ValueError("--nf-pow2 requires fixed-nt mode.")
-            n_values = resolve_n_values(pow2_range=pow2_range)
-        else:
-            if args.pow2 is not None:
-                raise ValueError(
-                    "--pow2 cannot be combined with fixed-nt mode; use --nf-pow2."
-                )
-            n_values = resolve_fixed_nt_n_values(
-                nt=fixed_nt,
-                nf_pow2_range=nf_pow2_range,
-            )
+        n_values = resolve_fixed_nt_n_values(
+            nt=fixed_nt,
+            nf_pow2_range=nf_pow2_range,
+        )
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
 
@@ -784,8 +740,8 @@ def main(argv: list[str] | None = None) -> None:  # pragma: no cover
     results = run_benchmarks(
         backends_to_test=backends_to_test,
         n_values=n_values,
-        num_runs=args.runs,
-        batch_size=args.batch_size,
+        num_runs=7,
+        batch_size=DEFAULT_BATCH_SIZE,
         fixed_nt=fixed_nt,
     )
 
@@ -794,9 +750,10 @@ def main(argv: list[str] | None = None) -> None:  # pragma: no cover
 
     print_summary(results)
 
-    output_json = args.output_json or (args.outdir / DEFAULT_JSON_NAME)
-    output_plot = args.output_plot or (args.outdir / DEFAULT_PLOT_NAME)
-    plot_title = args.plot_title + f" ({device.upper()})"
+    outdir = Path.cwd()
+    output_json = outdir / DEFAULT_JSON_NAME
+    output_plot = outdir / DEFAULT_PLOT_NAME
+    plot_title = f"WDM Kernel Benchmark Runtime Comparison ({device.upper()})"
     json_path = save_results(results, output_json)
     plot_path = plot_results(results, output_plot, title=plot_title)
 
