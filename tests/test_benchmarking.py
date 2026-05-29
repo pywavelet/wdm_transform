@@ -58,7 +58,7 @@ def test_run_benchmarks_records_only_core_kernel_operations() -> None:
 
 def test_resolve_n_values_supports_pow2_ranges() -> None:
     assert resolve_n_values(pow2_range=(8, 9)) == [256, 512]
-    assert resolve_n_values() == [2**power for power in range(11, 21)]
+    assert resolve_n_values() == [2**power for power in range(11, 25)]
 
 
 def test_resolve_n_values_validates_pow2_range() -> None:
