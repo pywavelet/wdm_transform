@@ -42,7 +42,7 @@ fs  = ts.to_frequency_series()
 wdm = ts.to_wdm(nt=Nt)
 """
 
-OUT = "demo.gif"
+OUT = Path("demo.gif")
 
 TRIGGERS = {
     "ts  = TimeSeries(y, dt=dt)\n": "ts",
