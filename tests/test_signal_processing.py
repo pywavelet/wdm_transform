@@ -4,6 +4,8 @@ import numpy as np
 import pytest
 
 from wdm_transform import (
+    TimeSeries,
+    WDM,
     matched_filter_snr_rfft,
     matched_filter_snr_wdm,
     noise_characteristic_strain,
@@ -49,28 +51,33 @@ def test_matched_filter_snr_wdm_matches_diagonal_inner_product() -> None:
     np.testing.assert_allclose(snr, expected)
 
 
-def test_wdm_noise_variance_matches_parseval_scaling() -> None:
-    noise_psd = np.array([2.0, 4.0, 8.0], dtype=float)
-    nt = 4
-    dt = 0.25
+def test_wdm_noise_variance_returns_N_S_over_2dt_for_interior() -> None:
+    """Interior entries return N*S/(2*dt); DC and Nyquist columns are NaN."""
+    nt, nf, dt = 4, 4, 0.25
+    N = nt * nf
+    noise_psd = np.array([2.0, 4.0, 8.0, 16.0, 32.0], dtype=float)  # length nf+1
 
-    variance = wdm_noise_variance(noise_psd, nt=nt, dt=dt)
+    sigma2 = wdm_noise_variance(noise_psd, nt=nt, nf=nf, dt=dt)
 
-    expected_row = noise_psd / (2.0 * dt)
-    assert variance.shape == (nt, noise_psd.size)
-    np.testing.assert_allclose(variance, np.tile(expected_row, (nt, 1)))
+    expected_interior = N * noise_psd / (2.0 * dt)
+    assert sigma2.shape == (nt, nf + 1)
+    for m in range(1, nf):
+        np.testing.assert_allclose(sigma2[:, m], expected_interior[m])
+    assert np.all(np.isnan(sigma2[:, 0]))
+    assert np.all(np.isnan(sigma2[:, nf]))
 
 
 @pytest.mark.parametrize(
-    ("nt", "dt"),
+    ("nt", "nf", "dt"),
     [
-        (0, 0.25),
-        (4, 0.0),
+        (0, 2, 0.25),
+        (4, 0, 0.25),
+        (4, 2, 0.0),
     ],
 )
-def test_wdm_noise_variance_validates_inputs(nt: int, dt: float) -> None:
+def test_wdm_noise_variance_validates_inputs(nt: int, nf: int, dt: float) -> None:
     with pytest.raises(ValueError):
-        wdm_noise_variance(np.ones(3), nt=nt, dt=dt)
+        wdm_noise_variance(np.ones(nf + 1), nt=nt, nf=nf, dt=dt)
 
 
 def test_characteristic_strain_helpers_match_manual_definitions() -> None:
@@ -93,3 +100,51 @@ def test_characteristic_strain_helpers_match_manual_definitions() -> None:
 
     np.testing.assert_allclose(h_c, expected_h_c)
     np.testing.assert_allclose(h_n, expected_h_n)
+
+
+def test_wdm_per_pixel_variance_matches_monte_carlo() -> None:
+    """Empirical <w_nm^2> from white-noise realisations matches N*S0/(2*dt)."""
+    nt, nf, dt = 32, 32, 1.0
+    N = nt * nf
+    S0 = 1.5
+    sigma_t = np.sqrt(S0 / (2.0 * dt))
+    rng = np.random.default_rng(0)
+    n_real = 5000
+
+    var_acc = np.zeros((nt, nf + 1))
+    for _ in range(n_real):
+        x = rng.standard_normal(N) * sigma_t
+        w = WDM.from_time_series(TimeSeries(x, dt=dt), nt=nt).coeffs[0]
+        var_acc += np.asarray(w) ** 2
+    emp = var_acc / n_real
+
+    expected_interior = N * S0 / (2.0 * dt)
+    expected_edge = N * S0 / (4.0 * dt)
+    # 5% tolerance from Monte Carlo noise
+    np.testing.assert_allclose(np.mean(emp[:, 1:nf]), expected_interior, rtol=0.05)
+    np.testing.assert_allclose(np.mean(emp[:, 0]), expected_edge, rtol=0.05)
+    np.testing.assert_allclose(np.mean(emp[:, nf]), expected_edge, rtol=0.05)
+
+
+def test_diagonal_wdm_snr_matches_fd_snr_for_atom_locally_flat_psd() -> None:
+    """WDM diagonal Whittle SNR equals FD SNR for a tone at a channel centre
+    with flat PSD, summed over interior channels only."""
+    nt, nf, dt = 64, 64, 1.0
+    N = nt * nf
+    delta_F = 1.0 / (2 * nf * dt)
+    freqs = np.fft.rfftfreq(N, d=dt)
+
+    # Tone at channel 24 centre, flat PSD
+    t = np.arange(N) * dt
+    f0 = 24 * delta_F
+    h = np.sin(2.0 * np.pi * f0 * t)
+    S_flat = 3.0
+    S_rfft = np.full_like(freqs, S_flat)
+    S_at_wdm = np.full(nf + 1, S_flat)
+
+    snr_fd = matched_filter_snr_rfft(np.fft.rfft(h), S_rfft, freqs, dt=dt)
+    w = WDM.from_time_series(TimeSeries(h, dt=dt), nt=nt).coeffs[0]
+    sigma2 = wdm_noise_variance(S_at_wdm, nt=nt, nf=nf, dt=dt)
+    snr_wdm = matched_filter_snr_wdm(w[:, 1:nf], sigma2[:, 1:nf])
+
+    np.testing.assert_allclose(snr_wdm, snr_fd, rtol=1e-10)

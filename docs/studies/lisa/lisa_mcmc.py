@@ -32,13 +32,12 @@ from lisa_common import (
 from numpy.fft import rfft, rfftfreq
 from numpyro.infer import MCMC, NUTS
 
-from wdm_transform.signal_processing import wdm_noise_variance
 from wdm_transform.transforms import forward_wdm_band
 
 setup_jax_and_matplotlib()
 jax.config.update("jax_enable_x64", True)
 
-N_WARMUP = int(os.getenv("LISA_N_WARMUP", "1500"))
+N_WARMUP = int(os.getenv("LISA_N_WARMUP", "4500"))
 N_DRAWS = int(os.getenv("LISA_N_DRAWS", "1000"))
 NUM_CHAINS = 2
 NT = int(os.getenv("LISA_NT", "32"))
@@ -51,7 +50,8 @@ INIT_JITTER_SCALE = 0.15
 A_WDM = 1.0 / 3.0
 D_WDM = 1.0
 POSTERIOR_VARS = ("f0", "fdot", "A", "phi0")
-POSTERIOR_LABELS = ["f0 [Hz]", "fdot [Hz/s]", "A", "phi0 [rad]"]
+POSTERIOR_LABELS = ["log10(f0 / Hz)", "log10(fdot / Hz/s)", "log10(A)", "phi0 [rad]"]
+LOG10_VARS: frozenset[str] = frozenset({"f0", "fdot", "A"})
 
 numpyro.set_host_device_count(NUM_CHAINS)
 
@@ -79,19 +79,29 @@ def ensure_injection(seed: int, paths: dict[str, Path]) -> None:
 
 
 def aet_rfft(jgb: JaxGB, params: jnp.ndarray, kmin: int, kmax: int) -> jnp.ndarray:
-    """Return local A/E/T Fourier modes as ``(3, nfreq)``."""
-    return jnp.stack(
-        [
-            jnp.asarray(mode, dtype=jnp.complex128).reshape(-1)
-            for mode in jgb.sum_tdi(
-                jnp.asarray(params, dtype=jnp.float64).reshape(1, -1),
-                kmin=kmin,
-                kmax=kmax,
-                tdi_combination="AET",
-                tdi_generation=1.5,
-            )
-        ]
+    """Return local A/E/T Fourier modes as ``(3, nfreq)``.
+
+    Uses get_tdi — the same code path as the injection in data_generation.py.
+    sum_tdi differs at ~1e-10 relative level, introducing a systematic bias even
+    with zero noise. get_tdi operates on 2*n bins (the natural source bandwidth),
+    which is narrower than the analysis band, so it is no slower than sum_tdi.
+    """
+    params = jnp.asarray(params, dtype=jnp.float64)
+    a_loc, e_loc, t_loc = jgb.get_tdi(params, tdi_generation=1.5, tdi_combination="AET")
+    # get_tdi returns a local array starting at kmin_nat; embed it into [kmin, kmax).
+    # stop_gradient: kmin_nat is an integer index, not a differentiable quantity.
+    kmin_nat = jax.lax.stop_gradient(
+        jnp.asarray(jgb.get_kmin(params[None, 0:1]), dtype=jnp.int32).reshape(())
     )
+    n_band = kmax - kmin  # static
+    local = jnp.stack([
+        jnp.asarray(a_loc, dtype=jnp.complex128),
+        jnp.asarray(e_loc, dtype=jnp.complex128),
+        jnp.asarray(t_loc, dtype=jnp.complex128),
+    ])  # (3, 2*n)
+    out = jnp.zeros((3, n_band), dtype=jnp.complex128)
+    start = kmin_nat - kmin
+    return jax.lax.dynamic_update_slice(out, local, (jnp.zeros((), jnp.int32), start))
 
 
 def local_rfft_to_wdm(
@@ -223,9 +233,11 @@ def build_wdm_band(injection, source_param: np.ndarray, jgb: JaxGB) -> dict:
         injection.freqs,
         np.stack([injection.noise_psd_A, injection.noise_psd_E, injection.noise_psd_T]),
     )
-    wdm_psd = (2 * (n_freqs - 1)) * np.stack(
-        [wdm_noise_variance(psd, nt=NT, dt=injection.dt) for psd in noise_psd]
-    )
+    N = 2 * (n_freqs - 1)
+    wdm_psd = np.broadcast_to(
+        N * noise_psd[:, None, :] / (2.0 * injection.dt),
+        (noise_psd.shape[0], NT, noise_psd.shape[-1]),
+    ).copy()
     return {
         **prior_metadata(injection),
         "domain": "wdm",
@@ -458,10 +470,23 @@ def load_posterior_dataset(path: Path) -> xr.Dataset:
         return posterior.load()
 
 
+def _log10_transform_dataset(ds: xr.Dataset) -> xr.Dataset:
+    """Return a copy of ds with LOG10_VARS replaced by their log10."""
+    ds = ds.copy()
+    for name in LOG10_VARS:
+        if name in ds:
+            ds[name] = np.log10(ds[name])
+    return ds
+
+
 def posterior_samples(posterior: xr.Dataset) -> np.ndarray:
-    samples = np.column_stack(
-        [np.asarray(posterior[name]).reshape(-1) for name in POSTERIOR_VARS]
-    )
+    cols = []
+    for name in POSTERIOR_VARS:
+        col = np.asarray(posterior[name]).reshape(-1)
+        if name in LOG10_VARS:
+            col = np.log10(col)
+        cols.append(col)
+    samples = np.column_stack(cols)
     return normalize_phase_columns(samples, POSTERIOR_LABELS)
 
 
@@ -499,19 +524,38 @@ def save_distribution_plot(
     wdm: xr.Dataset,
     freq: xr.Dataset,
     output_dir: Path,
+    *,
+    truth: np.ndarray | None = None,
 ) -> None:
     azp.plot_dist(
         {
-            "Frequency": xr.DataTree.from_dict({"posterior": freq}),
-            "WDM": xr.DataTree.from_dict({"posterior": wdm}),
+            "Frequency": xr.DataTree.from_dict({"posterior": _log10_transform_dataset(freq)}),
+            "WDM": xr.DataTree.from_dict({"posterior": _log10_transform_dataset(wdm)}),
         },
         var_names=list(POSTERIOR_VARS),
         backend="matplotlib",
+        point_estimate=None,
     )
-    output_dir.mkdir(parents=True, exist_ok=True)
     fig = plt.gcf()
+    if truth is not None:
+        for ax, true_val in zip(fig.axes[: len(POSTERIOR_VARS)], truth):
+            ax.axvline(true_val, color="black", linestyle="--", linewidth=1.5, label="Truth")
+    output_dir.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_dir / "posterior_dist.pdf", dpi=300, bbox_inches="tight")
     plt.close(fig)
+
+
+def _truth_from_injection(injection_path: Path) -> np.ndarray | None:
+    if not injection_path.exists():
+        return None
+    inj = load_injection(injection_path)
+    src = inj.source_params[0]
+    return np.array([
+        np.log10(src[0]),  # log10(f0 / Hz)
+        np.log10(src[1]),  # log10(fdot / Hz/s)
+        np.log10(src[2]),  # log10(A)
+        src[7],            # phi0 [rad]
+    ])
 
 
 def run_compare(paths: dict[str, Path]) -> None:
@@ -539,7 +583,107 @@ def run_compare(paths: dict[str, Path]) -> None:
         + "\n",
         encoding="utf-8",
     )
-    save_distribution_plot(wdm, freq, output_dir)
+    truth = _truth_from_injection(paths["injection"])
+
+    if truth is not None:
+        print("\nTrue values vs posterior means:")
+        header = f"  {'Parameter':<28} {'Truth':>14} {'FD mean':>14} {'WDM mean':>14} {'FD-Truth':>14} {'WDM-Truth':>14}"
+        print(header)
+        print("  " + "-" * (len(header) - 2))
+        for i, label in enumerate(POSTERIOR_LABELS):
+            true_val = float(truth[i])
+            fd_mean  = float(np.mean(samples_freq[:, i]))
+            wdm_mean = float(np.mean(samples_wdm[:, i]))
+            print(
+                f"  {label:<28} {true_val:>14.6f} {fd_mean:>14.6f} {wdm_mean:>14.6f}"
+                f" {fd_mean - true_val:>+14.6f} {wdm_mean - true_val:>+14.6f}"
+            )
+
+    save_distribution_plot(wdm, freq, output_dir, truth=truth)
+
+
+def _check_residual_at_truth(jgb: JaxGB, band: dict, source_param: np.ndarray) -> None:
+    """Evaluate the whitened residual at the injected parameters.
+
+    For pure-signal data (no noise added), chi2_at_truth should be exactly zero.
+    Any non-zero value means the injection forward model and the sampling forward
+    model disagree — the sampler cannot recover the true parameters exactly.
+    """
+    params = jnp.asarray(source_param, dtype=jnp.float64)
+
+    if band["domain"] == "freq":
+        data = jnp.asarray(band["data"])
+        noise_psd = jnp.asarray(band["noise_psd"])
+        w = float(band["whittle_weight"])
+        template = aet_rfft(jgb, params, int(band["band_kmin"]), int(band["band_kmax"]))
+        residual = data - template
+        chi2 = float(jnp.sum(w * jnp.real(jnp.conj(residual) * residual) / noise_psd))
+        snr2 = float(jnp.sum(w * jnp.real(jnp.conj(template) * template) / noise_psd))
+    else:
+        wdm_kwargs = {
+            key: int(band[key])
+            for key in (
+                "src_kmin", "src_kmax", "kmin_rfft", "band_rfft_size",
+                "band_start", "band_stop", "n_freqs", "nf", "nt",
+            )
+        }
+        wdm_kwargs["df_rfft"] = float(band["df_rfft"])
+        data = jnp.asarray(band["data"])
+        noise_psd = jnp.asarray(band["noise_psd"])
+        template = local_rfft_to_wdm(
+            aet_rfft(jgb, params, wdm_kwargs["src_kmin"], wdm_kwargs["src_kmax"]),
+            **wdm_kwargs,
+        )
+        residual = data - template
+        chi2 = float(jnp.sum(residual ** 2 / noise_psd))
+        snr2 = float(jnp.sum(template ** 2 / noise_psd))
+
+    snr = float(np.sqrt(max(snr2, 0.0)))
+    frac = chi2 / max(snr2, 1e-30)
+    domain = band["domain"]
+    print(f"  [{domain}] SNR at truth:                  {snr:.4f}")
+    print(f"  [{domain}] whitened chi2 at truth:         {chi2:.6e}  (expect 0.0 for matched models)")
+    print(f"  [{domain}] fractional residual chi2/snr2:  {frac:.6e}  (expect 0.0)")
+
+
+def _compare_injection_and_sampling_templates(injection, jgb: JaxGB, band: dict) -> None:
+    """Directly subtract h_injection from h_sampler at the true parameters.
+
+    The injection was built with jgb_full.get_tdi; the sampler uses jgb.sum_tdi.
+    If these two code paths are equivalent the difference must be zero everywhere.
+    Any non-zero entry is a systematic that will bias the posterior even with no noise.
+
+    Only runs for the frequency-domain band (injection templates are stored in FD).
+    """
+    if band["domain"] != "freq":
+        return
+    if injection.source_Af is None or injection.source_Ef is None or injection.source_Tf is None:
+        print("  source_Af/Ef/Tf not saved in injection.npz — re-run data_generation.py")
+        return
+
+    params = jnp.asarray(injection.source_params[0], dtype=jnp.float64)
+    kmin = int(band["band_kmin"])
+    kmax = int(band["band_kmax"])
+
+    # h from the injection code path (get_tdi → place_local_tdi → sliced to band)
+    h_inj = np.stack([
+        np.asarray(injection.source_Af, dtype=np.complex128)[kmin:kmax],
+        np.asarray(injection.source_Ef, dtype=np.complex128)[kmin:kmax],
+        np.asarray(injection.source_Tf, dtype=np.complex128)[kmin:kmax],
+    ])
+    # h from the sampling code path (sum_tdi over the same band)
+    h_samp = np.asarray(aet_rfft(jgb, params, kmin, kmax), dtype=np.complex128)
+
+    diff = h_inj - h_samp
+    max_diff = float(np.max(np.abs(diff)))
+    max_h = float(np.max(np.abs(h_inj)))
+    rms_diff = float(np.sqrt(np.mean(np.abs(diff) ** 2)))
+    rms_h = float(np.sqrt(np.mean(np.abs(h_inj) ** 2)))
+
+    print(f"  max  |h_inj - h_sampler|: {max_diff:.6e}   (max  |h_inj|: {max_h:.6e})")
+    print(f"  rms  |h_inj - h_sampler|: {rms_diff:.6e}   (rms  |h_inj|: {rms_h:.6e})")
+    print(f"  max relative difference:   {max_diff / max(max_h, 1e-300):.6e}  (expect 0.0)")
+    print(f"  rms relative difference:   {rms_diff / max(rms_h, 1e-300):.6e}  (expect 0.0)")
 
 
 def run_domain(domain: str, paths: dict[str, Path]) -> None:
@@ -569,6 +713,10 @@ def run_domain(domain: str, paths: dict[str, Path]) -> None:
         f"{domain}: T_obs={float(band['t_obs']) / 86400.0:.1f}d, "
         f"seed={injection.seed}, MCMC_seed={mcmc_seed}, chains={NUM_CHAINS}"
     )
+    print("Residual check at injected parameters:")
+    _check_residual_at_truth(jgb, band, source_param)
+    print("Direct template comparison (injection get_tdi vs sampler sum_tdi):")
+    _compare_injection_and_sampling_templates(injection, jgb, band)
     mcmc = run_sampler(jgb, band, mcmc_seed)
     divergences = int(np.asarray(mcmc.get_extra_fields()["diverging"]).sum())
     if divergences:

@@ -171,9 +171,11 @@ def _stationary_variance(
         injection.noise_psd_T,
     ])
     noise_psd = interp_psd_channels(wdm_freq_centers, injection.freqs, psd_channels)
-    sigma2_stat = (2 * (n_freqs_full - 1)) * np.stack([
-        wdm_noise_variance(psd, nt=nt, dt=injection.dt) for psd in noise_psd
-    ])
+    N = 2 * (n_freqs_full - 1)
+    sigma2_stat = np.broadcast_to(
+        N * noise_psd[:, None, :] / (2.0 * injection.dt),
+        (3, nt, noise_psd.shape[-1]),
+    ).copy()
     return sigma2_stat  # (3, NT, n_band)
 
 
