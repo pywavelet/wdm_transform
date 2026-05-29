@@ -38,6 +38,9 @@ jobs:
       - name: Run tests with coverage
         run: uv run pytest
 
+      - name: Run docs code-block tests
+        run: uv run pytest --markdown-docs --markdown-docs-syntax=superfences docs/index.md docs/guide --no-cov
+
       - name: Upload coverage to Coveralls
         if: matrix.python-version == '3.12'
         uses: coverallsapp/github-action@v2
