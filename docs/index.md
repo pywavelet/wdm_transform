@@ -35,13 +35,13 @@ t = np.arange(N) * dt
 x = np.sin(2 * np.pi * 200 * t) + 0.1 * np.random.randn(N)
 
 series = TimeSeries(x, dt=dt)
-wdm    = series.to_wdm(nt=128)           # shape (128, 129) packed grid
+wdm    = series.to_wdm(nt=128)           # wdm.coeffs has shape (1, 128, 129)
 recon  = wdm.to_time_series()            # round-trips to machine precision
 
 assert np.allclose(recon.data, x, atol=1e-10)
 ```
 
-The coefficient array `wdm.data` has shape $(N_t,\, N_f + 1)$ — a real
+The coefficient array `wdm.coeffs` has shape $(\text{batch},\, N_t,\, N_f + 1)$ — a real
 time-frequency map that you can plot, slice, or feed straight into a
 WDM-Whittle likelihood.
 

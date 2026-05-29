@@ -10,7 +10,11 @@ naturally on the WDM grid.
 Starting from a `TimeSeries`, you can move through the WDM domain and back:
 
 ```python
+import numpy as np
 from wdm_transform import TimeSeries
+
+dt   = 1.0 / 4096
+data = np.random.default_rng(0).standard_normal(2**12)
 
 series = TimeSeries(data, dt=dt)
 coeffs = series.to_wdm(nt=32)

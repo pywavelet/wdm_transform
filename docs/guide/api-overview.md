@@ -23,9 +23,12 @@ opt-in:
 
 ```python
 import wdm_transform as wt
-wt.get_backend()                  # current backend
-wt.register_backend("jax")        # opt in to the JAX backend
+wt.get_backend()                  # default NumPy backend
+wt.get_backend("jax")             # opt in to the JAX backend (auto-loaded)
 ```
+
+The `WDM_BACKEND` environment variable provides the same selection without
+code changes (e.g. `WDM_BACKEND=jax`).
 
 See [Reconstruction and Inference](reconstruction-and-inference.md) and
 the [Benchmarks](../benchmarks.ipynb) page for a runtime comparison.
