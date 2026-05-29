@@ -75,6 +75,7 @@ def test_benchmark_cli_writes_outdir_artifacts(tmp_path: Path) -> None:
         [
             "--backends",
             "numpy",
+            "--square-tiling",
             "--pow2",
             "8",
             "8",
