@@ -10,6 +10,7 @@ from wdm_transform import (
     matched_filter_snr_wdm,
     noise_characteristic_strain,
     rfft_characteristic_strain,
+    rfft_periodogram_characteristic_strain,
     wdm_noise_variance,
 )
 
@@ -100,6 +101,19 @@ def test_characteristic_strain_helpers_match_manual_definitions() -> None:
 
     np.testing.assert_allclose(h_c, expected_h_c)
     np.testing.assert_allclose(h_n, expected_h_n)
+
+
+def test_rfft_periodogram_characteristic_strain_matches_psd_estimator() -> None:
+    dt = 0.25
+    freqs = np.array([0.0, 0.5, 1.0], dtype=float)
+    coeffs = np.array([3.0 + 4.0j, 1.0 - 2.0j, -2.0 + 0.5j], dtype=np.complex128)
+
+    h_c = rfft_periodogram_characteristic_strain(coeffs, freqs, dt)
+
+    df = freqs[2] - freqs[1]
+    psd_hat = 2.0 * df * dt**2 * np.abs(coeffs[1:]) ** 2
+    expected = np.array([0.0, *(np.sqrt(freqs[1:] * psd_hat))])
+    np.testing.assert_allclose(h_c, expected)
 
 
 def test_wdm_per_pixel_variance_matches_monte_carlo() -> None:

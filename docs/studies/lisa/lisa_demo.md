@@ -20,7 +20,7 @@ products shown here.
 1. **Data generation** — draw a stationary A/E/T instrument-noise realization and
    inject one resolved galactic binary whose true carrier frequency is drawn from
    a small jitter around a fixed external reference `f_ref`. Print the
-   matched-filter SNR and write `outdir_lisa/stationary_noise/seed_<seed>/injection.npz`.
+   matched-filter SNR and write `outdir_lisa/seed_<seed>/injection.npz`.
 2. **Frequency-domain inference** — fit the source in a narrow band with a Whittle
    likelihood (NumPyro/NUTS).
 3. **WDM-domain inference** — fit the same data on a narrow WDM band with a
@@ -53,7 +53,7 @@ LISA_N_WARMUP=400 LISA_N_DRAWS=600 LISA_NUM_CHAINS=2 LISA_NT=32 \
   python lisa_study.py --seed 3
 ```
 
-Each seed writes its products into `outdir_lisa/stationary_noise/seed_<seed>/`:
+Each seed writes its products into `outdir_lisa/seed_<seed>/`:
 
 - `injection.npz` — A/E/T time series, PSD grids, injected source parameters,
   the reference frequency `f_ref`, the prior bounds, the seed, and the SNR summary.
@@ -65,7 +65,7 @@ Each seed writes its products into `outdir_lisa/stationary_noise/seed_<seed>/`:
   injected truth.
 - `results.json` — per-parameter JSD and truth-rank diagnostics.
 
-The aggregator writes into `outdir_lisa/stationary_noise/_summary/`:
+The aggregator writes into `outdir_lisa/_summary/`:
 `pp_plot.png`, `jsd_histogram.png`, `summary.csv`, and `summary.json`.
 
 ## Data Generation

@@ -31,24 +31,10 @@ L_LISA = 2.5e9
 # ── Filesystem / run-directory conventions ────────────────────────────────────
 
 
-def ensure_output_dir(path: Path) -> Path:
-    path.mkdir(parents=True, exist_ok=True)
-    return path
-
-
-def lisa_seed() -> int:
-    return int(os.getenv("LISA_SEED", "0"))
-
-
-def lisa_mode_dirname() -> str:
-    """Single supported mode now that the galactic foreground is removed."""
-    return "stationary_noise"
-
-
 def lisa_run_dir(*, seed: int | None = None) -> Path:
     if seed is None:
-        seed = lisa_seed()
-    return OUTDIR_ROOT / lisa_mode_dirname() / f"seed_{seed}"
+        seed = int(os.getenv("LISA_SEED", "0"))
+    return OUTDIR_ROOT / f"seed_{seed}"
 
 
 RUN_DIR = lisa_run_dir()
@@ -65,7 +51,7 @@ def setup_jax_and_matplotlib() -> None:
 
 
 def save_figure(fig, output_dir: Path, stem: str, *, dpi: int = 160) -> Path:
-    ensure_output_dir(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
     path = output_dir / f"{stem}.png"
     fig.savefig(path, dpi=dpi, bbox_inches="tight")
     try:
@@ -259,18 +245,6 @@ def place_local_tdi(segment, kmin: int, n_freqs: int) -> np.ndarray:
 # ── Injection container ───────────────────────────────────────────────────────
 
 
-def require_positive_fdot(source_params: np.ndarray, *, context: str) -> np.ndarray:
-    """Return *source_params* after validating strictly positive chirps."""
-    params = np.asarray(source_params, dtype=float)
-    params_2d = np.atleast_2d(params)
-    if np.any(params_2d[:, 1] <= 0.0):
-        raise ValueError(
-            f"{context} contains non-positive fdot values. "
-            "Regenerate the injection with lisa_study.py."
-        )
-    return params
-
-
 @dataclass(frozen=True)
 class InjectionData:
     dt: float
@@ -298,20 +272,6 @@ class InjectionData:
 def load_injection(path: Path = INJECTION_PATH) -> InjectionData:
     """Load one seeded LISA injection archive into a typed container."""
     with np.load(path) as inj:
-        missing_prior_keys = [
-            key
-            for key in ("prior_f0", "prior_fdot", "prior_A", "f0_ref", "f0_jitter_width", "delta_logf0_true")
-            if key not in inj
-        ]
-        if missing_prior_keys:
-            raise ValueError(
-                f"{path} is missing shared injection metadata {missing_prior_keys}. "
-                "Regenerate this injection with lisa_study.py."
-            )
-        source_params = require_positive_fdot(
-            np.asarray(inj["source_params"], dtype=float),
-            context=str(path),
-        )
         return InjectionData(
             dt=float(inj["dt"]),
             t_obs=float(inj["t_obs"]),
@@ -323,7 +283,7 @@ def load_injection(path: Path = INJECTION_PATH) -> InjectionData:
             noise_psd_E=np.asarray(inj["noise_psd_E"], dtype=float),
             noise_psd_T=np.asarray(inj["noise_psd_T"], dtype=float),
             freqs=np.asarray(inj["freqs"], dtype=float),
-            source_params=np.atleast_2d(np.asarray(source_params, dtype=float)),
+            source_params=np.atleast_2d(np.asarray(inj["source_params"], dtype=float)),
             f0_ref=float(np.asarray(inj["f0_ref"]).reshape(-1)[0]),
             f0_jitter_width=float(np.asarray(inj["f0_jitter_width"]).reshape(-1)[0]),
             delta_logf0_true=float(np.asarray(inj["delta_logf0_true"]).reshape(-1)[0]),

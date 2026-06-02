@@ -24,17 +24,16 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
-from lisa_common import OUTDIR_ROOT, lisa_mode_dirname
+from lisa_common import OUTDIR_ROOT
 
 PARAM_LABELS = ["log10(f0 / Hz)", "log10(fdot / Hz/s)", "log10(A)", "phi0 [rad]"]
 
 
-def load_results(mode: str, start_seed: int, end_seed: int) -> list[dict]:
-    """Load every available ``results.json`` for *mode* within the seed range."""
-    mode_dir = OUTDIR_ROOT / mode
+def load_results(start_seed: int, end_seed: int) -> list[dict]:
+    """Load every available ``results.json`` within the seed range."""
     rows: list[dict] = []
     for seed in range(start_seed, end_seed + 1):
-        path = mode_dir / f"seed_{seed}" / "results.json"
+        path = OUTDIR_ROOT / f"seed_{seed}" / "results.json"
         if not path.exists():
             continue
         with path.open(encoding="utf-8") as handle:
@@ -147,7 +146,6 @@ def write_summary(results: list[dict], output_dir: Path) -> tuple[Path, Path]:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--mode", default=lisa_mode_dirname(), choices=["stationary_noise"])
     parser.add_argument("--start-seed", type=int, default=0)
     parser.add_argument("--end-seed", type=int, default=99)
     parser.add_argument("--output-dir", type=Path, default=None)
@@ -156,11 +154,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> None:
     args = build_parser().parse_args(argv)
-    output_dir = args.output_dir or (OUTDIR_ROOT / args.mode / "_summary")
-    results = load_results(args.mode, args.start_seed, args.end_seed)
+    output_dir = args.output_dir or (OUTDIR_ROOT / "_summary")
+    results = load_results(args.start_seed, args.end_seed)
     if not results:
-        print(f"No results.json found under {OUTDIR_ROOT / args.mode} "
-              f"for seeds {args.start_seed}..{args.end_seed}.")
+        print(f"No results.json found under {OUTDIR_ROOT} for seeds {args.start_seed}..{args.end_seed}.")
         return
     print(f"Loaded {len(results)} seed result(s).")
     pp_path = make_pp_plot(results, output_dir)

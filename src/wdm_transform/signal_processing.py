@@ -10,7 +10,7 @@ def rfft_characteristic_strain(
     freqs: np.ndarray,
     dt: float,
 ) -> np.ndarray:
-    """Convert one-sided rFFT coefficients into characteristic strain."""
+    """Convert deterministic one-sided rFFT coefficients into characteristic strain."""
     coeffs_arr = np.asarray(coeffs, dtype=np.complex128)
     freqs_arr = np.asarray(freqs, dtype=float)
     h_c = np.zeros_like(freqs_arr, dtype=float)
@@ -27,6 +27,33 @@ def noise_characteristic_strain(noise_psd: np.ndarray, freqs: np.ndarray) -> np.
     pos = freqs_arr > 0.0
     h_n[pos] = np.sqrt(freqs_arr[pos] * np.maximum(noise_psd_arr[pos], 0.0))
     return h_n
+
+
+def rfft_periodogram_characteristic_strain(
+    coeffs: np.ndarray,
+    freqs: np.ndarray,
+    dt: float,
+) -> np.ndarray:
+    """Convert one-sided rFFT coefficients into a PSD-estimator characteristic strain.
+
+    This is the quantity comparable to :func:`noise_characteristic_strain` for a
+    stochastic data realization.  It uses the one-sided periodogram
+    ``S_hat = 2 * df * dt**2 * |X_k|**2`` for positive-frequency bins.
+    """
+    if dt <= 0.0:
+        raise ValueError("dt must be positive.")
+    coeffs_arr = np.asarray(coeffs, dtype=np.complex128)
+    freqs_arr = np.asarray(freqs, dtype=float)
+    if freqs_arr.shape != coeffs_arr.shape:
+        raise ValueError("coeffs and freqs must have matching shapes.")
+    h_c = np.zeros_like(freqs_arr, dtype=float)
+    pos = freqs_arr > 0.0
+    if pos.sum() < 2:
+        return h_c
+    df = float(freqs_arr[pos][1] - freqs_arr[pos][0])
+    psd_hat = 2.0 * df * dt**2 * np.abs(coeffs_arr[pos]) ** 2
+    h_c[pos] = np.sqrt(freqs_arr[pos] * psd_hat)
+    return h_c
 
 
 def matched_filter_snr_rfft(
@@ -130,5 +157,6 @@ __all__ = [
     "matched_filter_snr_wdm",
     "noise_characteristic_strain",
     "rfft_characteristic_strain",
+    "rfft_periodogram_characteristic_strain",
     "wdm_noise_variance",
 ]

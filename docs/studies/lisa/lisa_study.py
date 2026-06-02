@@ -32,14 +32,13 @@ from pathlib import Path
 
 import numpy as np
 from gb_prior import (
+    DELTA_F0_PRIOR_SIGMA,
+    F0_JITTER_WIDTH,
     build_local_prior_info,
     draw_source_prior_and_params,
-    lisa_delta_f0_prior_sigma,
-    lisa_f0_jitter_width,
 )
 from lisa_common import (
     draw_rfft_from_psd,
-    ensure_output_dir,
     freqs_analysis,
     interp_psd_channels,
     lisa_run_dir,
@@ -52,6 +51,7 @@ from lisa_common import (
     trim_frequency_band,
     wrap_phase,
 )
+from scipy.spatial.distance import jensenshannon
 
 import numpyro
 numpyro.set_host_device_count(2)
@@ -103,7 +103,8 @@ def generate_injection(seed: int, paths: dict[str, Path]) -> None:
     from wdm_transform.signal_processing import matched_filter_snr_rfft
 
     jax.config.update("jax_enable_x64", True)
-    run_dir = ensure_output_dir(paths["run_dir"])
+    run_dir = paths["run_dir"]
+    run_dir.mkdir(parents=True, exist_ok=True)
     rng = np.random.default_rng(seed)
     print(f"[data] stationary instrument noise + resolved GB (seed={seed})")
 
@@ -173,7 +174,7 @@ def generate_injection(seed: int, paths: dict[str, Path]) -> None:
         source_Tf=source_Tf,
         source_params=source_params,
         f0_ref=np.array(f0_ref, dtype=float),
-        f0_jitter_width=np.array(lisa_f0_jitter_width(), dtype=float),
+        f0_jitter_width=np.array(F0_JITTER_WIDTH, dtype=float),
         delta_logf0_true=np.array(delta_logf0_true, dtype=float),
         prior_f0=np.asarray(prior_f0, dtype=float),
         prior_fdot=np.asarray(prior_fdot, dtype=float),
@@ -204,6 +205,8 @@ def _plot_data_overview(
     from wdm_transform.signal_processing import (
         noise_characteristic_strain,
         rfft_characteristic_strain,
+        rfft_periodogram_characteristic_strain,
+        wdm_noise_variance,
     )
     from wdm_transform.transforms import from_time_to_wdm
 
@@ -211,8 +214,8 @@ def _plot_data_overview(
 
     # Top: frequency-domain characteristic strain of data, noise, and signal.
     data_Af = np.fft.rfft(data_At)
-    ax_top.loglog(freqs[1:], rfft_characteristic_strain(data_Af, freqs, dt)[1:],
-                  color="0.6", lw=0.8, label="Data")
+    ax_top.loglog(freqs[1:], rfft_periodogram_characteristic_strain(data_Af, freqs, dt)[1:],
+                  color="0.6", lw=0.8, label="Data periodogram")
     ax_top.loglog(freqs[1:], noise_characteristic_strain(psd_A, freqs)[1:],
                   color="black", label="Instrument noise")
     ax_top.loglog(freqs[1:], rfft_characteristic_strain(source_Af, freqs, dt)[1:],
@@ -225,27 +228,32 @@ def _plot_data_overview(
     ax_top.grid(True, which="both", alpha=0.25)
     ax_top.legend(loc="best")
 
-    # Bottom: WDM time-frequency power of the data.
+    # Bottom: WDM time-frequency power whitened by the stationary noise model.
     nt = NT_SPECTROGRAM
     n_keep = (len(data_At) // (2 * nt)) * (2 * nt)
     nf = n_keep // nt
+    wdm_freqs = np.linspace(0.0, 0.5 / dt, nf + 1)
+    wdm_noise_psd = np.interp(wdm_freqs, freqs, psd_A, left=psd_A[0], right=psd_A[-1])
     coeffs = np.asarray(
         from_time_to_wdm(data_At[:n_keep], nt=nt, nf=nf, a=A_WDM, d=D_WDM, dt=dt, backend="numpy")
     )[0]
-    power = coeffs[:, 1:-1] ** 2
+    noise_var = wdm_noise_variance(wdm_noise_psd, nt=nt, nf=nf, dt=dt)
+    power = coeffs[:, 1:-1] ** 2 / noise_var[:, 1:-1]
     t_axis = np.linspace(0.0, n_keep * dt, nt) / 86400.0          # days
-    f_axis = np.linspace(0.0, 0.5 / dt, nf + 1)[1:-1] * 1e3        # mHz
+    f_axis = wdm_freqs[1:-1] * 1e3                                # mHz
     floor = np.percentile(power[power > 0], 5) if np.any(power > 0) else 1e-60
+    vmax = np.percentile(power[np.isfinite(power)], 99.7) if np.any(np.isfinite(power)) else 1.0
     mesh = ax_bot.pcolormesh(
-        t_axis, f_axis, np.log10(np.maximum(power, floor)).T, shading="auto", cmap="viridis"
+        t_axis, f_axis, np.log10(np.maximum(power, floor)).T, shading="auto",
+        cmap="viridis", vmin=np.log10(floor), vmax=np.log10(max(vmax, floor * 10.0))
     )
     ax_bot.axhline(f0 * 1e3, color="C1", alpha=0.7, lw=1.0, label="Injected f0")
     ax_bot.set_ylim(1e-4 * 1e3, 3e-3 * 1e3)
     ax_bot.set_xlabel("Time (days)")
     ax_bot.set_ylabel("Frequency (mHz)")
-    ax_bot.set_title(f"Channel A — WDM time-frequency power (nt={nt})")
+    ax_bot.set_title(f"Channel A — whitened WDM time-frequency power (nt={nt})")
     ax_bot.legend(loc="upper right")
-    fig.colorbar(mesh, ax=ax_bot, label=r"$\log_{10}$ power")
+    fig.colorbar(mesh, ax=ax_bot, label=r"$\log_{10}(w_{nm}^2 / \sigma_{nm}^2)$")
     save_figure(fig, run_dir, "data_overview")
     print(f"[data] saved data overview figure to {run_dir / 'data_overview.png'}")
 
@@ -265,7 +273,7 @@ def _prior_metadata(injection) -> dict:
             float(injection.prior_f0[0] - injection.f0_ref),
             float(injection.prior_f0[1] - injection.f0_ref),
         ),
-        "delta_f0_sigma": float(lisa_delta_f0_prior_sigma()),
+        "delta_f0_sigma": float(DELTA_F0_PRIOR_SIGMA),
         "prior_center": prior.prior_center,
         "prior_scale": prior.prior_scale,
         "logfdot_bounds": prior.logfdot_bounds,
@@ -576,19 +584,14 @@ def _truth_vector(injection) -> np.ndarray:
 def _jensen_shannon_bits(a: np.ndarray, b: np.ndarray) -> float:
     lo = float(min(np.min(a), np.min(b)))
     hi = float(max(np.max(a), np.max(b)))
-    if not np.isfinite(lo + hi) or lo == hi:
+    min_range = 64 * max(abs(np.spacing(lo)), abs(np.spacing(hi)))
+    if not np.isfinite(lo + hi) or hi - lo <= min_range:
         return 0.0
     counts_a, edges = np.histogram(a, bins=64, range=(lo, hi))
     counts_b, _ = np.histogram(b, bins=edges)
     p = counts_a / max(float(np.sum(counts_a)), 1.0)
     q = counts_b / max(float(np.sum(counts_b)), 1.0)
-    m = 0.5 * (p + q)
-
-    def kl_bits(lhs: np.ndarray, rhs: np.ndarray) -> float:
-        keep = lhs > 0.0
-        return float(np.sum(lhs[keep] * np.log2(lhs[keep] / rhs[keep])))
-
-    return 0.5 * kl_bits(p, m) + 0.5 * kl_bits(q, m)
+    return float(jensenshannon(p, q, base=2.0) ** 2)
 
 
 def _plot_marginal_comparison(freq_ds, wdm_ds, truth, run_dir: Path) -> None:
@@ -657,13 +660,10 @@ def run_compare(injection, paths: dict[str, Path]) -> None:
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--seed", type=int, default=0, help="Random seed for this realization.")
-    parser.add_argument("--skip-data", action="store_true",
-                        help="Reuse an existing injection.npz instead of regenerating it.")
     args = parser.parse_args(argv)
 
     paths = run_paths(args.seed)
-    if not args.skip_data or not paths["injection"].exists():
-        generate_injection(args.seed, paths)
+    generate_injection(args.seed, paths)
 
     injection = load_injection(paths["injection"])
     run_domain("freq", injection, paths)

@@ -28,24 +28,9 @@ FDOT_GLOBAL_BOUNDS = (5.0e-17, 8.0e-13)
 FIXED_FDOT_PRIOR_BOUNDS = FDOT_GLOBAL_BOUNDS
 FIXED_A_PRIOR_BOUNDS = (6.0e-25, 1.7e-22)
 F0_REF = float(np.mean(SOURCE_CATALOG[:, 0]))
-
-
-def lisa_delta_f0_prior_half_width() -> float:
-    return float(os.getenv("LISA_DELTA_F0_PRIOR_HALF_WIDTH", "3e-8"))
-
-
-def lisa_delta_f0_prior_sigma() -> float:
-    return float(os.getenv("LISA_DELTA_F0_PRIOR_SIGMA", "1e-8"))
-
-
-def lisa_f0_jitter_width() -> float:
-    delta_f0_half_width = lisa_delta_f0_prior_half_width()
-    if not 0.0 < delta_f0_half_width < F0_REF:
-        raise ValueError(
-            "Expected 0 < LISA_DELTA_F0_PRIOR_HALF_WIDTH < F0_REF; "
-            f"got {delta_f0_half_width:.6e} with F0_REF={F0_REF:.6e}"
-        )
-    return float(np.log1p(delta_f0_half_width / F0_REF))
+DELTA_F0_PRIOR_HALF_WIDTH = float(os.getenv("LISA_DELTA_F0_PRIOR_HALF_WIDTH", "3e-8"))
+DELTA_F0_PRIOR_SIGMA = float(os.getenv("LISA_DELTA_F0_PRIOR_SIGMA", "1e-8"))
+F0_JITTER_WIDTH = float(np.log1p(DELTA_F0_PRIOR_HALF_WIDTH / F0_REF))
 
 
 @dataclass(frozen=True)
@@ -122,11 +107,9 @@ def draw_source_prior_and_params(
     rng: np.random.Generator,
 ) -> tuple[np.ndarray, float, float, tuple[float, float], tuple[float, float], tuple[float, float]]:
     f0_ref = F0_REF
-    delta_f0_half_width = lisa_delta_f0_prior_half_width()
-    delta_f0_sigma = lisa_delta_f0_prior_sigma()
     prior_f0 = (
-        float(f0_ref - delta_f0_half_width),
-        float(f0_ref + delta_f0_half_width),
+        float(f0_ref - DELTA_F0_PRIOR_HALF_WIDTH),
+        float(f0_ref + DELTA_F0_PRIOR_HALF_WIDTH),
     )
     prior_fdot = tuple(float(x) for x in FIXED_FDOT_PRIOR_BOUNDS)
     prior_A = tuple(float(x) for x in FIXED_A_PRIOR_BOUNDS)
@@ -134,9 +117,9 @@ def draw_source_prior_and_params(
     delta_f0_true = _draw_truncated_normal(
         rng,
         loc=0.0,
-        scale=delta_f0_sigma,
-        low=-delta_f0_half_width,
-        high=delta_f0_half_width,
+        scale=DELTA_F0_PRIOR_SIGMA,
+        low=-DELTA_F0_PRIOR_HALF_WIDTH,
+        high=DELTA_F0_PRIOR_HALF_WIDTH,
     )
     f0 = float(f0_ref + delta_f0_true)
     delta_logf0_true = float(np.log(f0) - np.log(f0_ref))
