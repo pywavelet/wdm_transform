@@ -3,3 +3,5 @@
 *.log
 *.txt
 _cache
+
+lisa_venv
