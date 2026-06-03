@@ -261,6 +261,8 @@ class InjectionData:
     f0_ref: float
     f0_jitter_width: float
     delta_logf0_true: float
+    fdot_ref: float
+    delta_fdot_true: float
     prior_f0: tuple[float, float]
     prior_fdot: tuple[float, float]
     prior_A: tuple[float, float]
@@ -287,6 +289,8 @@ def load_injection(path: Path = INJECTION_PATH) -> InjectionData:
             f0_ref=float(np.asarray(inj["f0_ref"]).reshape(-1)[0]),
             f0_jitter_width=float(np.asarray(inj["f0_jitter_width"]).reshape(-1)[0]),
             delta_logf0_true=float(np.asarray(inj["delta_logf0_true"]).reshape(-1)[0]),
+            fdot_ref=float(np.asarray(inj["fdot_ref"]).reshape(-1)[0]),
+            delta_fdot_true=float(np.asarray(inj["delta_fdot_true"]).reshape(-1)[0]),
             prior_f0=tuple(np.asarray(inj["prior_f0"], dtype=float).reshape(2)),
             prior_fdot=tuple(np.asarray(inj["prior_fdot"], dtype=float).reshape(2)),
             prior_A=tuple(np.asarray(inj["prior_A"], dtype=float).reshape(2)),

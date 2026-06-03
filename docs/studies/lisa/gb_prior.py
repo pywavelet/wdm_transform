@@ -22,23 +22,27 @@ F0_GLOBAL_BOUNDS = (
     float(SOURCE_CATALOG[:, 0].min() - 1.5e-7),
     float(SOURCE_CATALOG[:, 0].max() + 1.5e-7),
 )
-# FDOT_GLOBAL_BOUNDS = (5.0e-19, 4.0e-18)
-# FDOT_GLOBAL_BOUNDS = (5.0e-19, 8.0e-18)
-FDOT_GLOBAL_BOUNDS = (5.0e-17, 8.0e-13)
-FIXED_FDOT_PRIOR_BOUNDS = FDOT_GLOBAL_BOUNDS
 FIXED_A_PRIOR_BOUNDS = (6.0e-25, 1.7e-22)
 F0_REF = float(np.mean(SOURCE_CATALOG[:, 0]))
 DELTA_F0_PRIOR_HALF_WIDTH = float(os.getenv("LISA_DELTA_F0_PRIOR_HALF_WIDTH", "3e-8"))
 DELTA_F0_PRIOR_SIGMA = float(os.getenv("LISA_DELTA_F0_PRIOR_SIGMA", "1e-8"))
 F0_JITTER_WIDTH = float(np.log1p(DELTA_F0_PRIOR_HALF_WIDTH / F0_REF))
 
+# fdot is a chirp parameter: over a one-year baseline its likelihood is razor-
+# sharp on the frequency-derivative resolution scale 1/T_obs^2 (~1e-15 Hz/s),
+# far narrower than any plausible astrophysical prior.  A broad (log) prior makes
+# the posterior an un-samplable needle, so — exactly like f0 — we treat fdot as a
+# localized follow-up parameter: a reference value FDOT_REF plus a small offset
+# sampled on the resolution scale.
+FDOT_REF = float(os.getenv("LISA_FDOT_REF", "5e-14"))
+DELTA_FDOT_PRIOR_HALF_WIDTH = float(os.getenv("LISA_DELTA_FDOT_PRIOR_HALF_WIDTH", "4e-14"))
+DELTA_FDOT_PRIOR_SIGMA = float(os.getenv("LISA_DELTA_FDOT_PRIOR_SIGMA", "1e-14"))
+
 
 @dataclass(frozen=True)
 class LocalPriorInfo:
-    prior_center: np.ndarray
-    prior_scale: np.ndarray
-    logf0_bounds: tuple[float, float]
-    logfdot_bounds: tuple[float, float]
+    logA_center: float
+    logA_scale: float
     logA_bounds: tuple[float, float]
 
 
@@ -76,54 +80,46 @@ def draw_positive_parameter_from_bounds(
     return float(np.exp(log_value))
 
 
-def build_local_prior_info(
-    *,
-    prior_f0: tuple[float, float],
-    prior_fdot: tuple[float, float],
-    prior_A: tuple[float, float],
-) -> LocalPriorInfo:
-    logf0_bounds = (float(np.log(prior_f0[0])), float(np.log(prior_f0[1])))
-    logfdot_bounds = (float(np.log(prior_fdot[0])), float(np.log(prior_fdot[1])))
+def build_local_prior_info(*, prior_A: tuple[float, float]) -> LocalPriorInfo:
     logA_bounds = (float(np.log(prior_A[0])), float(np.log(prior_A[1])))
-
     return LocalPriorInfo(
-        prior_center=np.array([
-            0.5 * (logf0_bounds[0] + logf0_bounds[1]),
-            0.5 * (logfdot_bounds[0] + logfdot_bounds[1]),
-            0.5 * (logA_bounds[0] + logA_bounds[1]),
-        ]),
-        prior_scale=np.array([
-            0.25 * (logf0_bounds[1] - logf0_bounds[0]),
-            0.25 * (logfdot_bounds[1] - logfdot_bounds[0]),
-            0.25 * (logA_bounds[1] - logA_bounds[0]),
-        ]),
-        logf0_bounds=logf0_bounds,
-        logfdot_bounds=logfdot_bounds,
+        logA_center=0.5 * (logA_bounds[0] + logA_bounds[1]),
+        logA_scale=0.25 * (logA_bounds[1] - logA_bounds[0]),
         logA_bounds=logA_bounds,
     )
 
 
-def draw_source_prior_and_params(
-    rng: np.random.Generator,
-) -> tuple[np.ndarray, float, float, tuple[float, float], tuple[float, float], tuple[float, float]]:
+def draw_source_prior_and_params(rng: np.random.Generator) -> dict:
+    """Draw one source and the localized prior boxes around it.
+
+    Returns a dict with the source parameter row plus the f0/fdot reference
+    values and prior bounds used to set up the follow-up inference.
+    """
     f0_ref = F0_REF
     prior_f0 = (
         float(f0_ref - DELTA_F0_PRIOR_HALF_WIDTH),
         float(f0_ref + DELTA_F0_PRIOR_HALF_WIDTH),
     )
-    prior_fdot = tuple(float(x) for x in FIXED_FDOT_PRIOR_BOUNDS)
+    fdot_ref = FDOT_REF
+    prior_fdot = (
+        float(fdot_ref - DELTA_FDOT_PRIOR_HALF_WIDTH),
+        float(fdot_ref + DELTA_FDOT_PRIOR_HALF_WIDTH),
+    )
     prior_A = tuple(float(x) for x in FIXED_A_PRIOR_BOUNDS)
 
     delta_f0_true = _draw_truncated_normal(
-        rng,
-        loc=0.0,
-        scale=DELTA_F0_PRIOR_SIGMA,
-        low=-DELTA_F0_PRIOR_HALF_WIDTH,
-        high=DELTA_F0_PRIOR_HALF_WIDTH,
+        rng, loc=0.0, scale=DELTA_F0_PRIOR_SIGMA,
+        low=-DELTA_F0_PRIOR_HALF_WIDTH, high=DELTA_F0_PRIOR_HALF_WIDTH,
     )
     f0 = float(f0_ref + delta_f0_true)
     delta_logf0_true = float(np.log(f0) - np.log(f0_ref))
-    fdot = draw_positive_parameter_from_bounds(rng, prior_fdot)
+
+    delta_fdot_true = _draw_truncated_normal(
+        rng, loc=0.0, scale=DELTA_FDOT_PRIOR_SIGMA,
+        low=-DELTA_FDOT_PRIOR_HALF_WIDTH, high=DELTA_FDOT_PRIOR_HALF_WIDTH,
+    )
+    fdot = float(fdot_ref + delta_fdot_true)
+
     A = draw_positive_parameter_from_bounds(rng, prior_A)
     ra = float(rng.uniform(0.0, 2.0 * np.pi))
     dec = float(np.arcsin(rng.uniform(-1.0, 1.0)))
@@ -131,4 +127,13 @@ def draw_source_prior_and_params(
     iota = float(np.arccos(rng.uniform(-1.0, 1.0)))
     phi0 = float(rng.uniform(-np.pi, np.pi))
     source = np.array([f0, fdot, A, ra, dec, psi, iota, phi0], dtype=float)
-    return source, f0_ref, delta_logf0_true, prior_f0, prior_fdot, prior_A
+    return {
+        "source": source,
+        "f0_ref": f0_ref,
+        "delta_logf0_true": delta_logf0_true,
+        "fdot_ref": fdot_ref,
+        "delta_fdot_true": delta_fdot_true,
+        "prior_f0": prior_f0,
+        "prior_fdot": prior_fdot,
+        "prior_A": prior_A,
+    }

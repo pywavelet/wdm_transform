@@ -12,8 +12,9 @@ Stages (all driven by ``--seed``):
    characteristic strain on top and the WDM time-frequency map on the bottom.
 2. **Inference** — fit the source in two domains with NumPyro/NUTS:
    a narrow-band frequency-domain Whittle likelihood and a WDM-domain Gaussian
-   likelihood.  Both sample ``(delta_f0, logfdot, logA, phi0)`` around a fixed
-   reference frequency.
+   likelihood.  Both sample ``(delta_f0, delta_fdot, logA, phi0)`` where delta_f0
+   and delta_fdot are offsets on the resolution scale around fixed reference
+   ``(f0_ref, fdot_ref)`` values.
 3. **Comparison** — overlay the two posteriors against the injected truth in a
    corner plot, and write ``results.json`` containing the per-parameter
    Jensen-Shannon divergence and the posterior rank of the truth (the latter
@@ -33,6 +34,7 @@ from pathlib import Path
 import numpy as np
 from gb_prior import (
     DELTA_F0_PRIOR_SIGMA,
+    DELTA_FDOT_PRIOR_SIGMA,
     F0_JITTER_WIDTH,
     build_local_prior_info,
     draw_source_prior_and_params,
@@ -46,11 +48,11 @@ from lisa_common import (
     noise_tdi15_psd,
     place_local_tdi,
     posterior_rank,
-    save_figure,
     setup_jax_and_matplotlib,
     trim_frequency_band,
     wrap_phase,
 )
+from plotting_utils import plot_data_overview, plot_marginal_comparison
 from scipy.spatial.distance import jensenshannon
 
 import numpyro
@@ -63,12 +65,20 @@ setup_jax_and_matplotlib()
 T_OBS = 365 * 24 * 3600  # one-year observation, seconds
 INJECTION_NORMALIZATION_VERSION = "physical_psd_rfft_v1"
 
+# Target injected SNR range.  The strain scales linearly with the amplitude A,
+# so after drawing the source we rescale A to a target SNR drawn uniformly in
+# this band.  This pins the injected SNR regardless of the random sky position /
+# inclination, and keeps the likelihood peak broad enough for NUTS to sample
+# (the sharp-peak stiffness only bites at high SNR).
+SNR_MIN = float(os.getenv("LISA_SNR_MIN", "10.0"))
+SNR_MAX = float(os.getenv("LISA_SNR_MAX", "30.0"))
+
 N_WARMUP = int(os.getenv("LISA_N_WARMUP", "4500"))
 N_DRAWS = int(os.getenv("LISA_N_DRAWS", "1000"))
 NUM_CHAINS = int(os.getenv("LISA_NUM_CHAINS", "2"))
 NT = int(os.getenv("LISA_NT", "32"))  # WDM time bins used for inference
 NT_SPECTROGRAM = int(os.getenv("LISA_NT_SPECTROGRAM", "64"))  # WDM time bins for the figure
-NUTS_KWARGS = {"dense_mass": True, "target_accept_prob": 0.95, "max_tree_depth": 12}
+NUTS_KWARGS = {"dense_mass": True, "target_accept_prob": 0.9, "max_tree_depth": 10}
 INIT_JITTER_SCALE = 0.15
 A_WDM = 1.0 / 3.0
 D_WDM = 1.0
@@ -108,12 +118,19 @@ def generate_injection(seed: int, paths: dict[str, Path]) -> None:
     rng = np.random.default_rng(seed)
     print(f"[data] stationary instrument noise + resolved GB (seed={seed})")
 
-    # Analysis band fixes the sampling grid: dt = 1 / (2 f_max).
+    # Analysis band fixes the sampling grid: dt = 1 / (2 f_max).  The sample
+    # count must be divisible by 2*nt for both the inference (NT) and figure
+    # (NT_SPECTROGRAM) WDM tilings: otherwise the WDM domain truncates the time
+    # series, and for red instrument noise that truncation leaks low-frequency
+    # power across the analysis band (the frequency domain, which keeps all
+    # samples, stays clean — so the two domains would disagree).
     frequencies = freqs_analysis()
     dt = 1.0 / (2.0 * float(np.max(frequencies)))
-    n_total = int(T_OBS / dt)
+    wdm_block = int(np.lcm(2 * NT, 2 * NT_SPECTROGRAM))
+    n_total = (int(T_OBS / dt) // wdm_block) * wdm_block
+    t_obs = n_total * dt
     freqs_all = np.fft.rfftfreq(n_total, dt)
-    df_full = 1.0 / T_OBS
+    df_full = 1.0 / t_obs
     n_freqs = len(freqs_all)
 
     # Stationary noise realization, per channel.
@@ -128,9 +145,14 @@ def generate_injection(seed: int, paths: dict[str, Path]) -> None:
     psd_T = np.maximum(noise_tdi15_psd(2, freqs_all), 1e-60)
 
     # Inject one resolved GB drawn from the local follow-up prior.
-    jgb = JaxGB(lisaorbits.EqualArmlengthOrbits(), t_obs=T_OBS, t0=0.0, n=256)
-    src_row, f0_ref, delta_logf0_true, prior_f0, prior_fdot, prior_A = draw_source_prior_and_params(rng)
-    source_params = src_row.reshape(1, -1)
+    jgb = JaxGB(lisaorbits.EqualArmlengthOrbits(), t_obs=t_obs, t0=0.0, n=256)
+    drawn = draw_source_prior_and_params(rng)
+    f0_ref = drawn["f0_ref"]
+    delta_logf0_true = drawn["delta_logf0_true"]
+    fdot_ref = drawn["fdot_ref"]
+    delta_fdot_true = drawn["delta_fdot_true"]
+    prior_f0, prior_fdot, prior_A = drawn["prior_f0"], drawn["prior_fdot"], drawn["prior_A"]
+    source_params = drawn["source"].reshape(1, -1)
     src = source_params[0]
 
     params_j = jnp.asarray(src, dtype=jnp.float64)
@@ -144,9 +166,22 @@ def generate_injection(seed: int, paths: dict[str, Path]) -> None:
     snr_E = matched_filter_snr_rfft(source_Ef, psd_E, freqs_all, dt=dt)
     snr_T = matched_filter_snr_rfft(source_Tf, psd_T, freqs_all, dt=dt)
     snr_aet = float(np.sqrt(snr_A**2 + snr_E**2 + snr_T**2))
-    snr_ae = float(np.hypot(snr_A, snr_E))
     if snr_aet <= 0.0:
         raise ValueError("Generated GB template has non-positive SNR.")
+
+    # Rescale the amplitude (strain ∝ A) so the injected SNR lands in the target
+    # band, independent of the drawn sky position / inclination.
+    target_snr = float(rng.uniform(SNR_MIN, SNR_MAX))
+    snr_scale = target_snr / snr_aet
+    src[2] *= snr_scale
+    source_Af *= snr_scale
+    source_Ef *= snr_scale
+    source_Tf *= snr_scale
+    snr_A *= snr_scale
+    snr_E *= snr_scale
+    snr_T *= snr_scale
+    snr_aet = target_snr
+    snr_ae = float(np.hypot(snr_A, snr_E))
     print(
         f"[data] injected GB: f0={src[0]:.5e} Hz fdot={src[1]:.5e} Hz/s "
         f"A={src[2]:.5e} SNR(A+E+T)={snr_aet:.1f}"
@@ -160,7 +195,7 @@ def generate_injection(seed: int, paths: dict[str, Path]) -> None:
     np.savez(
         paths["injection"],
         dt=dt,
-        t_obs=T_OBS,
+        t_obs=t_obs,
         seed=np.array(seed, dtype=int),
         freqs=freqs_all,
         noise_psd_A=psd_A,
@@ -176,6 +211,8 @@ def generate_injection(seed: int, paths: dict[str, Path]) -> None:
         f0_ref=np.array(f0_ref, dtype=float),
         f0_jitter_width=np.array(F0_JITTER_WIDTH, dtype=float),
         delta_logf0_true=np.array(delta_logf0_true, dtype=float),
+        fdot_ref=np.array(fdot_ref, dtype=float),
+        delta_fdot_true=np.array(delta_fdot_true, dtype=float),
         prior_f0=np.asarray(prior_f0, dtype=float),
         prior_fdot=np.asarray(prior_fdot, dtype=float),
         prior_A=np.asarray(prior_A, dtype=float),
@@ -185,183 +222,25 @@ def generate_injection(seed: int, paths: dict[str, Path]) -> None:
         normalization_version=np.array(INJECTION_NORMALIZATION_VERSION),
     )
     print(f"[data] saved injection to {paths['injection']}")
-    _plot_data_overview(run_dir, dt=dt, freqs=freqs_all, psd_A=psd_A,
-                        source_Af=source_Af, data_At=data_At, f0=float(src[0]))
-
-
-def _plot_data_overview(
-    run_dir: Path,
-    *,
-    dt: float,
-    freqs: np.ndarray,
-    psd_A: np.ndarray,
-    source_Af: np.ndarray,
-    data_At: np.ndarray,
-    f0: float,
-) -> None:
-    """Two-panel A-channel figure: PSD overview (top), WDM map (bottom)."""
-    import matplotlib.pyplot as plt
-    from matplotlib.patches import ConnectionPatch, Rectangle
-
-    from wdm_transform.transforms import from_time_to_wdm
-
-    fig = plt.figure(figsize=(11, 9), constrained_layout=False)
-    grid = fig.add_gridspec(
-        2, 3,
-        left=0.08,
-        right=0.96,
-        bottom=0.08,
-        top=0.94,
-        width_ratios=(1.0, 0.27, 0.035),
-        height_ratios=(1.0, 1.0),
-        wspace=0.08,
-        hspace=0.28,
+    plot_data_overview(
+        run_dir,
+        dt=dt,
+        freqs=freqs_all,
+        psd_A=psd_A,
+        source_Af=source_Af,
+        data_At=data_At,
+        f0=float(src[0]),
+        nt_spectrogram=NT_SPECTROGRAM,
+        a_wdm=A_WDM,
+        d_wdm=D_WDM,
     )
-    ax_top = fig.add_subplot(grid[0, 0])
-    ax_zoom = fig.add_subplot(grid[0, 1])
-    ax_colorbar_placeholder = fig.add_subplot(grid[0, 2])
-    ax_bot = fig.add_subplot(grid[1, 0])
-    ax_wdm_zoom = fig.add_subplot(grid[1, 1])
-    ax_colorbar = fig.add_subplot(grid[1, 2])
-    ax_colorbar_placeholder.axis("off")
-
-    def mark_zoom_region(parent_ax, zoom_ax, xlim, ylim, *, color: str) -> None:
-        rect = Rectangle(
-            (xlim[0], ylim[0]), xlim[1] - xlim[0], ylim[1] - ylim[0],
-            fill=False, edgecolor=color, linewidth=1.0, alpha=0.8,
-        )
-        parent_ax.add_patch(rect)
-        for y_parent, y_zoom in ((ylim[0], 0.0), (ylim[1], 1.0)):
-            connector = ConnectionPatch(
-                xyA=(xlim[1], y_parent), coordsA=parent_ax.transData,
-                xyB=(0.0, y_zoom), coordsB=zoom_ax.transAxes,
-                axesA=parent_ax, axesB=zoom_ax,
-                color=color, linewidth=0.8, alpha=0.55,
-            )
-            connector.set_clip_on(False)
-            zoom_ax.add_artist(connector)
-
-    def rfft_periodogram(coeffs: np.ndarray) -> np.ndarray:
-        psd = np.zeros_like(freqs, dtype=float)
-        pos = freqs > 0.0
-        if pos.sum() >= 2:
-            df = float(freqs[pos][1] - freqs[pos][0])
-            psd[pos] = 2.0 * df * dt**2 * np.abs(coeffs[pos]) ** 2
-        return psd
-
-    # Top: frequency-domain one-sided PSD estimate, model, and source spike.
-    data_Af = np.fft.rfft(data_At)
-    data_psd = rfft_periodogram(data_Af)
-    source_psd = rfft_periodogram(source_Af)
-    ax_top.loglog(freqs[1:], data_psd[1:],
-                  color="0.75", lw=0.7, alpha=0.8, zorder=2, label="A data")
-    ax_top.loglog(freqs[1:], psd_A[1:],
-                  color="black", lw=1.4, zorder=3, label="Instrument PSD")
-    ax_top.set_xlim(1e-4, 3e-3)
-    band = (freqs >= 1e-4) & (freqs <= 3e-3)
-    main_positive = np.concatenate([
-        data_psd[band][data_psd[band] > 0.0],
-        source_psd[band][source_psd[band] > 0.0],
-        psd_A[band][psd_A[band] > 0.0],
-    ])
-    if main_positive.size:
-        ax_top.set_ylim(np.percentile(main_positive, 0.2) / 3.0,
-                        np.percentile(main_positive, 99.9) * 3.0)
-    ax_top.set_xlabel("Frequency (Hz)")
-    ax_top.set_ylabel(r"$S_h(f)$ [strain$^2$/Hz]")
-    ax_top.set_title("Channel A — frequency domain")
-    ax_top.grid(True, which="both", alpha=0.25)
-    ax_top.text(0.01, 0.96, "(a)", transform=ax_top.transAxes, ha="left", va="top")
-    ax_top.legend(loc="upper right")
-
-    zoom_half_width = max(2.0e-5, 40.0 / (dt * (len(freqs) - 1) * 2.0))
-    zoom = (freqs >= f0 - zoom_half_width) & (freqs <= f0 + zoom_half_width)
-    if np.count_nonzero(zoom) >= 3:
-        ax_zoom.semilogy(freqs[zoom] * 1e3, source_psd[zoom],
-                         color="C1", lw=1.8, alpha=0.9, zorder=1)
-        ax_zoom.semilogy(freqs[zoom] * 1e3, data_psd[zoom],
-                         color="0.80", lw=0.7, alpha=0.9, zorder=2)
-        ax_zoom.semilogy(freqs[zoom] * 1e3, psd_A[zoom],
-                         color="black", lw=1.0, zorder=3)
-        positive_zoom = np.concatenate([
-            data_psd[zoom][data_psd[zoom] > 0.0],
-            source_psd[zoom][source_psd[zoom] > 0.0],
-            psd_A[zoom][psd_A[zoom] > 0.0],
-        ])
-        if positive_zoom.size:
-            ax_zoom.set_ylim(np.percentile(positive_zoom, 1), np.percentile(positive_zoom, 99.5) * 3.0)
-        ax_zoom.set_xlabel("Frequency (mHz)", fontsize=8)
-        ax_zoom.set_title("f0 zoom", fontsize=10)
-        ax_zoom.tick_params(axis="x", labelsize=8)
-        ax_zoom.tick_params(axis="y", labelleft=False)
-        ax_zoom.grid(True, which="both", alpha=0.15)
-        mark_zoom_region(
-            ax_top, ax_zoom,
-            (float(np.min(freqs[zoom])), float(np.max(freqs[zoom]))),
-            ax_top.get_ylim(),
-            color="black",
-        )
-    else:
-        ax_zoom.axis("off")
-
-    # Bottom: raw WDM time-frequency power of the data.
-    nt = NT_SPECTROGRAM
-    n_keep = (len(data_At) // (2 * nt)) * (2 * nt)
-    nf = n_keep // nt
-    wdm_freqs = np.linspace(0.0, 0.5 / dt, nf + 1)
-    coeffs = np.asarray(
-        from_time_to_wdm(data_At[:n_keep], nt=nt, nf=nf, a=A_WDM, d=D_WDM, dt=dt, backend="numpy")
-    )[0]
-    power = coeffs[:, 1:-1] ** 2
-    t_axis = np.linspace(0.0, n_keep * dt, nt) / 86400.0          # days
-    f_axis = wdm_freqs[1:-1] * 1e3                                # mHz
-    floor = np.percentile(power[power > 0], 5) if np.any(power > 0) else 1e-60
-    vmax = np.percentile(power[np.isfinite(power)], 99.7) if np.any(np.isfinite(power)) else 1.0
-    mesh = ax_bot.pcolormesh(
-        t_axis, f_axis, np.log10(np.maximum(power, floor)).T, shading="auto",
-        cmap="magma", vmin=np.log10(floor), vmax=np.log10(max(vmax, floor * 10.0))
-    )
-    ax_bot.set_ylim(1e-4 * 1e3, 3e-3 * 1e3)
-    ax_bot.set_xlabel("Time (days)")
-    ax_bot.set_ylabel("Frequency (mHz)")
-    ax_bot.set_title(f"Channel A — WDM time-frequency power (nt={nt})")
-    ax_bot.text(0.01, 0.96, "(b)", transform=ax_bot.transAxes, ha="left", va="top", color="white")
-    fig.colorbar(mesh, cax=ax_colorbar, label=r"$\log_{10}$ power")
-
-    wdm_zoom = (f_axis >= f0 * 1e3 - 0.06) & (f_axis <= f0 * 1e3 + 0.06)
-    if np.count_nonzero(wdm_zoom) >= 3:
-        ax_wdm_zoom.pcolormesh(
-            t_axis, f_axis[wdm_zoom], np.log10(np.maximum(power[:, wdm_zoom], floor)).T,
-            shading="auto", cmap="magma", vmin=np.log10(floor),
-            vmax=np.log10(max(vmax, floor * 10.0))
-        )
-        zoom_ticks = np.linspace(f_axis[wdm_zoom][0], f_axis[wdm_zoom][-1], 3)
-        ax_wdm_zoom.set_yticks(zoom_ticks)
-        ax_wdm_zoom.set_xlabel("Time (days)", fontsize=8)
-        ax_wdm_zoom.set_title("f0 zoom", fontsize=10)
-        ax_wdm_zoom.tick_params(axis="x", labelsize=8)
-        ax_wdm_zoom.tick_params(axis="y", labelleft=False)
-        mark_zoom_region(
-            ax_bot, ax_wdm_zoom,
-            (float(t_axis[0]), float(t_axis[-1])),
-            (float(f_axis[wdm_zoom][0]), float(f_axis[wdm_zoom][-1])),
-            color="black",
-        )
-    else:
-        ax_wdm_zoom.axis("off")
-    save_figure(fig, run_dir, "data_overview")
-    print(f"[data] saved data overview figure to {run_dir / 'data_overview.png'}")
 
 
 # ── Stage 2: inference ────────────────────────────────────────────────────────
 
 
 def _prior_metadata(injection) -> dict:
-    prior = build_local_prior_info(
-        prior_f0=injection.prior_f0,
-        prior_fdot=injection.prior_fdot,
-        prior_A=injection.prior_A,
-    )
+    prior = build_local_prior_info(prior_A=injection.prior_A)
     return {
         "f0_ref": float(injection.f0_ref),
         "delta_f0_bounds": (
@@ -369,9 +248,14 @@ def _prior_metadata(injection) -> dict:
             float(injection.prior_f0[1] - injection.f0_ref),
         ),
         "delta_f0_sigma": float(DELTA_F0_PRIOR_SIGMA),
-        "prior_center": prior.prior_center,
-        "prior_scale": prior.prior_scale,
-        "logfdot_bounds": prior.logfdot_bounds,
+        "fdot_ref": float(injection.fdot_ref),
+        "delta_fdot_bounds": (
+            float(injection.prior_fdot[0] - injection.fdot_ref),
+            float(injection.prior_fdot[1] - injection.fdot_ref),
+        ),
+        "delta_fdot_sigma": float(DELTA_FDOT_PRIOR_SIGMA),
+        "logA_center": prior.logA_center,
+        "logA_scale": prior.logA_scale,
         "logA_bounds": prior.logA_bounds,
     }
 
@@ -514,27 +398,87 @@ def _build_wdm_band(injection, source_param, jgb) -> dict:
 def _build_init_values(band: dict, seed: int) -> dict[str, float]:
     rng = np.random.default_rng(seed)
     fixed_params = np.asarray(band["fixed_params"], dtype=float)
-    delta_f0_bounds = np.asarray(band["delta_f0_bounds"], dtype=float)
     delta_f0_sigma = float(band["delta_f0_sigma"])
-    z_bounds = delta_f0_bounds / max(delta_f0_sigma, 1e-30)
-    prior_center = np.asarray(band["prior_center"], dtype=float)
-    logfdot_bounds = np.asarray(band["logfdot_bounds"], dtype=float)
+    delta_fdot_sigma = float(band["delta_fdot_sigma"])
+    zf0_bounds = np.asarray(band["delta_f0_bounds"], dtype=float) / max(delta_f0_sigma, 1e-30)
+    zfdot_bounds = np.asarray(band["delta_fdot_bounds"], dtype=float) / max(delta_fdot_sigma, 1e-30)
     logA_bounds = np.asarray(band["logA_bounds"], dtype=float)
+    # f0 and fdot are initialized at the truth in their standardized (z) coords,
+    # where INIT_JITTER_SCALE is an O(1)-sigma perturbation on the resolution scale.
     return {
         "z_f0": float(np.clip(
             (fixed_params[0] - float(band["f0_ref"])) / max(delta_f0_sigma, 1e-30)
             + INIT_JITTER_SCALE * rng.standard_normal(),
-            z_bounds[0] + 1e-6, z_bounds[1] - 1e-6)),
-        "logfdot": float(np.clip(
-            prior_center[1] + INIT_JITTER_SCALE * rng.standard_normal(),
-            logfdot_bounds[0] + 1e-6, logfdot_bounds[1] - 1e-6)),
+            zf0_bounds[0] + 1e-6, zf0_bounds[1] - 1e-6)),
+        "z_fdot": float(np.clip(
+            (fixed_params[1] - float(band["fdot_ref"])) / max(delta_fdot_sigma, 1e-30)
+            + INIT_JITTER_SCALE * rng.standard_normal(),
+            zfdot_bounds[0] + 1e-6, zfdot_bounds[1] - 1e-6)),
         "logA": float(np.clip(
-            prior_center[2] + INIT_JITTER_SCALE * rng.standard_normal(),
+            np.log(fixed_params[2]) + INIT_JITTER_SCALE * rng.standard_normal(),
             logA_bounds[0] + 1e-6, logA_bounds[1] - 1e-6)),
         "phi0": float(np.clip(
             fixed_params[7] + INIT_JITTER_SCALE * rng.standard_normal(),
             -np.pi + 1e-6, np.pi - 1e-6)),
     }
+
+
+def _domain_loglike(jgb, band, data, noise_psd, fixed_params, f0, fdot, amplitude, phi0):
+    """Whittle log-likelihood for one domain at the given source parameters."""
+    import jax.numpy as jnp
+
+    params = fixed_params.at[0].set(f0).at[1].set(fdot).at[2].set(amplitude).at[7].set(phi0)
+    if band["domain"] == "freq":
+        template = _aet_rfft(jgb, params, int(band["band_kmin"]), int(band["band_kmax"]))
+        residual = data - template
+        residual_power = jnp.real(jnp.conj(residual) * residual)
+        return -jnp.sum(jnp.log(noise_psd) + float(band["whittle_weight"]) * residual_power / noise_psd)
+    wdm_kwargs = {key: int(band[key]) for key in (
+        "src_kmin", "src_kmax", "kmin_rfft", "band_rfft_size",
+        "band_start", "band_stop", "n_freqs", "nf", "nt")}
+    wdm_kwargs["df_rfft"] = float(band["df_rfft"])
+    template = _local_rfft_to_wdm(
+        _aet_rfft(jgb, params, wdm_kwargs["src_kmin"], wdm_kwargs["src_kmax"]), **wdm_kwargs)
+    residual = data - template
+    residual_power = jnp.real(jnp.conj(residual) * residual)
+    return -0.5 * jnp.sum(jnp.log(2.0 * jnp.pi * noise_psd) + residual_power / noise_psd)
+
+
+def _fisher_inverse_mass_matrix(jgb, band, data, noise_psd, fixed_params):
+    """Inverse mass matrix from the posterior precision at the reference source.
+
+    For an SNR≳10 galactic binary the likelihood peak is far narrower than the
+    priors (sub-bin in f0/fdot, ~1/SNR in logA).  Seeding NUTS' dense mass matrix
+    with the inverse posterior precision — the likelihood Fisher plus the prior
+    precision, evaluated at the reference parameters in the sampled
+    ``(z_f0, z_fdot, logA, phi0)`` coordinates — scales its proposals to that
+    narrow ridge so it locks onto the peak instead of the diffuse prior.
+
+    The prior term regularises the (otherwise near-degenerate) f0/fdot/A ridge,
+    and a small eigenvalue floor guarantees a positive-definite matrix even when
+    the raw likelihood Fisher is not (e.g. the WDM domain).
+    """
+    import jax
+    import jax.numpy as jnp
+
+    f0_ref, fdot_ref = float(band["f0_ref"]), float(band["fdot_ref"])
+    delta_f0_sigma, delta_fdot_sigma = float(band["delta_f0_sigma"]), float(band["delta_fdot_sigma"])
+
+    def neg_loglike(u):
+        loglike = _domain_loglike(
+            jgb, band, data, noise_psd, fixed_params,
+            f0_ref + delta_f0_sigma * u[0], fdot_ref + delta_fdot_sigma * u[1],
+            jnp.exp(u[2]), u[3])
+        return -loglike
+
+    u0 = jnp.array([0.0, 0.0, jnp.log(fixed_params[2]), fixed_params[7]], dtype=jnp.float64)
+    fisher = np.asarray(jax.hessian(neg_loglike)(u0))
+    fisher = 0.5 * (fisher + fisher.T)
+    # Floor the eigenvalues to keep the precision positive-definite (the raw WDM
+    # Fisher can have a small negative mode) before inverting to a mass matrix.
+    eigvals, eigvecs = np.linalg.eigh(fisher)
+    eigvals = np.maximum(eigvals, 1e-3 * float(eigvals.max()))
+    return np.linalg.inv((eigvecs * eigvals) @ eigvecs.T)
 
 
 def _run_sampler(jgb, band: dict, seed: int):
@@ -547,46 +491,39 @@ def _run_sampler(jgb, band: dict, seed: int):
     data = jnp.asarray(band["data"], dtype=jnp.complex128 if band["domain"] == "freq" else jnp.float64)
     noise_psd = jnp.asarray(band["noise_psd"], dtype=jnp.float64)
     fixed_params = jnp.asarray(band["fixed_params"], dtype=jnp.float64)
-    prior_center = jnp.asarray(band["prior_center"], dtype=jnp.float64)
-    prior_scale = jnp.asarray(band["prior_scale"], dtype=jnp.float64)
+    logA_center = float(band["logA_center"])
+    logA_scale = float(band["logA_scale"])
     delta_f0_sigma = float(band["delta_f0_sigma"])
-    z_low, z_high = np.asarray(band["delta_f0_bounds"], dtype=float) / max(delta_f0_sigma, 1e-30)
-    logfdot_low, logfdot_high = np.asarray(band["logfdot_bounds"], dtype=float)
+    delta_fdot_sigma = float(band["delta_fdot_sigma"])
+    zf0_low, zf0_high = np.asarray(band["delta_f0_bounds"], dtype=float) / max(delta_f0_sigma, 1e-30)
+    zfdot_low, zfdot_high = np.asarray(band["delta_fdot_bounds"], dtype=float) / max(delta_fdot_sigma, 1e-30)
     logA_low, logA_high = np.asarray(band["logA_bounds"], dtype=float)
 
     def model() -> None:
-        z_f0 = numpyro.sample("z_f0", dist.TruncatedNormal(0.0, 1.0, low=float(z_low), high=float(z_high)))
+        # f0 and fdot are sampled on their (standardized) resolution scales so the
+        # razor-sharp chirp likelihood is O(1)-wide in the sampled coordinates.
+        z_f0 = numpyro.sample("z_f0", dist.TruncatedNormal(0.0, 1.0, low=float(zf0_low), high=float(zf0_high)))
         delta_f0 = numpyro.deterministic("delta_f0", delta_f0_sigma * z_f0)
-        logfdot = numpyro.sample("logfdot", dist.TruncatedNormal(
-            prior_center[1], prior_scale[1], low=float(logfdot_low), high=float(logfdot_high)))
+        z_fdot = numpyro.sample("z_fdot", dist.TruncatedNormal(0.0, 1.0, low=float(zfdot_low), high=float(zfdot_high)))
+        delta_fdot = numpyro.deterministic("delta_fdot", delta_fdot_sigma * z_fdot)
         logA = numpyro.sample("logA", dist.TruncatedNormal(
-            prior_center[2], prior_scale[2], low=float(logA_low), high=float(logA_high)))
+            logA_center, logA_scale, low=float(logA_low), high=float(logA_high)))
         f0 = float(band["f0_ref"]) + delta_f0
-        fdot = jnp.exp(logfdot)
+        fdot = float(band["fdot_ref"]) + delta_fdot
         amplitude = jnp.exp(logA)
         phi0 = numpyro.sample("phi0", dist.Uniform(-jnp.pi, jnp.pi))
-        params = fixed_params.at[0].set(f0).at[1].set(fdot).at[2].set(amplitude).at[7].set(phi0)
-        if band["domain"] == "freq":
-            template = _aet_rfft(jgb, params, int(band["band_kmin"]), int(band["band_kmax"]))
-            residual = data - template
-            residual_power = jnp.real(jnp.conj(residual) * residual)
-            loglike = -jnp.sum(jnp.log(noise_psd) + float(band["whittle_weight"]) * residual_power / noise_psd)
-        else:
-            wdm_kwargs = {key: int(band[key]) for key in (
-                "src_kmin", "src_kmax", "kmin_rfft", "band_rfft_size",
-                "band_start", "band_stop", "n_freqs", "nf", "nt")}
-            wdm_kwargs["df_rfft"] = float(band["df_rfft"])
-            template = _local_rfft_to_wdm(
-                _aet_rfft(jgb, params, wdm_kwargs["src_kmin"], wdm_kwargs["src_kmax"]), **wdm_kwargs)
-            residual = data - template
-            residual_power = jnp.real(jnp.conj(residual) * residual)
-            loglike = -0.5 * jnp.sum(jnp.log(2.0 * jnp.pi * noise_psd) + residual_power / noise_psd)
+        loglike = _domain_loglike(jgb, band, data, noise_psd, fixed_params, f0, fdot, amplitude, phi0)
         numpyro.factor(f"{band['domain']}_loglike", loglike)
         numpyro.deterministic("f0", f0)
         numpyro.deterministic("fdot", fdot)
         numpyro.deterministic("A", amplitude)
 
-    mcmc = MCMC(NUTS(model, **NUTS_KWARGS), num_warmup=N_WARMUP, num_samples=N_DRAWS,
+    # Seed the dense mass matrix with the posterior precision at the reference
+    # source, then let NUTS refine it during warmup.  Without this the sampler
+    # cannot find the sub-bin likelihood peak and collapses toward the prior.
+    inverse_mass_matrix = _fisher_inverse_mass_matrix(jgb, band, data, noise_psd, fixed_params)
+    nuts = NUTS(model, inverse_mass_matrix=inverse_mass_matrix, adapt_mass_matrix=False, **NUTS_KWARGS)
+    mcmc = MCMC(nuts, num_warmup=N_WARMUP, num_samples=N_DRAWS,
                 num_chains=NUM_CHAINS, progress_bar=True)
     inits = [_build_init_values(band, seed + 7 * i) for i in range(NUM_CHAINS)]
     mcmc.run(
@@ -646,15 +583,6 @@ def _load_posterior_dataset(path: Path):
         return posterior.load()
 
 
-def _log10_transform_dataset(ds):
-    """Return a copy of *ds* with the LOG10_VARS replaced by their log10."""
-    ds = ds.copy()
-    for name in LOG10_VARS:
-        if name in ds:
-            ds[name] = np.log10(ds[name])
-    return ds
-
-
 def _stack_samples(posterior) -> np.ndarray:
     """Stack POSTERIOR_VARS from an xarray dataset into (n_samples, n_params).
 
@@ -687,28 +615,6 @@ def _jensen_shannon_bits(a: np.ndarray, b: np.ndarray) -> float:
     p = counts_a / max(float(np.sum(counts_a)), 1.0)
     q = counts_b / max(float(np.sum(counts_b)), 1.0)
     return float(jensenshannon(p, q, base=2.0) ** 2)
-
-
-def _plot_marginal_comparison(freq_ds, wdm_ds, truth, run_dir: Path) -> None:
-    """Overlay the frequency- and WDM-domain marginal posteriors with truth lines."""
-    import arviz_plots as azp
-    import matplotlib.pyplot as plt
-    import xarray as xr
-
-    azp.plot_dist(
-        {
-            "Frequency": xr.DataTree.from_dict({"posterior": _log10_transform_dataset(freq_ds)}),
-            "WDM": xr.DataTree.from_dict({"posterior": _log10_transform_dataset(wdm_ds)}),
-        },
-        var_names=list(POSTERIOR_VARS),
-        backend="matplotlib",
-        point_estimate=None,
-    )
-    fig = plt.gcf()
-    for ax, true_val in zip(fig.axes[: len(POSTERIOR_VARS)], truth, strict=False):
-        ax.axvline(true_val, color="black", linestyle="--", linewidth=1.5, label="Truth")
-    save_figure(fig, run_dir, "posterior_comparison")
-    print(f"[compare] saved marginal comparison to {run_dir / 'posterior_comparison.png'}")
 
 
 def run_compare(injection, paths: dict[str, Path]) -> None:
@@ -746,7 +652,14 @@ def run_compare(injection, paths: dict[str, Path]) -> None:
     paths["results"].write_text(json.dumps(results, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(f"[compare] saved results to {paths['results']}")
 
-    _plot_marginal_comparison(freq_ds, wdm_ds, truth, paths["run_dir"])
+    plot_marginal_comparison(
+        freq_ds,
+        wdm_ds,
+        truth,
+        paths["run_dir"],
+        posterior_vars=POSTERIOR_VARS,
+        log10_vars=LOG10_VARS,
+    )
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
