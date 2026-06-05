@@ -160,6 +160,9 @@ lisa_venv/bin/python summarize_gb_study.py
 
 # paper figures for one seed (data overview, freq-vs-WDM corner) + PP + JSD table
 lisa_venv/bin/python plot_gb_study.py --seed 0
+
+# snapshot the manuscript's committed figure data (seed 8 + all-seed ranks)
+lisa_venv/bin/python export_manuscript_data.py --seed 8
 ```
 
 `summarize_gb_study.py` prints the calibration table, the (KDE-estimated)
@@ -177,6 +180,7 @@ check; it also regenerates the PP plot.
 | `run_gb_study.sh` | one-command N-seed runner (one process per seed → bounded memory, crash-resistant, resumable), then runs the summary |
 | `summarize_gb_study.py` | aggregate `outdir_gb/`: calibration + JSD + convergence + config check + PP plot |
 | `plot_gb_study.py` | per-seed data-overview figure, freq-vs-WDM corner (with prior overlay), population PP plot, JSD table |
+| `export_manuscript_data.py` | snapshot one demo seed's injection + posteriors and the all-seed ranks into the manuscript's `src/data/` (`lisa_gb_demo.npz`, `lisa_gb_pp.npz`) so the paper's figure scripts build without the GB waveform stack |
 | `eval_seeds.py` | quick in-process convergence sweep over a seed range (development tool) |
 | `lisa_common.py` | shared helpers: LISA TDI PSD, physical rFFT noise draw, posterior ranks |
 | `outdir_gb/` | per-seed `seed_N.json` (posterior summaries, thinned samples, diagnostics, config) and figures |
