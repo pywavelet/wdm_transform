@@ -86,6 +86,12 @@ the [Benchmarks](../benchmarks.ipynb) page for a runtime comparison.
       heading_level: 3
       show_source: false
 
+::: wdm_transform.signal_processing.rfft_periodogram_characteristic_strain
+    options:
+      show_root_heading: true
+      heading_level: 3
+      show_source: false
+
 ::: wdm_transform.signal_processing.wdm_noise_variance
     options:
       show_root_heading: true
