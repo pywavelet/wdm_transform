@@ -183,7 +183,6 @@ check; it also regenerates the PP plot.
 | `plot_gb_study.py` | per-seed data-overview figure, freq-vs-WDM corner (with prior overlay), population PP plot, JSD table |
 | `eval_seeds.py` | quick in-process convergence sweep over a seed range (development tool) |
 | `lisa_common.py` | shared helpers: LISA TDI PSD, physical rFFT noise draw, posterior ranks |
-| `gb_prior.py` | reference frequency `F0_REF` and prior helpers |
 | `outdir_gb/` | per-seed `seed_N.json` (posterior summaries, thinned samples, diagnostics, config) and figures |
 
 ---

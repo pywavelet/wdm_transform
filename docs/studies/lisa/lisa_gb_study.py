@@ -32,7 +32,6 @@ import time
 from pathlib import Path
 
 import numpy as np
-from gb_prior import F0_REF
 from lisa_common import (
     draw_rfft_from_psd,
     freqs_analysis,
@@ -74,6 +73,9 @@ D_WDM = 1.0
 # reparam; the reparam pushes that much higher, but the band stays the default).
 SNR_MIN = 20.0
 SNR_MAX = 45.0
+# Reference carrier frequency (the "prior search guess"): mean of two nearby
+# mHz-band galactic-binary sources.  Each seed's injected f0 is drawn around it.
+F0_REF = 1.385910e-3
 FDOT_REF = 0.0
 # Per-seed source f0 is drawn uniformly within +-F0_DRAW_BINS resolution elements
 # of F0_REF; fdot within a fraction of its prior box.  The narrow f0 prior is then
