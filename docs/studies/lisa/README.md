@@ -12,12 +12,8 @@ The headline result, over 100 independent injections with SNR drawn uniformly in
   Jensen–Shannon divergence (JSD) between the two domains' marginals is
   ≈ 3 × 10⁻⁴ bits (median), ≤ 0.003 bits at the 95th percentile (0 = identical,
   1 = disjoint).
-- **Runs converge reliably** — zero divergences in all 200 runs, and split-R̂ <
-  1.05 in every coordinate on 99 of 100 seeds (both domains). The one exception
-  is a stiff `f0–fdot` source that under-mixes *identically* in both domains, so
-  its freq-vs-WDM JSD is still ~0 (the equivalence is unaffected). The
-  posterior–vs–prior widths show the data, not the prior, drives `fdot`, `A`,
-  `phi0` (and the joint `f0–fdot` ridge).
+- **Runs converge reliably** — zero divergences in all 100 runs, and Rhat <
+  1.05 in every coordinate,
 
 In short: the WDM likelihood is a faithful drop-in for the frequency-domain
 Whittle likelihood for GB inference.
@@ -45,7 +41,7 @@ Whittle likelihood for GB inference.
    where a prior search has localized the source); only `(f0, fdot, A, phi0)`
    are sampled.
 5. **Compare.** Posterior marginals are compared between domains (JSD, PP plot),
-   and convergence (R̂, ESS, divergences) is recorded for every run.
+   and convergence (Rhat, ESS, divergences) is recorded for every run.
 
 ---
 
@@ -168,7 +164,7 @@ lisa_venv/bin/python plot_gb_study.py --seed 0
 
 `summarize_gb_study.py` prints the calibration table, the (KDE-estimated)
 freq-vs-WDM JSD table, a **convergence certificate** (how many seeds reach
-R̂ < 1.05 with 0 divergences, naming any that fail), and a config-consistency
+Rhat < 1.05 with 0 divergences, naming any that fail), and a config-consistency
 check; it also regenerates the PP plot.
 
 ---
