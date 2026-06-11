@@ -5,6 +5,7 @@ from inline_snapshot import snapshot
 import numpy as np
 
 from wdm_transform.backends import NUMPY_BACKEND
+from wdm_transform.backends.jax_backend import load_jax_backend
 from wdm_transform.windows import gnmf
 
 
@@ -37,9 +38,10 @@ def two_ns_one_m(draw, min=2):
     return (Nt, Nf, n1, n2, m)
 
 
-# Numerical values tuned so that no counterexamples would be found
-# in the tests.
-positive = st.floats(
+# Desired level of precision on inner products.
+atol = 1e-8
+
+pos_real = st.floats(
     min_value=1e-200,
     max_value=1e200,
     exclude_min=True,
@@ -51,9 +53,13 @@ positive = st.floats(
 # Using max_value=0.5, exclude_max=True isn't enough.
 shape_param_a = st.floats(0, 0.5 - 1e-7)
 
-# Desired level of precision on inner products.
-atol = 1e-8
+# d != 1 not implemented
+shape_param_d = st.just(1)
+# shape_param_d = st.floats(min_value=1)
 
+# JAX disabled because very slow, maybe JIT-in-a-loop overhead?
+JAX_BACKEND = load_jax_backend()
+backend_gen = st.just(NUMPY_BACKEND) #| st.just(JAX_BACKEND)
 
 def ortho_condition(Nf, Nt, n1, n2, m1, m2):
     if m1 == m2:
@@ -65,48 +71,50 @@ def ortho_condition(Nf, Nt, n1, n2, m1, m2):
     return 0
 
 
-@given(one_n_two_ms(min=100), positive, shape_param_a)
-def test_ortho_twom(args, dT, a):
+@given(one_n_two_ms(min=100), pos_real, shape_param_a, shape_param_d, backend_gen)
+def test_ortho_twom(args, dT, a, d, backend):
     Nt, Nf, n, m1, m2 = args
     note(f"{Nt=}, {Nf=}")
     note(f"{n=}, {m1=}, {m2=}")
+    xp = backend.xp
 
-    freqs = np.fft.fftfreq(Nt * Nf, dT / Nf)
-    w1 = gnmf(NUMPY_BACKEND, n, m1, freqs, dT, Nf, a, d=1)
-    w2 = gnmf(NUMPY_BACKEND, n, m2, freqs, dT, Nf, a, d=1)
+    freqs = xp.fft.fftfreq(Nt * Nf, dT / Nf)
+    w1 = gnmf(backend, n, m1, freqs, dT, Nf, a, d)
+    w2 = gnmf(backend, n, m2, freqs, dT, Nf, a, d)
 
-    norm_squared = np.sum(w1.conj() * w1).real
+    norm_squared = xp.sum(w1.conj() * w1).real
 
     note(f"{norm_squared = }")
     note(f"{w1.shape=}")
     note(f"{w2.shape=}")
 
-    inner = np.sum(w1.conj() * w2)
+    inner = xp.sum(w1.conj() * w2)
     note(f"{inner = }")
     note(f"{abs(inner) = }")
-    assert np.isclose(inner, ortho_condition(Nf, Nt, n, n, m1, m2), atol=atol)
+    assert xp.isclose(inner, ortho_condition(Nf, Nt, n, n, m1, m2), atol=atol)
 
 
-@given(two_ns_one_m(min=10), positive, shape_param_a)
-def test_ortho_twon(args, dT, a):
+@given(two_ns_one_m(min=10), pos_real, shape_param_a, shape_param_d, backend_gen)
+def test_ortho_twon(args, dT, a, d, backend):
     Nt, Nf, n1, n2, m = args
     note(f"{Nt=}, {Nf=}")
     note(f"{n1=}, {n2=}, {m=}")
+    xp = backend.xp
 
-    freqs = np.fft.fftfreq(Nt * Nf, dT / Nf)
-    w1 = gnmf(NUMPY_BACKEND, n1, m, freqs, dT, Nf, a, d=1)
-    w2 = gnmf(NUMPY_BACKEND, n2, m, freqs, dT, Nf, a, d=1)
+    freqs = xp.fft.fftfreq(Nt * Nf, dT / Nf)
+    w1 = gnmf(backend, n1, m, freqs, dT, Nf, a, d)
+    w2 = gnmf(backend, n2, m, freqs, dT, Nf, a, d)
 
-    norm_squared = np.sum(w1.conj() * w1).real
+    norm_squared = xp.sum(w1.conj() * w1).real
 
     note(f"{norm_squared = }")
     note(f"{w1.shape=}")
     note(f"{w2.shape=}")
 
-    inner = np.sum(w1.conj() * w2)
+    inner = xp.sum(w1.conj() * w2)
     note(f"{inner = }")
     note(f"{abs(inner) = }")
-    assert np.isclose(inner, ortho_condition(Nf, Nt, n1, n2, m, m), atol=atol)
+    assert xp.isclose(inner, ortho_condition(Nf, Nt, n1, n2, m, m), atol=atol)
 
 
 def test_normalization():
