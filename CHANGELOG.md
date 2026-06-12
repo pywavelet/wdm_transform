@@ -1,3 +1,9 @@
+## v0.5.0 (2026-06-12)
+
+### feat
+
+- add wdm_inner_product noise-weighted inner product
+
 ## v0.4.2 (2026-06-05)
 
 ### fix
