@@ -76,22 +76,42 @@ def matched_filter_snr_rfft(
     return float(np.sqrt(max(float(np.real(snr2)), 0.0)))
 
 
-def matched_filter_snr_wdm(
-    coeffs: np.ndarray,
+def wdm_inner_product(
+    coeffs_a: np.ndarray,
+    coeffs_b: np.ndarray,
     noise_var: np.ndarray,
 ) -> float:
-    """Matched-filter SNR for real WDM coefficients with diagonal noise variance.
+    """Noise-weighted inner product of two real WDM coefficient grids.
+
+    Computes the diagonal-Whittle inner product
+
+        <a, b> = sum_{n,m} w_a[n,m] * w_b[n,m] / sigma^2[n,m]
 
     NaN entries in ``noise_var`` (used to flag rank-deficient DC/Nyquist
     columns) are excluded from the sum.  Callers may therefore pass the full
     ``(nt, nf+1)`` arrays returned by :func:`wdm_noise_variance` directly;
     the edge channels will be skipped automatically.
     """
-    coeffs_arr = np.asarray(coeffs, dtype=float)
+    a = np.asarray(coeffs_a, dtype=float)
+    b = np.asarray(coeffs_b, dtype=float)
     var = np.asarray(noise_var, dtype=float)
+    if a.shape != b.shape:
+        raise ValueError("coeffs_a and coeffs_b must have matching shapes.")
     mask = np.isfinite(var) & (var > 0)
-    snr2 = np.sum(np.where(mask, coeffs_arr**2 / np.where(mask, var, 1.0), 0.0))
-    return float(np.sqrt(max(float(snr2), 0.0)))
+    return float(np.sum(np.where(mask, a * b / np.where(mask, var, 1.0), 0.0)))
+
+
+def matched_filter_snr_wdm(
+    coeffs: np.ndarray,
+    noise_var: np.ndarray,
+) -> float:
+    """Matched-filter SNR for real WDM coefficients with diagonal noise variance.
+
+    Equal to ``sqrt(<h, h>)`` with :func:`wdm_inner_product`; NaN-flagged
+    DC/Nyquist edge channels are skipped automatically.
+    """
+    snr2 = wdm_inner_product(coeffs, coeffs, noise_var)
+    return float(np.sqrt(max(snr2, 0.0)))
 
 
 def wdm_noise_variance(
@@ -158,5 +178,6 @@ __all__ = [
     "noise_characteristic_strain",
     "rfft_characteristic_strain",
     "rfft_periodogram_characteristic_strain",
+    "wdm_inner_product",
     "wdm_noise_variance",
 ]

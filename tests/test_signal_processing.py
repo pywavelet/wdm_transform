@@ -11,6 +11,7 @@ from wdm_transform import (
     noise_characteristic_strain,
     rfft_characteristic_strain,
     rfft_periodogram_characteristic_strain,
+    wdm_inner_product,
     wdm_noise_variance,
 )
 
@@ -48,6 +49,44 @@ def test_matched_filter_snr_wdm_matches_diagonal_inner_product() -> None:
 
     snr = matched_filter_snr_wdm(coeffs, noise_var)
     expected = np.sqrt(np.sum(coeffs**2 / noise_var))
+
+    np.testing.assert_allclose(snr, expected)
+
+
+def test_wdm_inner_product_matches_manual_diagonal_sum() -> None:
+    coeffs_a = np.array([[1.0, -2.0], [0.5, 3.0]], dtype=float)
+    coeffs_b = np.array([[2.0, 1.0], [-1.0, 0.5]], dtype=float)
+    noise_var = np.array([[4.0, 2.0], [0.5, 9.0]], dtype=float)
+
+    result = wdm_inner_product(coeffs_a, coeffs_b, noise_var)
+    expected = np.sum(coeffs_a * coeffs_b / noise_var)
+
+    np.testing.assert_allclose(result, expected)
+
+
+def test_wdm_inner_product_skips_nan_edge_channels() -> None:
+    coeffs_a = np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], dtype=float)
+    coeffs_b = np.array([[1.0, 1.0, 1.0], [2.0, 2.0, 2.0]], dtype=float)
+    noise_var = np.array([[np.nan, 2.0, np.nan], [np.nan, 4.0, np.nan]], dtype=float)
+
+    result = wdm_inner_product(coeffs_a, coeffs_b, noise_var)
+    expected = (2.0 * 1.0) / 2.0 + (5.0 * 2.0) / 4.0
+
+    np.testing.assert_allclose(result, expected)
+
+
+def test_wdm_inner_product_rejects_shape_mismatch() -> None:
+    with pytest.raises(ValueError):
+        wdm_inner_product(np.ones((2, 2)), np.ones((2, 3)), np.ones((2, 2)))
+
+
+def test_matched_filter_snr_wdm_is_sqrt_of_self_inner_product() -> None:
+    rng = np.random.default_rng(42)
+    coeffs = rng.standard_normal((4, 5))
+    noise_var = rng.uniform(0.5, 2.0, size=(4, 5))
+
+    snr = matched_filter_snr_wdm(coeffs, noise_var)
+    expected = np.sqrt(wdm_inner_product(coeffs, coeffs, noise_var))
 
     np.testing.assert_allclose(snr, expected)
 
