@@ -8,6 +8,7 @@ from .signal_processing import (
     noise_characteristic_strain,
     rfft_characteristic_strain,
     rfft_periodogram_characteristic_strain,
+    wdm_inner_product,
     wdm_noise_variance,
 )
 
@@ -23,5 +24,6 @@ __all__ = [
     "register_backend",
     "rfft_characteristic_strain",
     "rfft_periodogram_characteristic_strain",
+    "wdm_inner_product",
     "wdm_noise_variance",
 ]
