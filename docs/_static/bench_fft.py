@@ -19,9 +19,9 @@ from pathlib import Path
 
 import numpy as np
 
-N_VALUES = [2**p for p in range(11, 21)]  # 2048 .. 1048576
+N_VALUES = [2**p for p in range(11, 25)]  # 2048 .. 16777216
 DEFAULT_FIXED_NT = 1024
-DEFAULT_NF_POW2_RANGE = (2, 10)
+DEFAULT_NF_POW2_RANGE = (1, 14)  # N = nt*2^p = 2^11 .. 2^24, matching the WDM sweep
 BATCH_SIZE = 3
 NUM_RUNS = 7
 
