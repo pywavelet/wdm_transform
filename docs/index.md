@@ -4,6 +4,7 @@
 [![Python](https://img.shields.io/pypi/pyversions/wdm-transform.svg)](https://pypi.org/project/wdm-transform/)
 [![Tests](https://github.com/pywavelet/wdm_transform/actions/workflows/tests.yml/badge.svg)](https://github.com/pywavelet/wdm_transform/actions/workflows/tests.yml)
 [![Docs](https://github.com/pywavelet/wdm_transform/actions/workflows/docs.yml/badge.svg)](https://pywavelet.github.io/wdm_transform/)
+[![arXiv](https://img.shields.io/badge/arXiv-2606.20269-b31b1b.svg)](https://arxiv.org/abs/2606.20269)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/pywavelet/wdm_transform/blob/main/docs/examples/wdm_walkthrough.ipynb)
 
