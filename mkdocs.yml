@@ -105,6 +105,7 @@ nav:
       - Windows And Atoms: guide/windows-and-atoms.md
       - Reconstruction And Inference: guide/reconstruction-and-inference.md
   - Tutorial & Walkthrough: examples/wdm_walkthrough.py
+  - Backend Selection: examples/backend_selection.ipynb
   - API Reference:
       - API Overview: guide/api-overview.md
       - Package Layout: guide/package-layout.md
