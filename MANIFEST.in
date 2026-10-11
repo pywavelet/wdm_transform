@@ -3,3 +3,4 @@ prune docs
 prune site
 exclude .gitignore
 exclude uv.lock
+include tests/_gaussian_reference.py

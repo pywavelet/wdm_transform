@@ -130,6 +130,14 @@ def wdm_noise_variance(
 
     where ``N = nt * nf``.
 
+    This channel-center PSD approximation does not integrate the selected
+    window's spectral weights. It is not a calibrated colored-noise covariance
+    model for Gaussian Wilson coefficients: their broader frequency support
+    can mix different PSD values and generate correlations. For white noise,
+    the same interior variance follows from the tested tight-frame identity,
+    up to finite-support error. Colored-noise likelihood accuracy requires
+    separate validation for the chosen window and support.
+
     The DC (m=0) and Nyquist (m=nf) edge channels are returned as ``NaN``.
     Those channels are overcomplete (rank-deficient) and must be excluded from
     any diagonal-Whittle SNR or likelihood sum.  :func:`matched_filter_snr_wdm`

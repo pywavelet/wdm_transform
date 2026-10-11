@@ -9,7 +9,6 @@ site_dir: site
 exclude_docs: |
   studies/**
   manuscript/**
-  reference/api.md
   dev-notes.md
 
 theme:
@@ -67,6 +66,8 @@ plugins:
         - "*.ipynb"
       ignore:
         - "__pycache__/*"
+        - "_static/bench_fft.py"
+        - "_static/make_demo_gif.py"
         - "examples/generate_benchmark_plot.py"
         - "examples/generate_wdm_assets.py"
         - "examples/wdm_walkthrough.ipynb"
@@ -103,10 +104,12 @@ nav:
   - Fundamentals:
       - What Is WDM?: guide/what-is-wdm.md
       - Windows And Atoms: guide/windows-and-atoms.md
+      - Choosing A Window: guide/choosing-a-window.md
       - Reconstruction And Inference: guide/reconstruction-and-inference.md
   - Tutorial & Walkthrough: examples/wdm_walkthrough.py
   - Backend Selection: examples/backend_selection.ipynb
   - API Reference:
       - API Overview: guide/api-overview.md
+      - Full Transform Functions: reference/api.md
       - Package Layout: guide/package-layout.md
       - Benchmarks: benchmarks.ipynb

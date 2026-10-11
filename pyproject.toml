@@ -28,6 +28,7 @@ dependencies = [
 
 [project.scripts]
 wdm_transform_benchmarking = "wdm_transform.benchmarking:main"
+wdm_transform_window_benchmark = "wdm_transform.benchmarking_gaussian:main"
 
 [project.urls]
 Homepage = "https://github.com/pywavelet/wdm_transform"
