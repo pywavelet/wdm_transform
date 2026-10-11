@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from ..backends import Backend, get_backend
 
@@ -44,7 +44,8 @@ class TimeSeries:
 
     def __repr__(self) -> str:
         return (
-            f"TimeSeries(batch_size={self.batch_size}, n={self.n}, dt={self.dt}, df={self.df}, "
+            f"TimeSeries(batch_size={self.batch_size}, n={self.n}, "
+            f"dt={self.dt}, df={self.df}, "
             f"fs={self.fs}, nyquist={self.nyquist}, duration={self.duration})"
         )
 
@@ -103,11 +104,27 @@ class TimeSeries:
         a: float = 1.0 / 3.0,
         d: float = 1.0,
         backend: str | Backend | None = None,
+        window: Literal["meyer", "gaussian"] = "meyer",
+        nu: float | None = None,
+        support: int | None = None,
     ) -> "WDM":
-        """Compute the WDM transform of this time series."""
+        """Compute Wilson coefficients, optionally using the Gaussian window.
+
+        Gaussian ``nu`` defaults to 0.5; ``support`` defaults to ``min(16, nf)``
+        half-band spacings. Both options must be omitted for Meyer.
+        """
         from .wdm import WDM
 
-        return WDM.from_time_series(self, nt=nt, a=a, d=d, backend=backend)
+        return WDM.from_time_series(
+            self,
+            nt=nt,
+            a=a,
+            d=d,
+            backend=backend,
+            window=window,
+            nu=nu,
+            support=support,
+        )
 
     def plot(self, **kwargs: Any) -> tuple[Any, Any]:
         """Plot the time-domain samples using the shared plotting helper."""
@@ -151,7 +168,8 @@ class FrequencySeries:
 
     def __repr__(self) -> str:
         return (
-            f"FrequencySeries(batch_size={self.batch_size}, n={self.n}, df={self.df}, dt={self.dt}, "
+            f"FrequencySeries(batch_size={self.batch_size}, n={self.n}, "
+            f"df={self.df}, dt={self.dt}, "
             f"fs={self.fs}, nyquist={self.nyquist}, duration={self.duration})"
         )
 
@@ -211,11 +229,27 @@ class FrequencySeries:
         a: float = 1.0 / 3.0,
         d: float = 1.0,
         backend: str | Backend | None = None,
+        window: Literal["meyer", "gaussian"] = "meyer",
+        nu: float | None = None,
+        support: int | None = None,
     ) -> "WDM":
-        """Compute the WDM transform of this frequency-domain series."""
+        """Compute Wilson coefficients from full complex Fourier samples.
+
+        Gaussian ``nu`` defaults to 0.5; ``support`` defaults to ``min(16, nf)``
+        half-band spacings. Both options must be omitted for Meyer.
+        """
         from .wdm import WDM
 
-        return WDM.from_frequency_series(self, nt=nt, a=a, d=d, backend=backend)
+        return WDM.from_frequency_series(
+            self,
+            nt=nt,
+            a=a,
+            d=d,
+            backend=backend,
+            window=window,
+            nu=nu,
+            support=support,
+        )
 
     def plot(self, **kwargs: Any) -> tuple[Any, Any]:
         """Plot the spectrum using the shared plotting helper."""

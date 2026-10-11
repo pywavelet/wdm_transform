@@ -21,17 +21,31 @@ All entries are real-valued (float64).
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from numbers import Integral
+from typing import Any, Literal
 
+from .._window_spec import resolve_window
 from ..backends import Backend, get_backend
-from ..transforms import from_freq_to_wdm, from_time_to_wdm, from_wdm_to_freq, from_wdm_to_time
+from ..transforms import (
+    from_freq_to_wdm,
+    from_time_to_wdm,
+    from_wdm_to_freq,
+    from_wdm_to_time,
+)
 from ..windows import validate_transform_shape, validate_window_parameter
 from .series import FrequencySeries, TimeSeries
 
 
+def _validate_gaussian_time_bins(window: str, nt: int) -> None:
+    if window == "gaussian" and (
+        isinstance(nt, bool) or not isinstance(nt, Integral) or nt < 2 or nt % 2
+    ):
+        raise ValueError("Gaussian nt must be a positive even integer.")
+
+
 @dataclass(frozen=True)
 class WDM:
-    """Real-valued WDM coefficients together with transform metadata.
+    """Real-valued Wilson coefficients together with transform metadata.
 
     Parameters
     ----------
@@ -47,6 +61,22 @@ class WDM:
         Reserved window parameter (default 1, currently unused).
     backend : Backend
         Array backend used for computation.
+    window : {"meyer", "gaussian"}, keyword-only
+        Window family used to compute the coefficients. Gaussian means the
+        orthogonalized modified-Gaussian Wilson window, not a raw taper.
+    nu : float or None, keyword-only
+        Gaussian shape parameter; defaults to 0.5 for Gaussian and must be
+        omitted for Meyer.
+    support : int or None, keyword-only
+        Gaussian half-band spacings retained on each side of the window
+        center. Defaults to ``min(16, nf)`` and must be omitted for Meyer.
+
+    Notes
+    -----
+    The inverse always uses these originating window parameters. Changing
+    basis requires reconstructing and transforming again; changing metadata
+    alone does not convert the coefficients to another basis. The default
+    ``a=1/3`` and ``d=1`` are ignored for Gaussian; other values are rejected.
     """
 
     coeffs: Any
@@ -54,6 +84,9 @@ class WDM:
     a: float = 1.0 / 3.0
     d: float = 1.0
     backend: Backend = field(default_factory=get_backend)
+    window: Literal["meyer", "gaussian"] = field(default="meyer", kw_only=True)
+    nu: float | None = field(default=None, kw_only=True)
+    support: int | None = field(default=None, kw_only=True)
 
     def __post_init__(self) -> None:
         backend = get_backend(self.backend)
@@ -69,10 +102,17 @@ class WDM:
         nt, ncols = (int(dim) for dim in coeffs.shape[-2:])
         nf = ncols - 1
         validate_transform_shape(nt, nf)
-        validate_window_parameter(self.a)
+        spec = resolve_window(self.window, self.nu, self.support, nf, self.a, self.d)
+        if spec.window == "meyer":
+            validate_window_parameter(self.a)
+        elif nt < 2:
+            raise ValueError("Gaussian nt must be a positive even integer.")
 
         object.__setattr__(self, "backend", backend)
         object.__setattr__(self, "coeffs", coeffs)
+        object.__setattr__(self, "window", spec.window)
+        object.__setattr__(self, "nu", spec.nu)
+        object.__setattr__(self, "support", spec.support)
 
     def __repr__(self) -> str:
         return (
@@ -80,7 +120,8 @@ class WDM:
             f"batch_size={self.batch_size}, nt={self.nt}, nf={self.nf}, n={self.n}, "
             f"dt={self.dt}, df={self.df}, fs={self.fs}, nyquist={self.nyquist}, "
             f"delta_t={self.delta_t}, delta_f={self.delta_f}, "
-            f"duration={self.duration}, a={self.a}, d={self.d}"
+            f"duration={self.duration}, a={self.a}, d={self.d}, "
+            f"window={self.window!r}, nu={self.nu}, support={self.support}"
             ")"
         )
 
@@ -93,8 +134,11 @@ class WDM:
         a: float = 1.0 / 3.0,
         d: float = 1.0,
         backend: str | Backend | None = None,
+        window: Literal["meyer", "gaussian"] = "meyer",
+        nu: float | None = None,
+        support: int | None = None,
     ) -> "WDM":
-        """Compute the forward WDM transform of a time-domain signal.
+        """Compute Wilson coefficients of a time-domain signal.
 
         Parameters
         ----------
@@ -108,13 +152,22 @@ class WDM:
             Reserved (unused).
         backend : str, Backend, or None
             Override backend; defaults to the series' backend.
+        window : {"meyer", "gaussian"}
+            Window family. Meyer preserves the historical default.
+        nu : float or None
+            Gaussian shape parameter (default 0.5); omitted for Meyer.
+        support : int or None
+            Gaussian support in half-band spacings (default ``min(16, nf)``).
+            Small ``nf`` can limit reconstruction accuracy.
         """
         resolved_backend = get_backend(backend or series.backend)
+        _validate_gaussian_time_bins(window, nt)
         if series.n % nt != 0:
             raise ValueError(
                 f"TimeSeries length {series.n} is not divisible by nt={nt}."
             )
         nf = series.n // nt
+        spec = resolve_window(window, nu, support, nf, a, d)
         coeffs = from_time_to_wdm(
             series.data,
             nt=nt,
@@ -123,8 +176,20 @@ class WDM:
             d=d,
             dt=series.dt,
             backend=resolved_backend,
+            window=spec.window,
+            nu=spec.nu,
+            support=spec.support,
         )
-        return cls(coeffs=coeffs, dt=series.dt, a=a, d=d, backend=resolved_backend)
+        return cls(
+            coeffs=coeffs,
+            dt=series.dt,
+            a=a,
+            d=d,
+            backend=resolved_backend,
+            window=spec.window,
+            nu=spec.nu,
+            support=spec.support,
+        )
 
     @classmethod
     def from_frequency_series(
@@ -135,6 +200,9 @@ class WDM:
         a: float = 1.0 / 3.0,
         d: float = 1.0,
         backend: str | Backend | None = None,
+        window: Literal["meyer", "gaussian"] = "meyer",
+        nu: float | None = None,
+        support: int | None = None,
     ) -> "WDM":
         """Compute the forward WDM transform from a frequency-domain signal.
 
@@ -153,13 +221,22 @@ class WDM:
             Reserved (unused).
         backend : str, Backend, or None
             Override backend; defaults to the series' backend.
+        window : {"meyer", "gaussian"}
+            Window family. Meyer preserves the historical default.
+        nu : float or None
+            Gaussian shape parameter (default 0.5); omitted for Meyer.
+        support : int or None
+            Gaussian support in half-band spacings (default ``min(16, nf)``).
+            Small ``nf`` can limit reconstruction accuracy.
         """
         resolved_backend = get_backend(backend or series.backend)
+        _validate_gaussian_time_bins(window, nt)
         if series.n % nt != 0:
             raise ValueError(
                 f"FrequencySeries length {series.n} is not divisible by nt={nt}."
             )
         nf = series.n // nt
+        spec = resolve_window(window, nu, support, nf, a, d)
         coeffs = from_freq_to_wdm(
             series.data,
             nt=nt,
@@ -168,8 +245,20 @@ class WDM:
             d=d,
             dt=series.dt,
             backend=resolved_backend,
+            window=spec.window,
+            nu=spec.nu,
+            support=spec.support,
         )
-        return cls(coeffs=coeffs, dt=series.dt, a=a, d=d, backend=resolved_backend)
+        return cls(
+            coeffs=coeffs,
+            dt=series.dt,
+            a=a,
+            d=d,
+            backend=resolved_backend,
+            window=spec.window,
+            nu=spec.nu,
+            support=spec.support,
+        )
 
     @property
     def nt(self) -> int:
@@ -278,6 +367,9 @@ class WDM:
             d=self.d,
             dt=self.dt,
             backend=self.backend,
+            window=self.window,
+            nu=self.nu,
+            support=self.support,
         )
         return TimeSeries(recovered, dt=self.dt, backend=self.backend)
 
@@ -289,6 +381,9 @@ class WDM:
             a=self.a,
             d=self.d,
             backend=self.backend,
+            window=self.window,
+            nu=self.nu,
+            support=self.support,
         )
         return FrequencySeries(recovered, df=self.df, backend=self.backend)
 

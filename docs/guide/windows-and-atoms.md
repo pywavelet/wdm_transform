@@ -1,6 +1,7 @@
 # Windows And Atoms
 
-WDM is built from three ingredients:
+Both supported window families use the same Wilson pairing and coefficient
+layout. With the historical Meyer default, WDM is built from three ingredients:
 
 - a smooth, compactly supported **Daubechies–Meyer frequency window** $\tilde\varphi$
 - a **Wilson-basis pairing** of positive- and negative-frequency atoms
@@ -10,6 +11,11 @@ WDM is built from three ingredients:
 
 These are what make the coefficient grid interpretable and the interior
 atoms exactly orthonormal.
+
+`window="gaussian"` selects an orthogonalized modified-Gaussian window
+with extended frequency support. The definitions and figures below describe
+the default Meyer branch; see [Choosing a window](choosing-a-window.md) for
+the time/frequency tradeoff, support convention and finite-tail error.
 
 ## The Daubechies–Meyer Window $\tilde\varphi$
 
@@ -27,7 +33,7 @@ $$
 where $\hat\ell = \ell \cdot 2/N_t$ is the normalised frequency bin and
 
 $$
-B = 1 - 2A, \qquad A \in (0, 1/2] .
+B = 1 - 2A, \qquad A \in (0, 1/2) .
 $$
 
 So a single parameter $A$ controls the shape:
@@ -62,9 +68,8 @@ The figure below shows both effects side by side.
 ## Shifted Windows Define The Channels
 
 The same base window is shifted by $mN_t/2$ to define each channel $m$.
-Adjacent channels overlap by exactly $50\%$ of their spectral support — that
-overlap is what gives the construction its partition-of-unity property and
-allows exact reconstruction:
+Adjacent compact Meyer windows overlap and obey a partition-of-unity property,
+allowing exact reconstruction:
 
 $$
 \tilde\varphi^2(f) + \tilde\varphi^2(f - \Delta F) = \frac{1}{\Delta F}
@@ -168,3 +173,17 @@ The shared helpers that define these pieces live in:
 - `wdm_transform.windows.cnm` — the phase factor $C_{nm}$
 - `wdm_transform.windows.gnmf` — the full atom $\tilde g_{nm}$ in the
   three-case form above
+
+These helpers preserve their existing Meyer meaning. The separate
+`wdm_transform.windows_gaussian.gaussian_unit` and `gaussian_window` helpers
+generate the modified-Gaussian samples on the host. For a dimensionless window
+$\Phi_\nu$ with channel spacing one, the complete Wilson identity is
+
+$$
+\sum_p \Phi_\nu(u+p)\Phi_\nu(u+p+2j)=\delta_{j0}.
+$$
+
+The package taps $\sqrt{2/N_t}\,\Phi_\nu(2\ell/N_t)$ therefore have lattice
+sum $(2/N_t)\delta_{j0}$. Checking only $j=0$ tests partition of unity;
+nonzero shifts also need cancellation. Truncating Gaussian spectral support
+leaves a controlled residual in both this identity and reconstruction.

@@ -62,7 +62,7 @@ def cnm(backend: Backend, n: Any, m: Any) -> Any:
 
         C_{n,m} = \exp\!\bigl(\tfrac{i\pi}{4}(1 - (-1)^{n+m})\bigr)
 
-    This equals 1 when n+m is even and exp(iπ/4) when n+m is odd.
+    This equals 1 when n+m is even and exp(iπ/2) = i when n+m is odd.
     """
     xp = backend.xp
     return xp.exp((1j * xp.pi / 4.0) * (1.0 - (-1) ** (n + m)))
