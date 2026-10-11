@@ -1,3 +1,9 @@
+## v0.6.0 (2026-10-11)
+
+### feat
+
+- add modified Gaussian windows and compact subbands
+
 ## v0.5.0 (2026-06-12)
 
 ### feat
